@@ -3,10 +3,11 @@
 Every bit of agent-invoked code or shell execution runs *through* this interface,
 isolated from the host. The invariant the interface promises: the executed code
 sees only **copies** of the files explicitly handed to it (``SandboxSpec.files``),
-cannot read or modify the host filesystem / processes / environment, and has
-**network egress off by default** (``SandboxSpec.network``). Outputs return
-explicitly (stdout/stderr + copied-out files); nothing escapes the box as a side
-effect.
+cannot read or modify the host filesystem / processes / environment, and reaches
+the network only through the allowlisting proxy its workspace is fenced by (see
+:mod:`services.sandbox.sidecar`) — never directly, and never at all on this
+interface's own one-shot path. Outputs return explicitly (stdout/stderr +
+copied-out files); nothing escapes the box as a side effect.
 
 Pluggable by design: :class:`Sandbox` is the seam, the default backend is a
 container runtime (``container.ContainerSandbox``), and a fake is injected in
@@ -89,7 +90,6 @@ class SandboxSpec:
     stdin: str | None = None
     env: Mapping[str, str] = field(default_factory=dict)
     timeout_s: float = 30.0
-    network: bool = False  # egress off by default so copied data can't leak
 
 
 @dataclass(frozen=True)

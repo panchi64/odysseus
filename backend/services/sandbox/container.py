@@ -1,14 +1,15 @@
 """The container-runtime sandbox backend — the portable default.
 
 Drives a Docker- or Podman-compatible CLI to run a command in a container with
-the host shut out: ``--network none`` by default, ``--cap-drop ALL``,
-``--security-opt no-new-privileges``, ``--user uid:gid`` (never the image's
-root), and explicit memory/PID/CPU caps. No host environment is passed — only
-``spec.env``.
+the host shut out: ``--cap-drop ALL``, ``--security-opt no-new-privileges``,
+``--user uid:gid`` (never the image's root), explicit memory/PID/CPU caps, and a
+network that is either nothing at all or one of a workspace's ``--internal``
+networks. No host environment is passed — only ``spec.env``.
 
 What the fence is *for* is exfiltration, not inconvenience. The wall that matters
-is the one at the edge: the operator's real files are never mounted, and egress
-is off unless the caller asks for it. Inside, what the box may write is decided
+is the one at the edge: the operator's real files are never mounted, and the only
+route off the host is the allowlisting proxy a workspace's network carries
+(:mod:`services.sandbox.sidecar`). Inside, what the box may write is decided
 by ordinary file permissions and nothing else — the image's own tree is
 root-owned and the box is not root, so ``/usr`` and friends stay unwritable
 whether or not we ask the runtime for a read-only root, and the writable ground
@@ -17,7 +18,7 @@ is ``/work``, ``/tmp`` and the paths the image already left world-writable.
 The workspace is a host-side directory bind-mounted at ``/work``: the only path
 whose writes outlive the container, and the only place the host and the box
 share. The one-shot ``run`` uses a throwaway temp dir; ``run_in`` operates over
-a caller-owned directory (the live-session path).
+a caller-owned directory.
 
 We talk to the CLI over ``asyncio`` subprocesses (no SDK dependency — keeps the
 runtime portable across hosts and the dependency surface small). The runtime
@@ -175,6 +176,45 @@ async def published_host_port(runtime: str, container: str, port: int) -> int:
     raise SandboxError("the container did not publish a port")
 
 
+async def await_log_marker(
+    runtime: str,
+    container: str,
+    marker: bytes,
+    *,
+    timeout_s: float,
+    poll_interval_s: float = 0.25,
+) -> bool:
+    """Poll a detached container's logs for the line it prints once ready, then confirm it
+    is still running.
+
+    The readiness probe for every sidecar we start that has no port of its own to knock on
+    — the web fetcher's SSRF proxy and a workspace's egress proxy both announce themselves
+    on stdout. The still-running check is the part that matters: a print-then-crash would
+    otherwise leave the line in the log and mark a dead sidecar ready, and everything
+    behind it would then fail one request at a time instead of failing to start."""
+    for _ in range(int(timeout_s / poll_interval_s) + 1):
+        _timed_out, _code, out, _err = await run_subprocess(
+            [runtime, "logs", container], timeout_s=5.0
+        )
+        if marker in out:
+            return await container_running(runtime, container)
+        await asyncio.sleep(poll_interval_s)
+    return False
+
+
+async def container_running(runtime: str, container: str) -> bool:
+    """Whether the runtime still reports this container as running.
+
+    The question every readiness wait ends on: a port that never answered means one of
+    two very different things depending on this — a server still warming up, or one that
+    exited and never will. A container the runtime no longer knows at all answers False,
+    which is the reading that matters."""
+    _timed_out, _code, state, _err = await run_subprocess(
+        [runtime, "inspect", "-f", "{{.State.Running}}", container], timeout_s=5.0
+    )
+    return b"true" in state.lower()
+
+
 async def await_listening(
     host_port: int, timeout_s: float, *, poll_interval_s: float = 0.25
 ) -> None:
@@ -190,21 +230,21 @@ async def await_listening(
 
 async def await_http_serving(
     host_port: int, timeout_s: float, *, poll_interval_s: float = 0.25
-) -> None:
+) -> bool:
     """Poll a loopback host port over HTTP until the server answers with a non-5xx
     status — a stronger readiness signal than :func:`await_listening` (a *bound* TCP
     port). A dev server binds its port well before it serves the entry page, and the
     iframe (whose first fetch fires the instant ``view.live`` is emitted) never retries
     a too-early load, so we wait until the server is actually answering.
 
-    Best-effort: on timeout it **returns rather than raising** — the port is listening,
-    so a possibly-early open beats failing the agent's tool call (the operator's refresh
-    button is the backstop). A connection error or a 5xx reply (a server still warming up)
-    counts as not-yet-ready; a 2xx/3xx/4xx response means it is serving — the probe hits
-    ``/`` while the iframe loads the entry path, so a 404 at the root still means "up".
-    Each request and the polling sleep are bounded by the remaining budget, so the call
-    never overshoots ``timeout_s`` even when a probe hangs."""
-    await net.await_http_ready(
+    Returns whether it answered rather than raising on timeout — the caller is the one
+    that knows whether a silent server is a slow one or a dead one. A connection error or
+    a 5xx reply (a server still warming up) counts as not-yet-ready; a 2xx/3xx/4xx
+    response means it is serving — the probe hits ``/`` while the iframe loads the entry
+    path, so a 404 at the root still means "up". Each request and the polling sleep are
+    bounded by the remaining budget, so the call never overshoots ``timeout_s`` even when
+    a probe hangs."""
+    return await net.await_http_ready(
         f"http://127.0.0.1:{host_port}/", timeout_s, poll_interval_s=poll_interval_s
     )
 
@@ -279,17 +319,24 @@ def prepare_workspace(workspace: Path) -> None:
 
 def hardened_flags(
     *,
-    network: bool,
+    network: str | None,
     memory: str,
     cpus: str,
     pids_limit: int,
     workdir: str,
     mount: Path,
     env: Mapping[str, str],
-    publish_port: int | None = None,
 ) -> list[str]:
-    """The isolation flags shared by every container we launch — egress off unless
-    asked, all capabilities dropped, never the image's root, and resource caps.
+    """The isolation flags shared by every container we launch — all capabilities
+    dropped, never the image's root, resource caps, and no route out except the one
+    ``network`` names.
+
+    ``network`` is a network *name*, not a switch. ``None`` is ``--network none`` — a box
+    with no interface at all, which is what a one-shot run over a throwaway directory
+    wants. A name is one of a workspace's ``--internal`` networks
+    (:mod:`services.sandbox.sidecar`), which is not egress either: nothing on it has a
+    route off the host, and the proxy sidecar sharing it is the single exit. There is no
+    spelling here that reaches the open web directly.
 
     Deliberately *not* here: a read-only root. It bought no containment that
     ``--user`` below does not already buy — the image's tree is root-owned and
@@ -304,14 +351,10 @@ def hardened_flags(
     there can never outlive the run that made it.
 
     The caps are host protection, not agent restriction: one runaway box must not
-    take the operator's machine down with it.
-
-    ``publish_port`` (the live-preview path only) maps an in-container port out to
-    an OS-assigned host port bound to loopback, so only this host reaches the
-    preview server — never the LAN."""
+    take the operator's machine down with it."""
     flags = [
         "--network",
-        "bridge" if network else "none",
+        network or "none",
         "--cap-drop",
         "ALL",
         # Run as the workspace's host owner (this process), not the image's root:
@@ -341,8 +384,6 @@ def hardened_flags(
         "--volume",
         f"{mount}:{workdir}",
     ]
-    if publish_port is not None:
-        flags += ["--publish", f"127.0.0.1:0:{publish_port}"]
     # Redirect package installs into the writable workspace; an explicit spec env
     # always wins so a caller can override any default.
     merged = {**workspace_env_defaults(workdir), **env}
@@ -463,8 +504,11 @@ class ContainerSandbox(Sandbox):
         return await proc.wait() == 0
 
     def _flags(self, spec: SandboxSpec, mount: Path) -> list[str]:
+        # No network at all: this backend's own path is the one-shot run over a throwaway
+        # directory. A workspace that needs an exit runs through a session, which puts it
+        # on its own internal network behind its own proxy (`services.sandbox.session`).
         return hardened_flags(
-            network=spec.network,
+            network=None,
             memory=self.memory,
             cpus=self.cpus,
             pids_limit=self.pids_limit,
@@ -473,23 +517,13 @@ class ContainerSandbox(Sandbox):
             env=spec.env,
         )
 
-    def _run_argv(
-        self, runtime: str, spec: SandboxSpec, mount: Path, *, name: str | None = None
-    ) -> list[str]:
-        """The locked-down throwaway ``run`` command line — host shut out.
-
-        ``name`` is what makes a throwaway box *findable*. ``--rm`` collects it on a
-        clean exit, but killing the client does not kill the container, so a cancelled
-        call or a dead process leaves one running over a caller-owned workspace — and
-        an anonymous container is one no boot reconciliation and no teardown can ever
-        name. A caller that runs over a directory it means to keep passes a name."""
-        named = ["--name", name] if name is not None else []
+    def _run_argv(self, runtime: str, spec: SandboxSpec, mount: Path) -> list[str]:
+        """The locked-down throwaway ``run`` command line — host shut out."""
         return [
             runtime,
             "run",
             "--rm",
             "--interactive",  # so stdin can be piped in
-            *named,
             *self._flags(spec, mount),
             self.image,
             *with_in_container_timeout(list(spec.command), spec.timeout_s),
@@ -502,26 +536,18 @@ class ContainerSandbox(Sandbox):
             prepare_workspace(workspace)  # a fresh temp dir has none of the scratch dirs
             return await self.run_in(workspace, spec)
 
-    async def run_in(
-        self, workspace: Path, spec: SandboxSpec, *, name: str | None = None
-    ) -> SandboxResult:
+    async def run_in(self, workspace: Path, spec: SandboxSpec) -> SandboxResult:
         """Run the spec in a throwaway container over a caller-owned workspace.
 
-        Copies named inputs in and outputs back out; the workspace itself persists
-        for the caller (the live-session network path reuses its session dir). The
-        caller owns workspace prep (``prepare_workspace``) — the session path has
-        already done it via ``_ensure_workspace``, so we don't repeat it here.
-
-        ``name`` labels the box so it can be found again — see :meth:`_run_argv`. A
-        caller that passes one owns clearing a leftover of the same name first; the
-        create fails outright while one is still around."""
+        Copies named inputs in and outputs back out; the workspace itself persists for
+        the caller. The caller owns workspace prep (``prepare_workspace``)."""
         runtime = self.runtime
         if runtime is None:  # disappeared since detection — fail closed, don't host-run
             raise SandboxError("no container runtime available")
 
         self._write_inputs(workspace, spec)
         backstop_timed_out, exit_code, out, err = await run_subprocess(
-            self._run_argv(runtime, spec, workspace, name=name),
+            self._run_argv(runtime, spec, workspace),
             stdin=spec.stdin,
             timeout_s=spec.timeout_s + _BACKSTOP_GRACE_S,
         )

@@ -8,18 +8,19 @@ import shutil
 import time
 from pathlib import Path
 
+import httpx
 import pytest
 
 import services.sandbox.manager as manager_mod
 import services.sandbox.reconcile as reconcile_mod
 import services.sandbox.session as session_mod
+import services.sandbox.sidecar as sidecar_mod
 from core.config import Settings
 from core.vault import Vault
 from services.sandbox import (
     ContainerSandbox,
     PreviewHandle,
     SandboxError,
-    SandboxResult,
     SandboxSession,
     SandboxSessionManager,
     SandboxSpec,
@@ -33,6 +34,7 @@ from services.sandbox.seal import (
 )
 from services.sandbox.session import ImageWarmup
 
+from .conftest import egress_policy
 from .test_sandbox import _runtime_ready
 
 _EXCLUDES = Settings().sandbox_session_seal_excludes
@@ -60,6 +62,7 @@ class _NoRuntime(ContainerSandbox):
 def _manager(tmp_path, vault, **overrides) -> SandboxSessionManager:
     backend = overrides.pop("backend", None) or _NoRuntime()
     opts = dict(
+        egress=egress_policy(tmp_path),
         data_dir=tmp_path,
         idle_ttl_s=1800.0,
         reap_interval_s=60.0,
@@ -67,6 +70,21 @@ def _manager(tmp_path, vault, **overrides) -> SandboxSessionManager:
     )
     opts.update(overrides)
     return SandboxSessionManager(backend, vault, **opts)
+
+
+def _session(tmp_path, vault, **overrides) -> SandboxSession:
+    """A bare session, built without a manager — the unit under test in the bring-up
+    and teardown cases below."""
+    opts = dict(
+        workspace=tmp_path / "work",
+        sealed=tmp_path / "sealed.tar.enc.gz",
+        egress_dir=tmp_path / "egress",
+        backend=_pinned_backend(),
+        vault=vault,
+        excludes=(),
+    )
+    opts.update(overrides)
+    return SandboxSession("s1", **opts)
 
 
 # --- naming + exclusion ------------------------------------------------------
@@ -205,36 +223,48 @@ def _pinned_backend() -> ContainerSandbox:
     return ContainerSandbox(runtime="docker")
 
 
+def _fake_bringup(monkeypatch, *, answer=None):
+    """Fake every runtime call a bring-up or teardown makes — the session's own and the
+    sidecar's — into one ordered log, with the sidecar's readiness poll short-circuited.
+
+    One log across both modules because the *order* is the containment: the network before
+    anything joins it, the sidecar answering before the box whose traffic it gates starts.
+    Removals are logged as ``["rm", name]`` so a teardown reads in the same list."""
+    calls: list[list[str]] = []
+
+    async def fake_run_subprocess(argv, **_kwargs):
+        calls.append(list(argv))
+        if answer is not None:
+            return (False, *answer(list(argv)))
+        if argv[1:3] == ["network", "inspect"]:
+            return False, 0, b"172.31.0.0/16\n", b""
+        return False, 0, b"", b""
+
+    async def fake_force_remove(_runtime, name, **_kwargs) -> None:
+        calls.append(["rm", name])
+
+    async def fake_ready(_runtime, _name, _marker, **_kwargs) -> bool:
+        return True
+
+    monkeypatch.setattr(session_mod, "run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(session_mod, "force_remove_container", fake_force_remove)
+    monkeypatch.setattr(sidecar_mod, "run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(sidecar_mod, "force_remove_container", fake_force_remove)
+    monkeypatch.setattr(sidecar_mod, "await_log_marker", fake_ready)
+    return calls
+
+
 async def test_ensure_up_waits_for_a_pending_image_warmup_before_creating(tmp_path, monkeypatch):
     vault = await _vault(tmp_path)
     warmup = ImageWarmup()
     warmup.start_pulling()  # simulate the background pull actually being in flight
-    session = SandboxSession(
-        "s1",
-        workspace=tmp_path / "work",
-        sealed=tmp_path / "sealed.tar.enc.gz",
-        backend=_pinned_backend(),
-        vault=vault,
-        excludes=(),
-        warmup=warmup,
-    )
-
-    created: list[list[str]] = []
-
-    async def fake_run_subprocess(argv, **_kwargs):
-        created.append(argv)
-        return False, 0, b"", b""
-
-    async def fake_kill_quietly(_runtime) -> None:
-        return None
-
-    monkeypatch.setattr(session_mod, "run_subprocess", fake_run_subprocess)
-    monkeypatch.setattr(session, "_kill_quietly", fake_kill_quietly)
+    session = _session(tmp_path, vault, warmup=warmup)
+    created = _fake_bringup(monkeypatch)
 
     task = asyncio.create_task(session._ensure_up())
     await asyncio.sleep(0.02)  # let it start and block on the still-pending pull
     assert not task.done()
-    assert not created  # no container-create attempted while the pull is in flight
+    assert not created  # nothing created at all while the pull is in flight
 
     warmup.mark_done(True)  # the background pull resolves
     await asyncio.wait_for(task, timeout=1.0)
@@ -246,27 +276,11 @@ async def test_ensure_up_needs_no_warmup_wire_up_at_all(tmp_path, monkeypatch):
     # A bare unit-constructed session (warmup=None, the default) skips the
     # coordination outright — existing callers that don't wire one keep working.
     vault = await _vault(tmp_path)
-    session = SandboxSession(
-        "s1",
-        workspace=tmp_path / "work",
-        sealed=tmp_path / "sealed.tar.enc.gz",
-        backend=_pinned_backend(),
-        vault=vault,
-        excludes=(),
-    )
-
-    async def fake_run_subprocess(argv, **_kwargs):
-        return False, 0, b"", b""
-
-    monkeypatch.setattr(session_mod, "run_subprocess", fake_run_subprocess)
-    monkeypatch.setattr(session, "_kill_quietly", lambda _r: _noop())
+    session = _session(tmp_path, vault)
+    _fake_bringup(monkeypatch)
 
     await asyncio.wait_for(session._ensure_up(), timeout=1.0)
     assert session.is_warm
-
-
-async def _noop() -> None:
-    return None
 
 
 async def test_ensure_up_gives_a_truthful_message_when_the_pull_never_resolves(
@@ -275,15 +289,7 @@ async def test_ensure_up_gives_a_truthful_message_when_the_pull_never_resolves(
     vault = await _vault(tmp_path)
     warmup = ImageWarmup()
     warmup.start_pulling()  # in flight, and never marked done — simulates a stuck pull
-    session = SandboxSession(
-        "s1",
-        workspace=tmp_path / "work",
-        sealed=tmp_path / "sealed.tar.enc.gz",
-        backend=_pinned_backend(),
-        vault=vault,
-        excludes=(),
-        warmup=warmup,
-    )
+    session = _session(tmp_path, vault, warmup=warmup)
     monkeypatch.setattr(session_mod, "IMAGE_PULL_TIMEOUT_S", 0.05)
 
     with pytest.raises(SandboxError, match="still downloading"):
@@ -297,76 +303,70 @@ async def test_ensure_up_proceeds_when_the_pull_resolved_but_failed(tmp_path, mo
     vault = await _vault(tmp_path)
     warmup = ImageWarmup()
     warmup.mark_done(False)
-    session = SandboxSession(
-        "s1",
-        workspace=tmp_path / "work",
-        sealed=tmp_path / "sealed.tar.enc.gz",
-        backend=_pinned_backend(),
-        vault=vault,
-        excludes=(),
-        warmup=warmup,
-    )
+    session = _session(tmp_path, vault, warmup=warmup)
 
-    async def fake_run_subprocess(argv, **_kwargs):
-        return False, 1, b"", b"no such image"
+    def answer(argv):
+        # Only the session container's create fails: the fence comes up fine, the image
+        # the *workspace* runs is the one that isn't there.
+        if "odysseus-sbx-s1" in argv:
+            return 1, b"", b"no such image"
+        if argv[1:3] == ["network", "inspect"]:
+            return 0, b"172.31.0.0/16\n", b""
+        return 0, b"", b""
 
-    monkeypatch.setattr(session_mod, "run_subprocess", fake_run_subprocess)
-    monkeypatch.setattr(session, "_kill_quietly", lambda _r: _noop())
+    _fake_bringup(monkeypatch, answer=answer)
 
     with pytest.raises(SandboxError, match="failed to start sandbox session"):
         await asyncio.wait_for(session._ensure_up(), timeout=1.0)
 
 
-async def test_run_in_waits_for_a_pending_image_warmup_before_the_network_call(
-    tmp_path, monkeypatch
-):
-    # The `spec.network=True` path bypasses `_ensure_up` entirely (it runs a
-    # throwaway bridge container via `run_in` instead of exec-ing into the warm
-    # session), so it needs its own wait-out-the-pull coordination — otherwise a
-    # cold-boot network call can race its own implicit pull against a much shorter
-    # exec timeout (sandbox-01, extended to the network branch).
+# --- the fence: an internal network and its proxy, raised before anything runs ---
+async def test_ensure_up_creates_network_sidecar_then_container_in_order(tmp_path, monkeypatch):
     vault = await _vault(tmp_path)
-    warmup = ImageWarmup()
-    warmup.start_pulling()  # simulate the background pull actually being in flight
-    session = SandboxSession(
-        "s1",
-        workspace=tmp_path / "work",
-        sealed=tmp_path / "sealed.tar.enc.gz",
-        backend=_pinned_backend(),
-        vault=vault,
-        excludes=(),
-        warmup=warmup,
-    )
+    allow_dir = tmp_path / "egress" / "s1"
+    session = _session(tmp_path, vault, egress_dir=allow_dir, proxy_image="python:alpine")
+    calls = _fake_bringup(monkeypatch)
 
-    called: list[tuple[SandboxSpec, str | None]] = []
+    await asyncio.wait_for(session._ensure_up(), timeout=1.0)
 
-    async def fake_run_in(_workspace, spec, *, name=None):
-        called.append((spec, name))
-        return SandboxResult(exit_code=0, stdout="ok", stderr="")
+    runtime_calls = [c for c in calls if c[0] != "rm"]
+    assert [c[1:3] for c in runtime_calls] == [
+        ["network", "create"],  # the wall exists before anything joins it
+        ["network", "inspect"],  # its subnet is what the proxy refuses outsiders by
+        ["run", "--detach"],  # the sidecar
+        ["network", "connect"],  # ...and only then its leg on the open web
+        ["run", "--detach"],  # the workspace container, last
+    ]
+    create, connect, workspace = runtime_calls[2], runtime_calls[3], runtime_calls[4]
+    assert "odysseus-net-s1" in create and "odysseus-egress-s1" in create
+    assert f"{allow_dir}:/allow:ro" in create  # the allowlist, never writable from inside
+    assert "--env EGRESS_CLIENT_SUBNET=172.31.0.0/16" in " ".join(create)
+    assert "python:alpine" in create
+    assert connect[1:] == ["network", "connect", "bridge", "odysseus-egress-s1"]
+    joined = " ".join(workspace)
+    assert "--network odysseus-net-s1" in joined
+    assert "--env HTTPS_PROXY=http://odysseus-egress-s1:3128" in joined
+    assert "--env https_proxy=http://odysseus-egress-s1:3128" in joined  # curl reads this one
+    assert "--env NO_PROXY=localhost,127.0.0.1,odysseus-egress-s1" in joined
 
-    cleared: list[str] = []
 
-    async def fake_force_remove(_runtime, name, **_kwargs) -> None:
-        cleared.append(name)
+async def test_kill_removes_container_sidecar_and_network(tmp_path, monkeypatch):
+    # Innermost first: a network cannot be removed while anything is still attached to
+    # it, so the order here is not cosmetic — reversed, the network removal fails and the
+    # next boot inherits it.
+    vault = await _vault(tmp_path)
+    session = _session(tmp_path, vault)
+    calls = _fake_bringup(monkeypatch)
+    await asyncio.wait_for(session._ensure_up(), timeout=1.0)
+    calls.clear()
 
-    monkeypatch.setattr(session._backend, "run_in", fake_run_in)
-    monkeypatch.setattr(session_mod, "force_remove_container", fake_force_remove)
+    await session._kill()
 
-    spec = SandboxSpec(command=["true"], network=True)
-    task = asyncio.create_task(session.run(spec))
-    await asyncio.sleep(0.02)  # let it start and block on the still-pending pull
-    assert not task.done()
-    assert not called  # no network call attempted while the pull is in flight
-
-    warmup.mark_done(True)  # the background pull resolves
-    result = await asyncio.wait_for(task, timeout=1.0)
-    assert result.exit_code == 0
-    assert called  # now proceeds to the (fast, image-cached) network call
-    # And the throwaway box is named, so a cancelled call's leftover is something
-    # a later teardown and the next boot's reconciliation can both still find —
-    # which in turn means the name has to be claimed before it can be used.
-    assert called[0][1] == "odysseus-egress-s1"
-    assert cleared == ["odysseus-egress-s1"]
+    assert calls == [
+        ["rm", "odysseus-sbx-s1"],
+        ["rm", "odysseus-egress-s1"],
+        ["docker", "network", "rm", "odysseus-net-s1"],
+    ]
 
 
 # --- the idle reaper ---------------------------------------------------------
@@ -810,6 +810,7 @@ def _fake_runtime_calls(monkeypatch, replies: dict[str, tuple[int, bytes]] | Non
 
     monkeypatch.setattr(reconcile_mod, "run_subprocess", fake_run_subprocess)
     monkeypatch.setattr(session_mod, "run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(sidecar_mod, "run_subprocess", fake_run_subprocess)
     return calls
 
 
@@ -1204,13 +1205,21 @@ async def _healing_session(tmp_path, monkeypatch, exec_results):
         if argv[1] == "exec":
             code, out = exec_results.pop(0)
             return False, code, out, b""
+        if argv[1:3] == ["network", "inspect"]:
+            return False, 0, b"172.31.0.0/16\n", b""
         return False, 0, b"", b""
 
     async def fake_force_remove(_runtime, name: str, **_kwargs) -> None:
         removed.append(name)
 
+    async def fake_ready(_runtime, _name, _marker, **_kwargs) -> bool:
+        return True
+
     monkeypatch.setattr(session_mod, "run_subprocess", fake_run_subprocess)
     monkeypatch.setattr(session_mod, "force_remove_container", fake_force_remove)
+    monkeypatch.setattr(sidecar_mod, "run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(sidecar_mod, "force_remove_container", fake_force_remove)
+    monkeypatch.setattr(sidecar_mod, "await_log_marker", fake_ready)
     vault = await _vault(tmp_path)
     manager = _manager(tmp_path, vault, backend=_pinned_backend())
     session = await manager.acquire("conv-heal")
@@ -1232,7 +1241,8 @@ async def test_exec_runtime_fault_rebuilds_the_container_and_retries(tmp_path, m
     # _ensure_up pre-clears the name once per create; the middle removal is the
     # heal tearing the broken container down.
     assert removed.count(session.container) == 3
-    assert len([a for a in calls if a[1] == "run"]) == 2  # create + rebuild
+    creates = [a for a in calls if a[1] == "run" and session.container in a]
+    assert len(creates) == 2  # create + rebuild
     assert len([a for a in calls if a[1] == "exec"]) == 2  # fault + retry
 
 
@@ -1254,10 +1264,10 @@ async def test_ordinary_code_failure_is_not_mistaken_for_a_runtime_fault(tmp_pat
 
     assert not result.ok
     assert result.exit_code == 1
-    # Only _ensure_up's one pre-create clear — no heal teardown, no rebuild: the
-    # failure goes back to the model to fix.
-    assert len(removed) == 1
-    assert len([a for a in calls if a[1] == "run"]) == 1
+    # Only the bring-up's own pre-create clears (the container's, then the sidecar's) —
+    # no heal teardown, no rebuild: the failure goes back to the model to fix.
+    assert removed == [session.container, session._egress]
+    assert len([a for a in calls if a[1] == "run" and session.container in a]) == 1
     assert len([a for a in calls if a[1] == "exec"]) == 1
 
 
@@ -1278,5 +1288,94 @@ async def test_live_session_persists_files_across_calls(tmp_path):
         # A later call in the same session sees the file the earlier one wrote.
         read = await session.run(SandboxSpec(command=["bash", "-c", "cat note.txt"], timeout_s=60))
         assert "persisted" in read.stdout
+    finally:
+        await manager.stop()
+
+
+# The fence, exercised the way the agent meets it: not a flag, but a real proxy the
+# workspace's traffic actually goes through. `curl` is not in the sandbox image (and
+# `apt` can never work in a capability-dropped non-root box), so the probes are Python.
+_FETCH = (
+    "import sys, urllib.request, urllib.error\n"
+    "try:\n"
+    "    print(urllib.request.urlopen(sys.argv[1], timeout=30).status)\n"
+    "except urllib.error.HTTPError as exc:\n"
+    "    print(exc.code); print(exc.read().decode('utf-8', 'replace'))\n"
+)
+
+
+@pytest.mark.container
+@pytest.mark.skipif(not _runtime_ready(), reason="no usable container runtime")
+async def test_pip_install_through_the_egress_proxy(tmp_path):
+    # The whole point of the shape: a package index is on the installation-wide list, so
+    # installing is ordinary work that costs no approval — through a proxy, on a network
+    # with no route of its own.
+    vault = await _vault(tmp_path)
+    manager = _manager(
+        tmp_path,
+        vault,
+        backend=ContainerSandbox(),
+        egress=egress_policy(tmp_path, ("pypi.org", "files.pythonhosted.org")),
+    )
+    try:
+        session = await manager.acquire("conv-egress")
+        install = await session.run(
+            SandboxSpec(command=["pip", "install", "--no-cache-dir", "six"], timeout_s=300)
+        )
+        assert install.ok, install.stderr
+        imported = await session.run(
+            SandboxSpec(command=["python", "-c", "import six; print(six.__name__)"], timeout_s=60)
+        )
+        assert imported.ok
+        assert "six" in imported.stdout
+    finally:
+        await manager.stop()
+
+
+@pytest.mark.container
+@pytest.mark.skipif(not _runtime_ready(), reason="no usable container runtime")
+async def test_unlisted_host_is_denied_with_marker(tmp_path):
+    # A refusal has to say which fence refused and which host, in the body the agent
+    # actually reads — an anonymous 403 is something it would only try to route around.
+    vault = await _vault(tmp_path)
+    manager = _manager(
+        tmp_path, vault, backend=ContainerSandbox(), egress=egress_policy(tmp_path, ("pypi.org",))
+    )
+    try:
+        session = await manager.acquire("conv-denied")
+        result = await session.run(
+            SandboxSpec(
+                command=["python", "-c", _FETCH, "http://example.com/"], timeout_s=60
+            )
+        )
+        assert "403" in result.stdout
+        assert "odysseus-egress: denied example.com" in result.stdout
+        # And the tunnelled form is refused too — CONNECT is checked before it is opened.
+        tunnelled = await session.run(
+            SandboxSpec(
+                command=["python", "-c", _FETCH, "https://example.com/"], timeout_s=60
+            )
+        )
+        assert "200" not in tunnelled.stdout
+    finally:
+        await manager.stop()
+
+
+@pytest.mark.container
+@pytest.mark.skipif(not _runtime_ready(), reason="no usable container runtime")
+async def test_a_preview_is_published_by_the_sidecar_and_answers(tmp_path):
+    # The preview container publishes nothing (it cannot, on an internal network): the
+    # sidecar owns the loopback port and relays inward.
+    vault = await _vault(tmp_path)
+    manager = _manager(
+        tmp_path, vault, backend=ContainerSandbox(), preview_startup_timeout_s=60.0
+    )
+    try:
+        handle = await manager.start_preview(
+            "conv-preview", ["python", "-m", "http.server", "8000"], 8000
+        )
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"http://127.0.0.1:{handle.host_port}/", timeout=30.0)
+        assert resp.status_code == 200
     finally:
         await manager.stop()

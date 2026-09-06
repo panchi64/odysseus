@@ -213,7 +213,16 @@ class EgressPolicy:
         """The directory bind-mounted into this workspace's fence. Derived from the same
         ``safe_key`` the session manager names containers and workspaces with, so a
         workspace and its allowlist can never end up under two different tokens."""
-        return self._root / safe_key(key)
+        return self.dir_for(safe_key(key))
+
+    def dir_for(self, safe: str) -> Path:
+        """The allowlist directory an already-``safe_key``-ed name maps to.
+
+        ``safe_key`` prepends its prefix unconditionally, so it is not idempotent and a
+        caller holding the safe name — the orphan sweep, which has a directory name and
+        no way back to the conversation key — cannot go through :meth:`allow_dir` without
+        landing under a token nothing else will ever look up."""
+        return self._root / safe
 
     async def materialise(self, key: str) -> Path:
         """Write this workspace's allowlist and return the directory holding it."""

@@ -40,6 +40,7 @@ from services.sandbox import (
     resolve_confinement,
     run_on_host,
 )
+from services.sandbox.egress_proxy import DENIED_MARKER
 
 from .deps import RunDeps
 
@@ -63,10 +64,6 @@ _PID_CAP_MARKERS = (
 # failure, and the one worth deterministic install mechanics at the failure point.
 _MISSING_MODULE = re.compile(r"ModuleNotFoundError: No module named '([^']+)'")
 
-# What the workspace's proxy puts in the body of a refusal, so a blocked host is legible
-# in the tool's own output rather than only in the proxy's log.
-_EGRESS_DENIED_MARKER = "odysseus-egress: denied"
-
 # The other face of the same refusal. A client that never gets as far as the proxy — or
 # one that reports a refused CONNECT as a dead connection — prints a resolution or
 # connection failure instead, so both spellings have to key the same hint. Only errors
@@ -89,7 +86,9 @@ def _looks_like_pid_cap(stderr: str) -> bool:
 
 def _looks_like_egress_denied(output: str) -> bool:
     low = output.lower()
-    if _EGRESS_DENIED_MARKER in low:
+    # The marker the workspace's proxy writes into a refusal's body, read from the script
+    # that writes it — two spellings of it would be one hint that quietly stopped firing.
+    if DENIED_MARKER.lower() in low:
         return True
     return any(marker in low for marker in _NO_NETWORK_MARKERS)
 

@@ -140,10 +140,26 @@ def test_run_argv_is_locked_down_by_default(tmp_path):
     assert "--kill-after=5" in joined
 
 
-def test_run_argv_opens_network_only_when_asked(tmp_path):
-    sandbox = ContainerSandbox(runtime="podman")
-    argv = sandbox._run_argv("podman", SandboxSpec(command=["x"], network=True), tmp_path)
-    assert "--network bridge" in " ".join(argv)
+def test_hardened_flags_take_a_network_name_never_a_switch(tmp_path):
+    # There is no spelling of these flags that reaches the open web: `None` is no
+    # interface at all, and a name is one of a workspace's `--internal` networks, whose
+    # only exit is the proxy sidecar sharing it.
+    def flags(network):
+        return " ".join(
+            hardened_flags(
+                network=network,
+                memory="512m",
+                cpus="1.0",
+                pids_limit=256,
+                workdir="/work",
+                mount=tmp_path,
+                env={},
+            )
+        )
+
+    assert "--network none" in flags(None)
+    assert "--network odysseus-net-s1" in flags("odysseus-net-s1")
+    assert "bridge" not in flags("odysseus-net-s1")
 
 
 def test_env_is_explicit_only(tmp_path):
@@ -172,7 +188,7 @@ def test_workspace_env_defaults_point_under_the_workdir():
 def test_hardened_flags_inject_install_redirects(tmp_path):
     joined = " ".join(
         hardened_flags(
-            network=False,
+            network=None,
             memory="512m",
             cpus="1.0",
             pids_limit=256,
@@ -187,7 +203,7 @@ def test_hardened_flags_inject_install_redirects(tmp_path):
 
 def test_explicit_env_overrides_a_default(tmp_path):
     flags = hardened_flags(
-        network=False,
+        network=None,
         memory="512m",
         cpus="1.0",
         pids_limit=256,
@@ -354,24 +370,13 @@ async def test_container_runs_python_in_isolation():
     assert result.stdout.strip() == "42"
 
 
-# Resolving a public name proves egress; the same call fails closed without it.
-_DNS_PROBE = "import socket; socket.gethostbyname('pypi.org'); print('reached')"
-
-
 @pytest.mark.container
 @pytest.mark.skipif(not _runtime_ready(), reason="no usable container runtime")
-async def test_no_egress_by_default():
+async def test_the_one_shot_path_has_no_interface_at_all():
+    # This backend's own path is a throwaway run over a throwaway directory: no network
+    # object, so not even a name to resolve. A workspace that needs an exit gets one
+    # through a session and its proxy — see `tests/test_sandbox_session.py`.
     sandbox = ContainerSandbox()
-    result = await sandbox.run(SandboxSpec(command=["python", "-c", _DNS_PROBE], timeout_s=60))
+    probe = "import socket; socket.gethostbyname('pypi.org'); print('reached')"
+    result = await sandbox.run(SandboxSpec(command=["python", "-c", probe], timeout_s=60))
     assert not result.ok  # no route, no DNS — the lookup raises and exits non-zero
-
-
-@pytest.mark.container
-@pytest.mark.skipif(not _runtime_ready(), reason="no usable container runtime")
-async def test_egress_when_requested():
-    sandbox = ContainerSandbox()
-    result = await sandbox.run(
-        SandboxSpec(command=["python", "-c", _DNS_PROBE], network=True, timeout_s=60)
-    )
-    assert result.ok
-    assert "reached" in result.stdout

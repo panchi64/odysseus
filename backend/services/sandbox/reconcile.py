@@ -28,6 +28,7 @@ from pathlib import Path
 
 from .base import SandboxError
 from .container import force_remove_container, run_subprocess
+from .sidecar import remove_network
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +86,7 @@ async def _reconcile_runtime(runtime: str) -> None:
         left = deadline - loop.time()
         if left <= 0:
             break
-        await _remove_network(runtime, name, timeout_s=left)
+        await remove_network(runtime, name, timeout_s=left)
         dropped += 1
     if stale or networks:
         logger.info(
@@ -116,15 +117,6 @@ async def _listed_names(argv: list[str], *, timeout_s: float) -> list[str]:
         return []
     lines = out.decode("utf-8", "replace").splitlines()
     return [line.strip() for line in lines if line.strip()]
-
-
-async def _remove_network(runtime: str, name: str, *, timeout_s: float) -> None:
-    """Best-effort ``network rm`` — one still in use by a container we failed to
-    remove is a warning, not a boot failure."""
-    try:
-        await run_subprocess([runtime, "network", "rm", name], timeout_s=timeout_s)
-    except SandboxError:
-        logger.info("sandbox: could not remove network %s", name, exc_info=True)
 
 
 def _remove_pool_dirs(work_root: Path) -> int:

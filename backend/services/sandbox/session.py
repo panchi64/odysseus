@@ -12,10 +12,13 @@ host-side directory bind-mounted into the container; on reap we seal it (see
 time the conversation runs code. So files persist encrypted-at-rest across reaps;
 only the container's live process/system state is rebuilt.
 
-Two execution paths keep egress off by default without a fragile live-network
-toggle: ordinary calls ``exec`` into the no-network session container; a call
-that asks for the network runs as a one-shot ``--network bridge`` container over
-the *same* workspace, so a fetched package lands in files the session then sees.
+There is one execution path and one fence. Every call ``exec``s into the live
+container, which sits on this conversation's own ``--internal`` network with an
+allowlisting proxy sidecar as its single exit (:mod:`services.sandbox.sidecar`).
+Installing a package and burning CPU are what the workspace is *for* and cost no
+approval; what is fenced is where bytes may go. So bringing a session up means
+three objects, in order: the network, the sidecar, then the container that is
+pointed at it.
 
 A session knows only about itself. *When* it is created and *when* it is reaped are
 policies over the whole set, and live in :mod:`services.sandbox.manager`.
@@ -29,7 +32,7 @@ import os
 import shutil
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Protocol
 
@@ -50,6 +53,15 @@ from .container import (
 )
 from .preview import PreviewHandle, launch_preview, stop_preview_container
 from .seal import excluded, partial_marker, restore_workspace, seal_workspace
+from .sidecar import (
+    create_internal_network,
+    network_name,
+    proxy_env,
+    remove_network,
+    sidecar_name,
+    start_egress_sidecar,
+    stop_egress_sidecar,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,27 +95,33 @@ class LiveWork(Protocol):
 
 
 async def _start_idle_container(
-    backend: ContainerSandbox, runtime: str, name: str, workspace: Path
+    backend: ContainerSandbox,
+    runtime: str,
+    name: str,
+    workspace: Path,
+    *,
+    network: str,
+    env: Mapping[str, str],
 ) -> bytes | None:
     """Start one hardened, idle container over ``workspace``, kept alive with
     ``sleep infinity`` so later ``exec`` calls have something to land on. Returns ``None``
     on success, or the runtime's stderr on failure.
 
     A function rather than an inline argv because these flags *are* the containment —
-    no network, resource caps, exactly one bind mount — and a second spelling of them
-    somewhere else is a hole no test would notice.
+    the workspace's internal network, resource caps, exactly one bind mount — and a
+    second spelling of them somewhere else is a hole no test would notice.
     """
     argv = detached_run_argv(
         runtime,
         name,
         hardened_flags(
-            network=False,
+            network=network,
             memory=backend.memory,
             cpus=backend.cpus,
             pids_limit=backend.pids_limit,
             workdir=backend.workdir,
             mount=workspace,
-            env={},
+            env=env,
         ),
         backend.image,
         ["sleep", "infinity"],
@@ -172,22 +190,28 @@ class SandboxSession:
         *,
         workspace: Path,
         sealed: Path,
+        egress_dir: Path,
         backend: ContainerSandbox,
         vault: Vault,
         excludes: Iterable[str],
+        proxy_image: str = "python:alpine",
         warmup: ImageWarmup | None = None,
     ) -> None:
         self.key = key
         self.workspace = workspace
         self.sealed = sealed
+        # The host-side directory holding this workspace's allowlist, bind-mounted into
+        # the sidecar. Owned by the egress policy, which rewrites it whenever the operator
+        # approves a domain — the fence re-reads it, so a grant lands without a restart.
+        self._egress_dir = egress_dir
         self.container = f"odysseus-sbx-{key}"
         self._preview_container = f"odysseus-pre-{key}"
-        # The per-call egress box is named for the same reason the other two are:
-        # `--rm` collects it on a clean exit, but killing the client kills no
-        # container, so a cancelled network call leaves one running over this very
-        # workspace. Anonymous, it would be a box no teardown and no boot
-        # reconciliation could ever name — see `_release_mounts`.
-        self._egress_container = f"odysseus-egress-{key}"
+        # Every runtime object this conversation owns is named after it, for the same
+        # reason: a crash kills no container and removes no network, and an anonymous one
+        # is a leftover that no teardown and no boot reconciliation could ever name.
+        self._network = network_name(key)
+        self._egress = sidecar_name(key)
+        self._proxy_image = proxy_image
         self._backend = backend
         self._vault = vault
         self._excludes = tuple(excludes)
@@ -304,22 +328,6 @@ class SandboxSession:
 
     async def _run_inner(self, spec: SandboxSpec) -> SandboxResult:
         self._ensure_workspace()
-        if spec.network:
-            # Egress is granted per-call via a throwaway bridge container over
-            # the same workspace, so the live session itself stays no-network.
-            # Still wait out an in-flight background image pull first, same as
-            # `_ensure_up` below — otherwise this container's own implicit pull can
-            # race the much shorter exec timeout on a genuinely cold boot (sandbox-01).
-            await self._await_image_ready()
-            runtime = self._backend.runtime
-            if runtime is not None:
-                # Clear a leftover of the same name before claiming it — the create
-                # fails outright while one is around, and a cancelled call leaves one
-                # (see `_egress_container`). Same reason `_ensure_up` does it.
-                await force_remove_container(runtime, self._egress_container)
-            return await self._backend.run_in(
-                self.workspace, spec, name=self._egress_container
-            )
         # Two attempts, because a fault in the *runtime* (dead/broken container, daemon
         # hiccup, stale workdir mount) is not a fault in the code the model asked to run.
         # The workspace holds all durable state and the container is disposable, so a
@@ -386,21 +394,30 @@ class SandboxSession:
     ) -> PreviewHandle:
         """Run ``command`` as a live server over this workspace, reachable on a
         loopback host port. Replaces any preview already running here (one per
-        conversation). Raises :class:`SandboxError` if the server never binds."""
+        conversation). Raises :class:`SandboxError` if the server never serves.
+
+        Brings the whole session up first, rather than only the preview container: the
+        loopback port the operator's iframe loads is published by the sidecar, so a
+        preview started into a workspace whose fence is not up has nothing to be reached
+        through."""
         async with self._lock:
             self.touch()
             self._ensure_workspace()
+            await self._ensure_up()
             runtime = self._backend.runtime
             if runtime is None:  # disappeared since detection — fail closed
                 raise SandboxError("no container runtime available")
-            await self._await_image_ready()
             await self._stop_preview_locked()
             handle = await launch_preview(
                 runtime=runtime,
                 backend=self._backend,
                 workspace=self.workspace,
                 container=self._preview_container,
+                network=self._network,
+                sidecar=self._egress,
+                allow_dir=self._egress_dir,
                 token=token,
+                env=proxy_env(self.key),
                 command=command,
                 port=port,
                 startup_timeout_s=startup_timeout_s,
@@ -484,29 +501,30 @@ class SandboxSession:
             self._running = False
 
     async def _release_mounts(self) -> None:
-        """Remove every container that could still have this workspace bind-mounted at
-        ``/work``, under one wall-clock budget for the lot.
+        """Remove every container this conversation owns — then the network they were on —
+        under one wall-clock budget for the lot.
 
         All three names, unconditionally, because "this session started it" is not the
-        same question as "something is holding the mount". A cancelled network call
-        leaves its egress box running (the client dies, the container does not); the
-        orphan sweep builds a session over a directory some *earlier* process left
-        behind, whose exec and preview boxes may still be alive with that very
-        directory mounted; and boot reconciliation, which would normally have cleared
-        those, is skipped whenever the runtime was not up yet. Best-effort and bounded,
-        like every other removal — a daemon that has stopped answering must not park a
-        teardown that a batch of tombstoned conversations is waiting on."""
+        same question as "something is holding the mount". The orphan sweep builds a
+        session over a directory some *earlier* process left behind, whose exec, preview
+        and sidecar boxes may still be alive with that very directory mounted; and boot
+        reconciliation, which would normally have cleared those, is skipped whenever the
+        runtime was not up yet. The network comes last because it cannot be removed while
+        anything is still attached. Best-effort and bounded, like every other removal — a
+        daemon that has stopped answering must not park a teardown that a batch of
+        tombstoned conversations is waiting on."""
         runtime = self._backend.runtime
         if runtime is None:
             return
         loop = asyncio.get_running_loop()
         deadline = loop.time() + _MOUNT_RELEASE_BUDGET_S
-        for name in (self.container, self._preview_container, self._egress_container):
+        for name in (self.container, self._preview_container, self._egress):
             left = deadline - loop.time()
             if left <= 0:
                 logger.info("sandbox %s: gave up releasing the workspace mounts", self.key)
                 return
             await force_remove_container(runtime, name, timeout_s=left)
+        await remove_network(runtime, self._network, timeout_s=deadline - loop.time())
 
     def collect_text_files(
         self, *, max_file_bytes: int = 262_144, max_files: int = 2000
@@ -583,6 +601,12 @@ class SandboxSession:
             prepare_workspace(self.workspace)
 
     async def _ensure_up(self) -> None:
+        """Raise this conversation's fence, then the container that runs behind it.
+
+        The order is the containment. The network exists before anything joins it, and the
+        sidecar is up and answering before the box that will send its traffic there
+        starts — so there is no window in which a workspace container is running with its
+        exit policy not yet loaded. Any of the three failing raises, and nothing runs."""
         if self._running:
             return
         runtime = self._backend.runtime
@@ -590,8 +614,22 @@ class SandboxSession:
             raise SandboxError("no container runtime available")
         await self._await_image_ready()
         await self._kill_quietly(runtime)  # clear any stale same-named container
+        subnet = await create_internal_network(runtime, self._network)
+        await start_egress_sidecar(
+            runtime,
+            name=self._egress,
+            network=self._network,
+            subnet=subnet,
+            allow_dir=self._egress_dir,
+            image=self._proxy_image,
+        )
         err = await _start_idle_container(
-            self._backend, runtime, self.container, self.workspace
+            self._backend,
+            runtime,
+            self.container,
+            self.workspace,
+            network=self._network,
+            env=proxy_env(self.key),
         )
         if err is not None:
             raise SandboxError(f"failed to start sandbox session: {err.decode('utf-8', 'replace')}")
@@ -607,8 +645,22 @@ class SandboxSession:
         return argv  # type: ignore[return-value]  # _runtime set by _ensure_up
 
     async def _kill(self) -> None:
-        if self._runtime is not None:
-            await self._kill_quietly(self._runtime)
+        """Drop the whole fence, innermost first: a network cannot be removed while a
+        container is still attached to it, so the containers go, then the sidecar, then
+        the network. Used on the rebuild-and-retry path, where the next ``_ensure_up``
+        raises all three again.
+
+        The preview comes down with it. It is one of the containers on that network, and
+        the loopback port it is reached on belongs to the sidecar — so a rebuild that left
+        it running would leave the operator watching a port the new sidecar no longer
+        publishes, with nothing anywhere reporting that it had stopped."""
+        runtime = self._runtime
+        if runtime is None:
+            return
+        await self._stop_preview_locked()
+        await self._kill_quietly(runtime)
+        await stop_egress_sidecar(runtime, self._egress)
+        await remove_network(runtime, self._network)
 
     async def _kill_quietly(self, runtime: str) -> None:
         await force_remove_container(runtime, self.container)

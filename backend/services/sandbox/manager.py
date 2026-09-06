@@ -28,6 +28,7 @@ import shutil
 import time
 from collections.abc import Iterable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from core.concurrency import gather_bounded
 from core.vault import Vault
@@ -38,6 +39,10 @@ from .preview import PreviewHandle
 from .reconcile import reconcile as reconcile_leftovers
 from .seal import partial_marker
 from .session import ImageWarmup, LiveWork, SandboxSession
+
+if TYPE_CHECKING:  # `services.egress` reads `safe_key` from this package — importing it
+    # for real here would close the loop, and the type is all this module needs.
+    from services.egress import EgressPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -81,15 +86,22 @@ class SandboxSessionManager:
         backend: ContainerSandbox,
         vault: Vault,
         *,
+        egress: EgressPolicy,
         data_dir: Path,
         idle_ttl_s: float,
         reap_interval_s: float,
         excludes: Iterable[str],
+        proxy_image: str = "python:alpine",
         preview_startup_timeout_s: float = 20.0,
         max_sessions: int = 8,
     ) -> None:
         self._backend = backend
         self._vault = vault
+        # What each workspace may reach. The manager holds it (rather than each session)
+        # because writing the file the fence reads is a *per-key* act that has to happen
+        # before that key's first container exists — see `acquire`.
+        self._egress = egress
+        self._proxy_image = proxy_image
         self._work_root = data_dir / "sandbox" / "work"
         self._sealed_root = data_dir / "sandbox" / "sealed"
         self._idle_ttl = idle_ttl_s
@@ -162,7 +174,7 @@ class SandboxSessionManager:
                 if session is None:
                     other = self._tearing_down.get(safe)
                     if other is None:
-                        session = self._new_session(safe)
+                        session = self._new_session(safe, self._egress.allow_dir(key))
                         self._sessions[safe] = session
                         # Only a *new* arrival applies the cap: finding a session already
                         # live is the steady state, and re-reaping on every tool call
@@ -173,6 +185,13 @@ class SandboxSessionManager:
                     session.hold(holder)
                     break
             await other.wait()
+        if not session.is_warm:
+            # The fence's allowlist has to be on disk before the sidecar mounts the
+            # directory it lives in — a cold session's bring-up is the next thing that
+            # happens, and a fence that came up over an empty directory would refuse
+            # everything the operator has already allowed. A warm one already has it, and
+            # every later grant rewrites the file under the running proxy.
+            await self._egress.materialise(key)
         # Awaited rather than backgrounded, because the caller is about to start a
         # container: returning before the ones it displaced are actually gone would leave
         # the host over the cap at exactly the moment the cap matters. Awaited on a task
@@ -290,14 +309,16 @@ class SandboxSessionManager:
 
         await gather_bounded([seal(*item) for item in detached], _SEAL_CONCURRENCY)
 
-    def _new_session(self, safe: str) -> SandboxSession:
+    def _new_session(self, safe: str, egress_dir: Path) -> SandboxSession:
         return SandboxSession(
             safe,
             workspace=self._work_root / safe,
             sealed=self._sealed_root / f"{safe}.tar.enc.gz",
+            egress_dir=egress_dir,
             backend=self._backend,
             vault=self._vault,
             excludes=self._excludes,
+            proxy_image=self._proxy_image,
             warmup=self._image_warmup,
         )
 
@@ -442,6 +463,12 @@ class SandboxSessionManager:
         image = self._backend.image
         try:
             ready = await ensure_image(runtime, image)
+            # The proxy sidecar comes up on the same cold path and is the *first* box a
+            # session starts, so an unpulled image there would spend a session's whole
+            # bring-up budget on a download. Not part of `ready`: it is a small image, and
+            # a failure here is better reported by the create that actually needs it than
+            # as "the sandbox image is still downloading".
+            await ensure_image(runtime, self._proxy_image)
         except Exception:  # noqa: BLE001 — warming must never crash the background task
             logger.exception("sandbox: image warm-up failed unexpectedly")
             self._image_warmup.mark_done(False)
@@ -533,13 +560,20 @@ class SandboxSessionManager:
         overwrite the archive it came from. The dead process's containers come off
         the directory inside that leg too — see
         :meth:`SandboxSession._release_mounts`. Only called with the vault unlocked
-        — see :meth:`_sweep`."""
+        — see :meth:`_sweep`.
+
+        A directory name is all this path has, and the conversation key it was derived
+        from cannot be recovered from it — so these sessions get the allowlist directory
+        that *name* maps to (``dir_for``, not ``allow_dir``, which would encode an
+        already-encoded name). Nothing reads it: an allowlist is mounted by a container,
+        and this path starts none. It tears down, seals, and drops the session."""
         orphans: list[_Detached] = []
         async with self._lock:
             for safe in self._orphan_keys()[:_ORPHAN_SEALS_PER_SWEEP]:
                 event = asyncio.Event()
                 self._tearing_down[safe] = event
-                orphans.append((safe, self._new_session(safe), event))
+                session = self._new_session(safe, self._egress.dir_for(safe))
+                orphans.append((safe, session, event))
         if not orphans:
             return
         logger.info(

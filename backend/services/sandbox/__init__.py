@@ -19,6 +19,7 @@ from .base import (
 from .container import (
     ContainerSandbox,
     await_listening,
+    await_log_marker,
     detached_run_argv,
     discover_runtime,
     ensure_image,
@@ -53,6 +54,7 @@ __all__ = [
     "SandboxSpec",
     "ContainerSandbox",
     "await_listening",
+    "await_log_marker",
     "detached_run_argv",
     "discover_runtime",
     "ensure_image",

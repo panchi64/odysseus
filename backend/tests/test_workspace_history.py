@@ -17,6 +17,7 @@ from services.sandbox import ContainerSandbox, SandboxSessionManager
 from services.workspace_history import WorkspaceHistoryStore
 
 from ._helpers import client_app, collect_sse_events, patch_model_resolution
+from .conftest import egress_policy
 
 _EXCLUDES = Settings().sandbox_session_seal_excludes
 
@@ -33,6 +34,7 @@ def _manager(tmp_path, vault) -> SandboxSessionManager:
     return SandboxSessionManager(
         ContainerSandbox(),
         vault,
+        egress=egress_policy(tmp_path),
         data_dir=tmp_path,
         idle_ttl_s=1800.0,
         reap_interval_s=60.0,
