@@ -79,11 +79,15 @@ MODE_SCOPED_TOOLS: Mapping[str, frozenset[str]] = {
     # the failure the one-workspace rule exists to prevent; `code_run_host_command` goes
     # with it because its own sandboxed fence is a different (and, in a worktree,
     # redundant) boundary.
-    # `code_request_egress` is registered in the same category and deliberately *not*
-    # withheld with it: it widens the one allowlist both fences read, and code mode's
-    # shell is fenced by that same list. Withheld, that mode would have an exit it cannot
-    # request — a wall rather than a gate, which is the one shape this fence must not take.
-    "code": frozenset({"code_execute", "code_run_host_command"}),
+    # `code_request_egress` goes with them, which looks like a wall where a gate belongs
+    # and is not one: a grant widens the container's own proxy, and code mode has no
+    # container. Its shell is fenced on the host, where one proxy serves every confined
+    # process and filters against the installation-wide allowlist alone
+    # (`services/sandbox/host.confine` says why a grant cannot move that line). Offered
+    # here the tool would spend an operator approval on nothing and then tell the model to
+    # retry the command that failed. Withheld, the model reports the host it could not
+    # reach and the operator moves `egress_allowed_domains` — which is the truth.
+    "code": frozenset({"code_execute", "code_request_egress", "code_run_host_command"}),
 }
 
 

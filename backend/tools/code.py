@@ -322,8 +322,13 @@ def code_toolset() -> FunctionToolset[RunDeps]:
 
         Approval is per request: it is never granted standing, so a later call naming a
         different host asks again. What *is* remembered is the domain — once approved it
-        stays reachable for the rest of this conversation, so retry the code that failed
-        rather than asking a second time. The result lists everything you may now reach.
+        stays reachable from your own machine for the rest of this conversation, so retry
+        the code that failed rather than asking a second time. The result lists everything
+        you may now reach.
+
+        This widens your machine, not the operator's: a command approved onto their host
+        reaches only what their installation already allows, and nothing you ask for here
+        changes that.
         """
         policy = ctx.deps.caps.get_optional(EgressPolicy)
         if policy is None:
@@ -360,6 +365,10 @@ def code_toolset() -> FunctionToolset[RunDeps]:
         was actually applied (``confined``), so a permission error on one of those
         paths is the fence doing its job rather than something to work around.
         """
+        # The installation-wide allowlist, not this conversation's grants: one proxy
+        # serves every confined process on the host, so a grant folded in here would
+        # widen the fence around every other command running at the same moment and
+        # outlive this one (`services/sandbox/host.confine`).
         confinement = await resolve_confinement(settings)
         try:
             result = await run_on_host(command, timeout_s=timeout_s, confinement=confinement)

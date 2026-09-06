@@ -28,7 +28,7 @@ from services.sandbox.container import (
     runtime_fault_line,
     workspace_env_defaults,
 )
-from services.sandbox.host import _configure
+from services.sandbox.host import _configure, confine
 
 
 def _runtime_ready() -> bool:
@@ -342,9 +342,71 @@ async def test_confinement_is_off_when_the_operator_disables_it():
 async def test_a_disabled_confinement_still_runs_the_command():
     # The inverse of the sandbox rule, on purpose: the operator approved *this* command,
     # so a missing (or switched-off) fence means it runs unconfined and says so — not
-    # that an approved command silently refuses.
+    # that an approved command silently refuses. (The code-mode shell is the other way
+    # round; see `test_shell_fence.py`.)
     result = await run_on_host("echo ran", confinement=HostConfinement(False, "disabled"))
     assert result.ok and "ran" in result.stdout
+
+
+async def test_the_hatch_runs_where_and_with_what_it_was_told(tmp_path):
+    # `cwd` and `env` exist so the code-mode shell can share this spawn; the hatch itself
+    # passes neither, and a regression that dropped them would be silent there.
+    result = await run_on_host("pwd; echo $ODYSSEUS_TEST_MARKER", cwd=tmp_path, env={
+        "PATH": os.environ["PATH"],
+        "ODYSSEUS_TEST_MARKER": "carried",
+    })
+    assert result.ok
+    assert str(tmp_path.resolve()) in result.stdout
+    assert "carried" in result.stdout
+
+
+async def test_confining_one_command_leaves_what_every_other_one_reaches_alone(monkeypatch):
+    # One proxy serves every confined process here, and it filters each request against
+    # the *process-global* configuration. So teaching it a caller's domains would widen
+    # the fence around everything else running at that moment — another conversation's
+    # background server included — and leave it widened after this command exited: a
+    # per-call approval turned into a process-wide standing grant.
+    from sandbox_runtime import (
+        FilesystemConfig,
+        NetworkConfig,
+        SandboxManager,
+        SandboxRuntimeConfig,
+    )
+    from sandbox_runtime import manager as runtime_manager
+
+    seen: list = []
+
+    async def wrap(command, *, custom_config=None, **_kwargs):
+        # Stubbed rather than run: what a real wrap produces is seatbelt's or bubblewrap's
+        # business, and only on the machines that have them.
+        seen.append(custom_config)
+        return command
+
+    monkeypatch.setattr(SandboxManager, "wrap_with_sandbox", wrap)
+    before = SandboxManager.get_config()
+    SandboxManager.update_config(
+        SandboxRuntimeConfig(
+            network=NetworkConfig(allowed_domains=["pypi.org"], allow_local_binding=True),
+            filesystem=FilesystemConfig(deny_read=["/keys"], allow_write=["/tmp"]),
+        )
+    )
+    try:
+        await confine(
+            "curl https://files.example.com",
+            allowed_domains=["files.example.com"],
+            allow_write=["/work"],
+            deny_read=["/keys"],
+        )
+        # The filesystem half is per-call, because the OS wrapper is what enforces it...
+        [config] = seen
+        assert config.filesystem.allow_write == ["/work"]
+        # ...and the installation's allowlist is still the only thing the proxy will
+        # filter against for anything else on this host.
+        assert SandboxManager.get_config().network.allowed_domains == ["pypi.org"]
+    finally:
+        # Restored through the module global rather than `update_config`, which has no way
+        # to say "there was no configuration here".
+        runtime_manager._config = before
 
 
 async def test_confinement_denies_reading_the_data_directory(tmp_path):

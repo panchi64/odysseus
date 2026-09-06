@@ -62,3 +62,20 @@ def egress_policy(data_dir, domains: tuple[str, ...] = ("pypi.org",)):
     engine = make_engine("sqlite:///:memory:")
     init_db(engine)
     return EgressPolicy(engine, data_dir, domains)
+
+
+async def unfenced(
+    command: str,
+    *,
+    allowed_domains=(),
+    allow_write=(),
+    deny_read=(),
+) -> str:
+    """A ``Confiner`` that rewrites nothing — the shell's fence, stood down for a test.
+
+    The code-mode shell refuses to run anything unfenced, and the platform's confinement
+    is switched off for the whole suite (above), so every test that wants a command to
+    actually execute passes this. Wrapping in the real one instead would mean testing
+    seatbelt, on whichever machines happen to have it.
+    """
+    return command

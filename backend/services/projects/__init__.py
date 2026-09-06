@@ -10,6 +10,7 @@ from services.projects.store import (
     visible_project_ids,
 )
 from services.projects.worktree import (
+    BRANCH_PREFIX,
     Diff,
     WorktreeBusyError,
     WorktreeError,
@@ -19,6 +20,7 @@ from services.projects.worktree import (
 )
 
 __all__ = [
+    "BRANCH_PREFIX",
     "Diff",
     "ProjectStore",
     "ProjectView",

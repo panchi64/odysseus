@@ -22,7 +22,13 @@ from core.config import Settings
 from core.container import ServiceContainer
 from runs import Run, RunRegistry, RunStatus, RunStream
 from services.egress import EgressPolicy
-from services.sandbox import SandboxError, SandboxResult, SandboxSessionManager, SandboxSpec
+from services.sandbox import (
+    HostConfinement,
+    SandboxError,
+    SandboxResult,
+    SandboxSessionManager,
+    SandboxSpec,
+)
 from tools import RunDeps, build_agent_toolsets
 from tools import code as code_module
 from tools.code import code_toolset
@@ -91,6 +97,9 @@ class FakeEgressPolicy:
     async def allow(self, key: str, domains) -> frozenset[str]:
         self.granted.append((key, list(domains)))
         self.allowed |= set(domains)
+        return frozenset(self.allowed)
+
+    async def allowed_for(self, key: str) -> frozenset[str]:
         return frozenset(self.allowed)
 
 
@@ -521,3 +530,42 @@ async def test_approved_host_command_runs_on_host():
     assert run.status is RunStatus.done
     completed = next(b for b in _bodies(run) if b.type == "tool.completed")
     assert "HOSTRAN" in completed.result["stdout"]
+
+
+async def test_the_hatch_is_fenced_with_the_installations_allowlist_not_the_threads(
+    monkeypatch,
+):
+    """One proxy serves every confined process on the host, and it filters against the
+    configuration installed at boot. A domain granted to *this* thread could only reach an
+    approved host command by being written there — where it would also widen the fence
+    around every other command running at that moment and outlive this one."""
+    egress = FakeEgressPolicy()
+    await egress.allow("conv-1", ["files.example.com"])
+    seen: list = []
+
+    async def capture(command, *, confinement=None, **_kwargs):
+        seen.append(confinement)
+        return SandboxResult(exit_code=0, stdout="", stderr="")
+
+    async def active(_settings):
+        return HostConfinement(True, allow_write=("/tmp",), allowed_domains=("pypi.org",))
+
+    monkeypatch.setattr("tools.code.run_on_host", capture)
+    monkeypatch.setattr("tools.code.resolve_confinement", active)
+
+    run = Run(id="run-1", kind="chat", owner_id="operator", stream=RunStream())
+    ctx = RunContext(
+        deps=_one_tool_deps(run, None, egress), model=TestModel(), usage=RunUsage()
+    )
+    toolset = code_toolset()
+    tools = await toolset.get_tools(ctx)
+    await toolset.call_tool(
+        "run_host_command",
+        {"command": "echo hi", "explanation": "x"},
+        ctx,
+        tools["run_host_command"],
+    )
+
+    [confinement] = seen
+    assert set(confinement.allowed_domains) == {"pypi.org"}
+    assert confinement.allow_write == ("/tmp",)  # nothing else was disturbed

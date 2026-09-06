@@ -30,13 +30,13 @@ from .container import (
 from .detect import detect_sandbox
 from .host import (
     HostConfinement,
-    HostExecutionError,
+    confine,
     resolve_confinement,
-    run_on_host,
     shutdown_confinement,
 )
 from .manager import SandboxSessionManager
 from .preview import PreviewHandle
+from .process import HostExecutionError, kill_tree, run_on_host, spawn_confined
 from .session import LiveWork, SandboxSession
 from .staging import (
     STAGE_DIR,
@@ -73,7 +73,10 @@ __all__ = [
     "suffixed",
     "HostConfinement",
     "HostExecutionError",
+    "confine",
+    "kill_tree",
     "resolve_confinement",
     "run_on_host",
     "shutdown_confinement",
+    "spawn_confined",
 ]

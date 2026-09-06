@@ -38,6 +38,8 @@ from tools.deps import RunDeps
 from tools.shell import shell_toolset
 from tools.workspace import run_workspace
 
+from .conftest import unfenced
+
 OWNER = "operator"
 
 
@@ -256,11 +258,11 @@ async def _status(cwd: Path) -> tuple[int, str]:
 class TestShellIsCodingOnly:
     async def test_a_chat_run_is_refused_even_if_the_tool_is_reachable(self, tmp_path):
         # `mode_disabled_tools` normally hides these from a chat run. That is a filter,
-        # and a filter is the wrong last line of defence between an unfenced host command
-        # and a chat thread — so the toolset checks too. Calling it directly is exactly
-        # the scenario a filter regression would produce.
+        # and a filter is the wrong last line of defence between a host command and a chat
+        # thread — so the toolset checks too. Calling it directly is exactly the scenario
+        # a filter regression would produce.
         ctx = _ctx(_caps(tmp_path), conversation_id="conv-a")
-        result = await shell_toolset().call_tool(
+        result = await shell_toolset(confiner=unfenced).call_tool(
             "run_command",
             {"command": "echo hi"},
             ctx,
@@ -271,18 +273,19 @@ class TestShellIsCodingOnly:
 
 class TestShellRecoverableFailures:
     async def test_a_command_the_os_wont_spawn_is_a_retry_not_a_dead_run(self, tmp_path):
-        """The harness returns what the model can act on — a denied command, a working
-        directory that vanished, a command the OS refuses to spawn — as `ModelRetry`, so
-        the turn continues and the agent tries something else. Only failures it could do
-        nothing about still abort.
+        """What the model can act on — a refused command, a working directory that
+        vanished, a command the OS will not spawn — comes back as `ModelRetry`, so the turn
+        continues and the agent tries something else. Only failures it could do nothing
+        about still abort.
 
-        Pinned because it is behaviour we *inherit*: it arrived in a harness release
-        rather than in code of ours, so nothing else here would notice it going away.
+        The confiner is explicit: these tools refuse outright without a fence, and the
+        suite runs with the platform's turned off (see `conftest`), so a test that wants
+        commands to actually run has to supply one.
         """
         root = await _repo(tmp_path / "project")
         caps = _caps(tmp_path, {"proj-1": root})
         ctx = _ctx(caps, conversation_id="conv-a", project_id="proj-1", mode="code")
-        toolset = shell_toolset()
+        toolset = shell_toolset(confiner=unfenced)
         tools = await toolset.get_tools(ctx)
 
         async def run(command: str):
@@ -297,7 +300,7 @@ class TestShellRecoverableFailures:
         # engine sets on the re-invocation, so drive the post-approval call directly.
         ctx.tool_call_approved = True
 
-        # A destructive command the harness denies by name.
+        # A destructive command the denylist refuses by name.
         with pytest.raises(ModelRetry):
             await run("rm -rf /")
 
