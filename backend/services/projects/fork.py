@@ -14,8 +14,8 @@ child nobody delegates to.
 **Merging back writes the parent's worktree, never the operator's tree.** That is the
 whole point of the fence: the operator's own files are still only ever written by the
 merge they press themselves. A conflict is reported, never resolved and never forced —
-the child's branch and checkout are kept exactly as they are so the work can be looked
-at, retried, or thrown away.
+the merge aborts and touches neither tree, and what becomes of the child afterwards is
+its caller's to decide (the delegation that asked for the fork throws it away).
 """
 
 from __future__ import annotations
@@ -92,9 +92,9 @@ async def merge_child_back(
     a merge git refuses outright — "your local changes would be overwritten" is not an
     answer the operator can act on.
 
-    A conflict leaves everything where it is. The merge is aborted so the parent's tree
-    stays usable, and the child's branch and checkout survive so the work is still
-    reachable; only a clean landing retires them.
+    A conflict leaves everything where it is: the merge is aborted so the parent's tree
+    stays usable, and the child is left exactly as it was for its caller to retire or
+    keep. Only a clean landing retires it *here*.
     """
     await commit_worktree(child, "Delegated agent changes")
     await commit_worktree(parent_path, "Agent changes (before a delegated merge)")
@@ -123,9 +123,19 @@ async def merge_child_back(
             raise WorktreeError((err or out).strip() or "the merge failed")
         return MergeReport(merged=False, files=[], conflicts=conflicts)
 
+    await remove_child_worktree(root=root, child=child, branch=branch)
+    return MergeReport(merged=True, files=files, deleted=deleted)
+
+
+async def remove_child_worktree(*, root: Path, child: Path, branch: str) -> None:
+    """Retire one delegated checkout — its worktree, then the branch it was on.
+
+    Best-effort and idempotent, because the callers are a clean merge (which retires the
+    child it just landed), a discarded conversation, and the delegation's own ``finally``
+    — and that last one must not fail over a checkout one of the others already took.
+    """
     await run_git(root, "worktree", "remove", "--force", str(child))
     await run_git(root, "branch", "-D", branch)
-    return MergeReport(merged=True, files=files, deleted=deleted)
 
 
 async def discard_children(
@@ -147,8 +157,7 @@ async def discard_children(
         return
     for branch in _paths(out):
         child = child_path_for(worktrees_dir, project_id, conversation_id, branch[len(prefix) :])
-        await run_git(root, "worktree", "remove", "--force", str(child))
-        await run_git(root, "branch", "-D", branch)
+        await remove_child_worktree(root=root, child=child, branch=branch)
     # A child whose directory the operator had already deleted is removed by neither of
     # those; without the prune its registration outlives the branch it belonged to.
     await run_git(root, "worktree", "prune")

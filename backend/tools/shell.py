@@ -284,31 +284,43 @@ def _tools_for(shell: FencedShell) -> FunctionToolset[RunDeps]:
 
 
 def _toolset_for(
-    root: Path, *, confiner: Confiner, settings: Settings
+    root: Path,
+    *,
+    confiner: Confiner,
+    settings: Settings,
+    shells: list[FencedShell] | None = None,
 ) -> AbstractToolset[RunDeps]:
-    return _tools_for(
-        FencedShell(
-            root,
-            confiner=confiner,
-            # The same paths the host hatch cannot read: one derivation, so a path added
-            # for one fence cannot be left out of the other.
-            deny_read=denied_reads(settings),
-            allow_write=_writable(root),
-            default_timeout=_TIMEOUT_S,
-            max_output_chars=_MAX_OUTPUT_CHARS,
-        )
+    shell = FencedShell(
+        root,
+        confiner=confiner,
+        # The same paths the host hatch cannot read: one derivation, so a path added
+        # for one fence cannot be left out of the other.
+        deny_read=denied_reads(settings),
+        allow_write=_writable(root),
+        default_timeout=_TIMEOUT_S,
+        max_output_chars=_MAX_OUTPUT_CHARS,
     )
+    if shells is not None:
+        shells.append(shell)
+    return _tools_for(shell)
 
 
-def shell_toolset(*, confiner: Confiner | None = None) -> AbstractToolset[RunDeps]:
+def shell_toolset(
+    *, confiner: Confiner | None = None, shells: list[FencedShell] | None = None
+) -> AbstractToolset[RunDeps]:
     """The `shell` category, built once per turn and rebound per run's worktree.
 
     ``confiner`` replaces the platform's fence, and is how a test drives these tools
     without running seatbelt over its own machine. Passing one asserts that commands are
     fenced, so it is never a way to switch the fence off.
+
+    ``shells`` collects every shell this toolset binds, for the one caller that owns their
+    lifetime: a conversation's shell outlives its turns on purpose and is stopped through
+    `stop_command`, while a delegated run's workspace is taken away when it ends, so what
+    it left running has to be reaped with it (``tools/worker.py``).
     """
     settings = get_settings()
-    build = partial(_toolset_for, confiner=confiner or confine, settings=settings)
+    build = partial(_toolset_for, confiner=confiner or confine, settings=settings, shells=shells)
     return WorkspaceToolset(
         "shell",
         build(Path("/nonexistent-template-root")),

@@ -425,21 +425,47 @@ async def test_request_egress_records_and_returns_domains():
     assert result["allowed"] == sorted({"pypi.org", *domains})
 
 
-async def test_request_egress_is_not_offered_inside_a_delegation():
-    # A delegate's run was approved as one act, so there is no operator left to ask.
-    # Whether a call pauses is settled from the tool definition before the function runs,
-    # so a body that refused would refuse only *after* the operator had been stopped —
-    # the tool is withheld instead, and the child reports the host it could not reach.
+async def test_the_tools_that_ask_are_not_offered_inside_a_delegation():
+    # A delegate's run was approved as one act, so there is no operator left to ask —
+    # for a host off the allowlist or for the operator's own machine. Whether a call
+    # pauses is settled from the tool definition before the function runs, so a body that
+    # refused would refuse only *after* the operator had been stopped, and a child run has
+    # nowhere to put a deferred call at all. Both are withheld instead, and the child
+    # reports what it could not do.
     run = Run(id="t", kind="chat", owner_id="operator", stream=RunStream())
     toolset = code_toolset()
+    asking = {"request_egress", "run_host_command"}
 
     delegated = _one_tool_deps(run, None, FakeEgressPolicy(), delegated_approved=True)
     ctx = RunContext(deps=delegated, model=TestModel(), usage=RunUsage())
-    assert "request_egress" not in await toolset.get_tools(ctx)
+    assert not asking & set(await toolset.get_tools(ctx))
 
     ordinary = _one_tool_deps(run, None, FakeEgressPolicy())
     ctx = RunContext(deps=ordinary, model=TestModel(), usage=RunUsage())
-    assert "request_egress" in await toolset.get_tools(ctx)
+    assert asking <= set(await toolset.get_tools(ctx))
+
+
+async def test_a_delegate_is_not_sent_after_tools_it_was_never_offered():
+    # The other half of withholding them. A delegated run is composed straight from the
+    # categories, so nothing is namespaced and the asking tools are gone — text telling a
+    # worker to call `code_request_egress` or the `files_*` tools spends its budget on
+    # names that do not resolve, instead of on reporting the host it could not reach.
+    run = Run(id="t", kind="chat", owner_id="operator", stream=RunStream())
+    toolset = code_toolset()
+
+    delegated = _one_tool_deps(run, None, delegated_approved=True)
+    ctx = RunContext(deps=delegated, model=TestModel(), usage=RunUsage())
+    described = (await toolset.get_tools(ctx))["execute"].tool_def.description or ""
+    assert "Your file tools" in described  # the wording it did get
+    assert "code_request_egress" not in described
+    assert "files_*" not in described
+
+    denied = SandboxResult(exit_code=1, stdout="", stderr="odysseus-egress: denied")
+    manager = _CannedManager(_CannedSession(result=denied))
+    child = await _run_one_tool("code_execute", sessions=manager, delegated_approved=True)
+    hint = next(b for b in _bodies(child) if b.type == "tool.completed").result["error"]
+    assert "code_request_egress" not in hint
+    assert "report" in hint  # what it does instead
 
 
 async def test_request_egress_degrades_without_a_policy():

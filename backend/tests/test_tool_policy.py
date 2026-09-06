@@ -177,6 +177,7 @@ async def test_booted_app_assembles_the_same_catalog():
         # theirs). A name missing here is a tool that parks the run but can never be
         # granted for the conversation, so the operator is asked again on every call.
         assert app.state.gated_tools == {
+            "agents_delegate_task",
             "corpus_retrieve",
             "conversations_search",
             "shell_run_command",

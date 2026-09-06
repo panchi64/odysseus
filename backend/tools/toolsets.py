@@ -42,6 +42,7 @@ from pydantic_ai import AbstractToolset, CombinedToolset, RunContext, ToolDefini
 from services.permissions import beyond_scope
 from services.tool_sensitivity import declared_sensitivity
 
+from .agents import GATED_TOOLS as _AGENTS_GATED
 from .agents import agents_toolset
 from .builtin import builtin_toolset
 from .code import code_toolset
@@ -59,7 +60,7 @@ from .shell import shell_toolset
 #: manifest; the core ones have no manifest, so they are collected here and seeded into
 #: `app.state.gated_tools` at assembly. A name missing from that union is missing from the
 #: operator's approval-scope vocabulary, which is what makes a grant possible.
-CORE_GATED_TOOLS: frozenset[str] = _SHELL_GATED
+CORE_GATED_TOOLS: frozenset[str] = _SHELL_GATED | _AGENTS_GATED
 
 
 def _enabled_gate(ctx: RunContext[RunDeps], tool_def: ToolDefinition) -> bool:

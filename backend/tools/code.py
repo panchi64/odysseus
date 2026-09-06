@@ -24,6 +24,7 @@ never silently falls back to the host.
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from typing import Literal
 
 from pydantic_ai import FunctionToolset, RunContext, ToolDefinition
@@ -102,6 +103,7 @@ def _failure_hint(
     memory: str,
     pids_limit: int,
     sandboxed: bool,
+    delegated: bool = False,
 ) -> str:
     """A short, plain reason for a failed run, naming the actual configured cap that
     was most likely hit — stderr is often empty for a hard kill, so being precise
@@ -133,6 +135,16 @@ def _failure_hint(
                 "module) — then re-run this code unchanged."
             )
         if _looks_like_egress_denied(stderr + "\n" + stdout):
+            if delegated:
+                # A delegate has no egress request to make — it is withheld, because
+                # there is nobody in its run to answer one. Sending it after the tool
+                # anyway costs it turns on a name that does not resolve.
+                return (
+                    "That host is not on your egress allowlist, so the connection was "
+                    "refused before it left your machine — the code itself is fine. You "
+                    "cannot widen it from here: name the host in your report and let the "
+                    "agent that delegated to you ask for it."
+                )
             return (
                 "That host is not on your egress allowlist, so the connection was "
                 "refused before it left your machine — the code itself is fine. Call "
@@ -154,7 +166,7 @@ def _failure_hint(
     return f"It exited with a non-zero status ({exit_code}) and produced no output."
 
 
-def _exec_result(result, settings: Settings, *, sandboxed: bool) -> dict:
+def _exec_result(result, settings: Settings, *, sandboxed: bool, delegated: bool = False) -> dict:
     """Shape an execution result for the model: an explicit success flag, stdout and
     stderr **whole**, and on failure a legible hint naming which configured cap was
     likely hit.
@@ -179,15 +191,35 @@ def _exec_result(result, settings: Settings, *, sandboxed: bool) -> dict:
             memory=settings.sandbox_memory,
             pids_limit=settings.sandbox_pids_limit,
             sandboxed=sandboxed,
+            delegated=delegated,
         )
     return payload
 
 
-def _execute_description(settings: Settings) -> str:
+def _execute_description(settings: Settings, *, delegated: bool = False) -> str:
     """The `execute` tool's description, generated fresh per toolset build (an
     explicit `description=` override — see `FunctionToolset.tool`) so it always states
     the sandbox's *actual* configured resource caps rather than a guess the model has
-    no way to verify, and is precise enough to self-diagnose a 137/pid-cap failure."""
+    no way to verify, and is precise enough to self-diagnose a 137/pid-cap failure.
+
+    ``delegated`` swaps the two sentences that name *other* tools. A delegated run is
+    composed straight from the categories, so nothing is namespaced there and the tools
+    that ask the operator something are withheld — the ordinary wording would send a
+    worker calling names that do not resolve.
+    """
+    files = (
+        "Your file tools act on this same working directory"
+        if delegated
+        else "The `files_*` tools act on this same working directory"
+    )
+    ask = (
+        "Any other host is refused, and there is nobody here to ask: say in your report "
+        "which host you could not reach, and get on with what you can do without it."
+        if delegated
+        else "Any other host is refused until you ask for it: call `code_request_egress` "
+        "with the domains you need and why, and once it is approved retry the same code "
+        "unchanged."
+    )
     return (
         "Run `python` (the default `language`) or a `bash` script on your own "
         "computer — a private Linux machine that is yours alone (it is not the "
@@ -204,12 +236,10 @@ def _execute_description(settings: Settings) -> str:
         "machine. Keep anything that matters in your working directory. After a long "
         "stretch of inactivity the machine is reclaimed: your files are kept and "
         "restored, but installed packages may need reinstalling.\n\n"
-        "The `files_*` tools act on this same working directory: use them to read, "
+        f"{files}: use them to read, "
         "write, edit, search and list it, and use this tool to run things.\n\n"
         "The package registries and GitHub are already reachable, so fetching from them "
-        "needs no permission — install as freely as you like. Any other host is refused "
-        "until you ask for it: call `code_request_egress` with the domains you need and "
-        "why, and once it is approved retry the same code unchanged. `pip` is what the "
+        f"needs no permission — install as freely as you like. {ask} `pip` is what the "
         "machine ships with; anything else you want (`uv`, for instance, or a `git` to "
         "clone with) you install with it first — a "
         "package's command lands in `/work/.local/bin`, which is not on your `PATH`, so "
@@ -240,8 +270,20 @@ def code_toolset() -> FunctionToolset[RunDeps]:
     # actual configured caps, not a value baked in at import time.
     settings = get_settings()
     toolset: FunctionToolset[RunDeps] = FunctionToolset()
+    # Both wordings, built once: which of them a run is offered depends on who is running
+    # it, and that is only known per call.
+    described = {
+        False: _execute_description(settings),
+        True: _execute_description(settings, delegated=True),
+    }
 
-    @toolset.tool(description=_execute_description(settings))
+    async def _worded_for_who_is_running(
+        ctx: RunContext[RunDeps], tool_def: ToolDefinition
+    ) -> ToolDefinition:
+        """Describe this tool in terms of the tools the run actually has."""
+        return replace(tool_def, description=described[ctx.deps.delegated_approved])
+
+    @toolset.tool(description=described[False], prepare=_worded_for_who_is_running)
     async def execute(
         ctx: RunContext[RunDeps],
         code: str,
@@ -250,8 +292,9 @@ def code_toolset() -> FunctionToolset[RunDeps]:
         timeout_s: float = 30.0,
     ) -> dict:
         # The model-facing description is generated by `_execute_description` above
-        # (registered via `description=`) so it can interpolate the live config caps —
-        # a plain docstring can't. Keep this in sync when the shape changes.
+        # (registered via `description=`, swapped per run by the prepare) so it can
+        # interpolate the live config caps — a plain docstring can't. Keep this in sync
+        # when the shape changes.
         sessions = ctx.deps.caps.get_optional(SandboxSessionManager)
         if sessions is None:
             return {
@@ -290,20 +333,24 @@ def code_toolset() -> FunctionToolset[RunDeps]:
             # Any sandbox/infra failure comes back as something the model can act
             # on — it never escapes to crash the run.
             return {"ok": False, "error": f"Your computer could not run the code: {exc}"}
-        return _exec_result(result, settings, sandboxed=True)
+        return _exec_result(
+            result, settings, sandboxed=True, delegated=ctx.deps.delegated_approved
+        )
 
     async def _only_where_there_is_someone_to_ask(
         ctx: RunContext[RunDeps], tool_def: ToolDefinition
     ) -> ToolDefinition | None:
-        """Withhold the request from a delegated run.
+        """Withhold a tool that has to ask from a delegated run.
 
-        Asking is the whole of what this tool does, and a delegate has nobody to ask: its
+        Both tools this guards end in a question, and a delegate has nobody to ask: its
         work was approved as one act, in a conversation that belongs to its parent.
         Whether a call pauses is settled from the tool definition *before* the function
         runs, so a body that answered "report this upwards" would only ever be reached
-        after an operator had already been stopped for it. Withholding is the honest form
-        of the same fact, and the child then does what it would have done anyway — say in
-        its report which host it could not reach.
+        after an operator had already been stopped for it — and a child run has no output
+        type for a deferred call, so the question would end it outright. Withholding is
+        the honest form of the same fact, and the child then does what it would have done
+        anyway: say in its report which host it could not reach, or which change to the
+        operator's own machine it could not make.
         """
         return None if ctx.deps.delegated_approved else tool_def
 
@@ -345,7 +392,7 @@ def code_toolset() -> FunctionToolset[RunDeps]:
             return {"ok": False, "error": str(exc)}
         return {"allowed": sorted(allowed)}
 
-    @toolset.tool(requires_approval=True)
+    @toolset.tool(requires_approval=True, prepare=_only_where_there_is_someone_to_ask)
     async def run_host_command(
         ctx: RunContext[RunDeps],
         command: str,

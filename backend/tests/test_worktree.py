@@ -340,6 +340,23 @@ class TestFork:
         assert report.deleted == ["hello.txt"]
         assert report.files == []
 
+    async def test_discarding_one_child_takes_its_branch_with_it(self, tmp_path):
+        # What a delegation does in its `finally`, whatever became of the work: the id
+        # naming this checkout lives only in the call that asked for it, so one left
+        # behind is a tree and a branch nothing can ever reach again. It runs after a
+        # clean merge has already retired the same child, so it must also be idempotent.
+        root, manager, _parent, child = await self._forked(tmp_path)
+        where = {"project_id": "p", "root": root, "conversation_id": "c1"}
+
+        await manager.discard_child(**where, delegation_id="d1")
+        await manager.discard_child(**where, delegation_id="d1")
+
+        assert not child.path.exists()
+        code, _, _ = await run_git(root, "rev-parse", "--verify", child.branch)
+        assert code != 0
+        # The parent is untouched — a discarded child is not a discarded conversation.
+        assert manager.holder("p") == "c1"
+
     async def test_a_conversation_with_no_checkout_has_nothing_to_fork(self, tmp_path):
         root = await _repo(tmp_path)
         with pytest.raises(WorktreeError):

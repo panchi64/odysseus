@@ -61,7 +61,13 @@ from pathlib import Path
 from core.exceptions import InvalidInputError
 from core.fork import MergeReport
 
-from .fork import add_child_worktree, child_path_for, discard_children, merge_child_back
+from .fork import (
+    add_child_worktree,
+    child_path_for,
+    discard_children,
+    merge_child_back,
+    remove_child_worktree,
+)
 from .repo import (
     AUTHOR,
     WorktreeError,
@@ -273,6 +279,28 @@ class WorktreeManager:
                 root=root,
                 parent_path=self.path_for(project_id),
                 child=child,
+                branch=child_branch_for(conversation_id, delegation_id),
+            )
+
+    async def discard_child(
+        self, *, project_id: str, root: Path, conversation_id: str, delegation_id: str
+    ) -> None:
+        """Throw one delegated checkout away, whatever became of its work.
+
+        The delegation's own cleanup, and deliberately unconditional: the id naming this
+        child lives only in the call that asked for the fork, so a checkout left behind is
+        one nothing can ever reach again. A clean merge has already retired it, which is
+        why this is idempotent rather than an error.
+
+        Under the lock like every other mutator: one model response can carry two
+        delegations, and `worktree remove` racing another child's `merge` contends on
+        git's own ref and worktree admin locks — one of the two then fails, and a failed
+        merge is a second worker's work thrown away.
+        """
+        async with self._lock:
+            await remove_child_worktree(
+                root=root,
+                child=self.fork_path(project_id, conversation_id, delegation_id),
                 branch=child_branch_for(conversation_id, delegation_id),
             )
 

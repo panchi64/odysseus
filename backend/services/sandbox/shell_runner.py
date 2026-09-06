@@ -227,6 +227,17 @@ class FencedShell:
         _unlink(bg.out_path, bg.err_path)
         return self._capped("\n".join(parts))
 
+    async def shutdown(self) -> None:
+        """Stop everything still running here, for a shell whose workspace is going away.
+
+        The agent is told to stop what it starts, and one that ran out of time or was
+        cancelled never got there. A shell that outlives its turn can wait for that call;
+        a delegated run's cannot — its ids lived only in a transcript that has ended, and
+        its processes were started in sessions of their own, so nothing else reaps them.
+        """
+        for command_id in list(self._background):
+            await self.stop(command_id)
+
     async def _spawn(
         self, command: str, domains: Iterable[str], out: IO[bytes], err: IO[bytes]
     ) -> asyncio.subprocess.Process:
