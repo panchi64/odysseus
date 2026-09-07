@@ -101,6 +101,7 @@ export function toSummary(dto: ConversationSummaryDTO): ChatSummary {
     activity: dto.activity ?? undefined,
     mode: sessionMode(dto.mode ?? undefined),
     workspace: dto.workspace ?? undefined,
+    projectId: dto.project_id ?? undefined,
   };
 }
 

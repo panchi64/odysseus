@@ -581,11 +581,15 @@ export interface ChatSummary {
   /** What kind of work this thread is. The rail shows one mode at a time, so a
    *  summary that didn't carry it could not be filed anywhere. */
   mode: SessionMode;
-  /** The **basename** of the directory a code thread works in — the heading the rail
-   *  groups it under. Absent for every other mode, and for a code thread whose
-   *  project has since been deleted. Never a path: the backend resolves it and the
-   *  full path stays there. */
+  /** The **basename** of the directory a code thread works in. Absent for every other
+   *  mode, and for a code thread whose project has since been deleted. Never a path:
+   *  the backend resolves it and the full path stays there. */
   workspace?: string;
+  /** The project that directory belongs to — what the rail actually files the thread
+   *  under. The rail lists every directory the operator works in, including ones with
+   *  no threads yet, so it groups by joining on this rather than on the name above;
+   *  two directories can share a basename and filing by name would merge them. */
+  projectId?: string;
 }
 
 /** How far the model may go in a thread — the backend's `services/permissions`

@@ -19,8 +19,14 @@ import {
 } from "../data";
 import { sessionModeSpec } from "~/lib/modes";
 import { sendBlockedReason, setSelectedModel } from "~/lib/stores/models";
-import { activeSessionMode, codeProjectId } from "~/lib/stores/sessionMode";
+import {
+  activeSessionMode,
+  codeProjectId,
+  setCodeProjectId,
+} from "~/lib/stores/sessionMode";
 import { createComposerAttachments } from "~/features/uploads/data";
+import { useProjects } from "~/lib/stores/projects";
+import { directoryLabel, focusAddDirectory } from "../addDirectory";
 import { ChatRoomHeader } from "../components/ChatRoomHeader";
 import { ChatViewportMounts } from "../components/ChatViewportMounts";
 import { ContextRing } from "../components/ContextRing";
@@ -71,18 +77,42 @@ export function ChatRoomScreen(): JSX.Element {
   // Straight from the app-wide store, not through the room controller: the mode is
   // the window's, and re-exposing it on the chat handle only hid that.
   const mode = activeSessionMode;
+  const projects = useProjects();
+  /** This thread works in a directory on the operator's machine, not in a sandbox. */
+  const rooted = () => sessionModeSpec(mode()).workspace === "worktree";
+
+  /** The project a **staged** worktree thread would work in — undefined once the thread
+   *  is saved, and for every sandbox mode. Read by both the send gate (which needs to
+   *  know the directory can host a worktree) and the header's subtitle (which names it),
+   *  so the two can't disagree about which directory is in play. */
+  const stagedProject = createMemo(() => {
+    if (!rooted() || currentId() !== null) return undefined;
+    const id = codeProjectId();
+    return id ? projects.latest?.projects.find((p) => p.id === id) : undefined;
+  });
 
   /** Why SEND is unavailable, or null. The model/context gate, plus the one thing
    *  only this screen can know: a worktree thread is cut from a directory's repository,
    *  so a send that names no directory is a turn the backend will refuse with a 422.
    *  Saying so before the message is committed is the same courtesy the context gate
-   *  already extends — the alternative is losing a typed message to an error. */
-  const sendBlocked = (): string | null =>
-    sessionModeSpec(mode()).workspace === "worktree" &&
-    currentId() === null &&
-    !codeProjectId()
-      ? "Choose a directory for this code session"
-      : sendBlockedReason();
+   *  already extends — the alternative is losing a typed message to an error.
+   *
+   *  It should now be near-unreachable: a code thread is started *from* its directory,
+   *  so there is no ordinary path to a staged one with none. It stays as the backstop
+   *  for the paths that don't go through the rail. */
+  const sendBlocked = (): string | null => {
+    if (rooted() && currentId() === null) {
+      if (!codeProjectId())
+        return "Choose a directory in the rail for this code session";
+      // The directory is staged but cannot host a worktree. The rail's heading already
+      // carries this as a marker; saying it again here is what stops a typed message
+      // being spent on a turn the backend is certain to refuse.
+      const project = stagedProject();
+      if (project && !project.repo.isGitRepo)
+        return `${project.name} isn't a git repository yet`;
+    }
+    return sendBlockedReason();
+  };
 
   // Follow the stream: pinned to the bottom while the answer arrives, yielding the
   // moment the operator scrolls up to read back (see `transcriptScroll.ts`).
@@ -134,7 +164,40 @@ export function ChatRoomScreen(): JSX.Element {
     markWarmResolved();
   });
 
-  const startNew = () => setCurrentId(null);
+  /** The directory a staged worktree thread will work in, as the header names it.
+   *  Nothing for a saved thread — its branch chip is the answer there. */
+  const workspaceHint = (): string | undefined => {
+    const project = stagedProject();
+    return project ? directoryLabel(project) : undefined;
+  };
+
+  /** Off the open thread and onto a fresh composer. Unconditional — this is where the
+   *  room goes when the thread it was showing is *gone*, so it can never decline. */
+  const clearThread = () => setCurrentId(null);
+
+  /** A fresh composer, **asked for**.
+   *
+   *  In a worktree mode it lands in a directory rather than nowhere, resolved in the
+   *  order the operator would expect: whatever is already staged, else the directory of
+   *  the thread they are standing in, else the one they opened most recently. The staged
+   *  value alone is not enough to decide on — it is a memory-only signal, so it is unset
+   *  after every reload, and keying the fallback on it made the reflex shortcut dead on
+   *  a fresh window even with a dozen directories filed.
+   *
+   *  Only with genuinely nowhere to start does this decline, and then it puts the
+   *  operator in front of the rail's ADD DIRECTORY button rather than raising a modal OS
+   *  chooser off a keystroke they made without looking. */
+  const startNew = () => {
+    if (!rooted()) return clearThread();
+    if (!codeProjectId()) {
+      const target =
+        currentSummary()?.projectId ?? projects.latest?.projects[0]?.id;
+      if (!target) {
+        if (focusAddDirectory()) return;
+      } else setCodeProjectId(target);
+    }
+    clearThread();
+  };
 
   // Stop the live run for real: cancel on the backend, abort the local stream.
   // `cancel()` surfaces its own backend error; this only adds the success note.
@@ -187,7 +250,7 @@ export function ChatRoomScreen(): JSX.Element {
     sending: stream.sending,
     cancel: stream.cancel,
     removeMessage: stream.removeMessage,
-    onDeleted: startNew,
+    onDeleted: clearThread,
     onForked: setCurrentId,
   });
   // A "working" throbber sits on the title while the backend names the thread —
@@ -202,6 +265,7 @@ export function ChatRoomScreen(): JSX.Element {
         <ChatRoomHeader
           title={headerTitle}
           reveal={headerReveal}
+          workspaceHint={workspaceHint}
           working={titleWorking}
           conversationId={currentId}
           streaming={stream.sending}

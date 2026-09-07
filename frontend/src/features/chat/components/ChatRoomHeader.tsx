@@ -2,6 +2,7 @@ import { Show, type JSX } from "solid-js";
 import {
   Button,
   Frames,
+  Icon,
   Menu,
   Text,
   Tooltip,
@@ -29,6 +30,12 @@ export interface ChatRoomHeaderProps {
   title: () => string;
   /** A title the backend has just written, for the typewriter reveal. */
   reveal: () => string | undefined;
+  /** The directory a **staged** worktree thread will work in, `parent/name`. Absent for
+   *  every saved thread, which names its workspace with the branch chip on the other end
+   *  of this row instead — two answers to one question in one row is the thing to avoid.
+   *  A staged thread has no branch yet and no row in the rail, so without this the
+   *  operator has just clicked `+` on a directory and been shown nothing that names it. */
+  workspaceHint: () => string | undefined;
   /** True while the thread is being named — the auto-title or a manual retitle. */
   working: () => boolean;
   conversationId: () => string | null;
@@ -47,26 +54,40 @@ export interface ChatRoomHeaderProps {
 export function ChatRoomHeader(props: ChatRoomHeaderProps): JSX.Element {
   return (
     <header class="flex items-center justify-between gap-3 pb-3">
-      <span class="flex min-w-0 items-center gap-1.5">
-        <Show
-          when={props.reveal()}
-          fallback={
-            <Text variant="readout" tone="bright">
-              {props.title()}
-            </Text>
-          }
-        >
-          {(title) => (
-            <TypewriterText
-              variant="readout"
-              tone="bright"
-              text={title()}
-              speed={REVEAL_SPEED_MS}
-            />
+      <span class="flex min-w-0 flex-col">
+        <span class="flex min-w-0 items-center gap-1.5">
+          <Show
+            when={props.reveal()}
+            fallback={
+              <Text variant="readout" tone="bright">
+                {props.title()}
+              </Text>
+            }
+          >
+            {(title) => (
+              <TypewriterText
+                variant="readout"
+                tone="bright"
+                text={title()}
+                speed={REVEAL_SPEED_MS}
+              />
+            )}
+          </Show>
+          <Show when={props.working()}>
+            <Frames class="shrink-0 text-info" />
+          </Show>
+        </span>
+        {/* Where this thread will work, under the name it does not have yet. Quiet —
+            it is context for the title, not a second title. */}
+        <Show when={props.workspaceHint()}>
+          {(hint) => (
+            <span class="flex min-w-0 items-center gap-1.5">
+              <Icon name="library" size={12} class="shrink-0 text-dim" />
+              <Text variant="micro" tone="dim" class="min-w-0 truncate">
+                {hint()}
+              </Text>
+            </span>
           )}
-        </Show>
-        <Show when={props.working()}>
-          <Frames class="shrink-0 text-info" />
         </Show>
       </span>
       <div class="flex shrink-0 items-center gap-2">

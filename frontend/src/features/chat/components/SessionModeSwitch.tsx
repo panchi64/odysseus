@@ -1,15 +1,10 @@
-import { For, Show, createMemo, createSignal, type JSX } from "solid-js";
-import { SESSION_MODES, sessionModeSpec } from "~/lib/modes";
-import { Button, Icon, Text, Tooltip, cx, toast } from "~/ui";
-import { usePathPicker } from "~/lib/hostPicker";
-import { ensureProjectForPath, useProjects } from "~/lib/stores/projects";
+import { For, type JSX } from "solid-js";
+import { SESSION_MODES } from "~/lib/modes";
+import { Icon, Text, Tooltip, cx } from "~/ui";
 import {
   activeSessionMode,
-  codeProjectId,
   setActiveSessionMode,
-  setCodeProjectId,
 } from "~/lib/stores/sessionMode";
-import { mainChat } from "../data";
 
 /**
  * **Which kind of work you are looking at** — the rail's first control, above the
@@ -25,11 +20,16 @@ import { mainChat } from "../data";
  * The mode of a thread already saved is still immutable and still the backend's:
  * a code thread owns a git branch, and re-pointing it would strand that branch.
  * Opening one moves this switch to match it rather than the other way round.
+ *
+ * **It no longer asks which directory a code thread will work in.** That line lived
+ * here for as long as the directory was something chosen *after* pressing NEW; now the
+ * directory comes first and the thread is started from its own section of the rail, so
+ * the question is asked where the answer already is. This is the mode switch and
+ * nothing else.
  */
 export function SessionModeSwitch(): JSX.Element {
   const mode = activeSessionMode;
   const setMode = setActiveSessionMode;
-  const { currentId } = mainChat();
 
   return (
     <div class="flex flex-col gap-1 px-2 pb-1">
@@ -76,113 +76,6 @@ export function SessionModeSwitch(): JSX.Element {
           )}
         </For>
       </div>
-
-      {/* The workspace line belongs to a mode rooted in a host directory, and only
-          while a thread is still being staged: an existing worktree thread shows its
-          branch in the status strip, and offering to re-point it here would be
-          offering something the backend refuses. */}
-      <Show
-        when={
-          sessionModeSpec(mode()).workspace === "worktree" &&
-          currentId() === null
-        }
-      >
-        <CodeWorkspaceLine />
-      </Show>
-    </div>
-  );
-}
-
-/** Which directory the next code thread will work in — and the way to pick one.
- *
- *  Any directory does. Projects are still the storage and the git machinery, but
- *  they are no longer paperwork the operator files before they can start: the
- *  native chooser hands back a host path, and the backend files it on first use.
- *  A previously chosen directory stays staged, so the common case is not choosing
- *  anything at all. */
-function CodeWorkspaceLine(): JSX.Element {
-  const projects = useProjects();
-  const picker = usePathPicker();
-  const [choosing, setChoosing] = createSignal(false);
-
-  const staged = createMemo(() =>
-    (projects.latest?.projects ?? []).find((p) => p.id === codeProjectId()),
-  );
-
-  const choose = async () => {
-    const pick = picker();
-    if (!pick) {
-      // No native chooser on this host. The Projects screen still takes a typed
-      // path, so say where to go rather than leaving a dead button.
-      toast.error(
-        "No folder chooser on this host — add the directory under projects",
-      );
-      return;
-    }
-    setChoosing(true);
-    try {
-      const path = await pick({
-        mode: "directory",
-        title: "Choose a directory",
-      });
-      if (!path) return;
-      const project = await ensureProjectForPath(path);
-      setCodeProjectId(project.id);
-      // Said once, here, rather than discovered halfway through a session: a
-      // worktree is cut from the project's base ref, so work the operator has not
-      // committed in their own checkout is invisible to the agent.
-      if (!project.repo.isGitRepo)
-        toast.error(
-          `${project.name} isn't a git repository yet — create one under projects first`,
-        );
-      else if ((project.repo.uncommittedChanges ?? 0) > 0)
-        toast.info(
-          `${project.repo.uncommittedChanges} uncommitted change${
-            project.repo.uncommittedChanges === 1 ? "" : "s"
-          } in ${project.name} won't be visible to the agent`,
-        );
-    } catch (err) {
-      toast.error(
-        (err as { detail?: string })?.detail ?? "Couldn't open that directory",
-      );
-    } finally {
-      setChoosing(false);
-    }
-  };
-
-  return (
-    <div class="flex items-center gap-2 pl-1">
-      <Show
-        when={staged()}
-        fallback={
-          <Button
-            variant="ghost"
-            size="sm"
-            leading="library"
-            disabled={choosing()}
-            onClick={() => void choose()}
-          >
-            Choose a directory
-          </Button>
-        }
-      >
-        {(project) => (
-          <>
-            <Icon name="library" size={14} class="shrink-0 text-dim" />
-            <Text variant="micro" tone="dim" class="min-w-0 flex-1 truncate">
-              {project().name}
-            </Text>
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={choosing()}
-              onClick={() => void choose()}
-            >
-              Change
-            </Button>
-          </>
-        )}
-      </Show>
     </div>
   );
 }

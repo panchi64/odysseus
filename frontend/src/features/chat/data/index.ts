@@ -23,6 +23,8 @@ export {
   useChatSessions,
 } from "./sessions";
 
+export { setWorkspaceOpen, workspaceOpen } from "./workspaceCollapse";
+
 export { REVEAL_SPEED_MS, titleReveals } from "./titleReveals";
 
 export {

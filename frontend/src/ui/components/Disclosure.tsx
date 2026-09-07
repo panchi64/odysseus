@@ -1,4 +1,4 @@
-import { createSignal, type JSX } from "solid-js";
+import { Show, children, createSignal, type JSX } from "solid-js";
 import { cx } from "../cx";
 import { Text } from "../primitives/Text";
 import { Icon } from "../primitives/Icon";
@@ -9,7 +9,12 @@ import { Collapse } from "./Collapse";
  *  A chevron reads as *direction* — fine on a heading that is only a heading, wrong
  *  beside anything that could be navigated to, where it reads as "go there". The
  *  registration-crosshair plus/minus can't be misread, so it is what the rail's area
- *  headers and the thread list's workspace headings use. */
+ *  headers use — their label is a link.
+ *
+ *  The thread list's workspace headings take the **chevron** instead, and for the
+ *  mirror-image reason: nothing there navigates, and the row now carries a real `+`
+ *  meaning *start a thread in this directory*. A plus/minus marker an inch from a plus
+ *  button is the one confusion this glyph choice exists to prevent. */
 export type DisclosureMarker = "chevron" | "plusminus";
 
 /** The glyph beside a label. A plus needs a touch more than a chevron to read as a
@@ -43,9 +48,28 @@ export interface DisclosureProps {
   defaultOpen?: boolean;
   /** Which glyph leads the trigger. Defaults to the chevron. */
   marker?: DisclosureMarker;
+  /** Rendered in place of the default `<Text>` label. `label` stays required — it
+   *  remains the accessible name — so this is for a label that has *parts*: the thread
+   *  list's headings read `parent/name` and must truncate at the head, since clipping
+   *  the tail would cut the directory name, which is the half that identifies the
+   *  section. */
+  labelNode?: JSX.Element;
   /** Rendered inside the trigger after the label — a peek line, a count, a status
    *  glyph. */
   trailing?: JSX.Element;
+  /** Controls rendered as the trigger's **sibling**, on the same row.
+   *
+   *  Not `trailing`: that renders inside the trigger, and a button inside a button is
+   *  invalid HTML — the constraint that forced `AreaSection` to hand-roll its header out
+   *  of `DisclosureToggle` and a link. Covering the case here is what keeps the thread
+   *  list from becoming a second such exception. The row becomes a `group`, so an action
+   *  can reveal on hover (`REVEAL_ON_GROUP_HOVER`) without naming a group of its own. */
+  actions?: JSX.Element;
+  /** Extra classes for the **whole header row** — the trigger and its actions together.
+   *  Where a fill belongs when it is marking the section rather than the toggle: painted
+   *  on `triggerClass` instead, it stops short of the controls and the row reads as
+   *  half-highlighted. */
+  rowClass?: string;
   /** Extra classes for the trigger row (e.g. `w-full` for a full-width header). */
   triggerClass?: string;
   /** Body wrapper classes. Replaces the default spacing rather than adding to it,
@@ -91,37 +115,57 @@ export function Disclosure(props: DisclosureProps): JSX.Element {
     if (props.open === undefined) setUncontrolled((v) => !v);
     props.onToggle?.();
   };
+  // Resolved once. A JSX prop compiles to a getter, so testing `props.labelNode` and
+  // then rendering it would build the node twice over and discard one — and this header
+  // re-renders on the rail's three-second activity poll.
+  const label = children(() => props.labelNode);
 
   return (
     <div>
-      <button
-        type="button"
-        aria-expanded={isOpen()}
-        onClick={(e) => {
-          // Trigger clicks stop here: a disclosure nested inside its own clickable
-          // wrapper would otherwise toggle twice and appear inert.
-          e.stopPropagation();
-          toggle();
-        }}
-        class={cx(
-          "flex items-center gap-1 text-left text-dim transition-colors hover:text-text",
-          props.triggerClass,
-        )}
-      >
-        <Icon
-          name={markerName(marker(), isOpen())}
-          size={MARKER_SIZE[marker()]}
-          class="shrink-0"
-        />
-        {/* Truncating, always. A section's name is whatever it is named — a
-            workspace heading is a directory path — and a header that cannot
-            overflow its own trigger is the only version of this that is safe to
-            hand an arbitrary label. */}
-        <Text variant="label" tone="dim" class="min-w-0 truncate">
-          {props.label}
-        </Text>
-        {props.trailing}
-      </button>
+      {/* One row, always — the trigger alone is just a row of one. Branching the
+          wrapper instead would mean building the trigger twice over so both arms
+          could hold one, and this header re-renders on every list refresh. */}
+      <div class={cx("group flex items-center", props.rowClass)}>
+        <button
+          type="button"
+          aria-expanded={isOpen()}
+          onClick={(e) => {
+            // Trigger clicks stop here: a disclosure nested inside its own clickable
+            // wrapper would otherwise toggle twice and appear inert.
+            e.stopPropagation();
+            toggle();
+          }}
+          class={cx(
+            "flex items-center gap-1 text-left text-dim transition-colors hover:text-text",
+            // With actions beside it the trigger takes the row's slack and nothing
+            // more, so the controls keep their width and the label is what gives way.
+            props.actions ? "min-w-0 flex-1" : undefined,
+            props.triggerClass,
+          )}
+        >
+          <Icon
+            name={markerName(marker(), isOpen())}
+            size={MARKER_SIZE[marker()]}
+            class="shrink-0"
+          />
+          {/* Truncating, always. A section's name is whatever it is named — a
+              workspace heading is a directory path — and a header that cannot
+              overflow its own trigger is the only version of this that is safe to
+              hand an arbitrary label. */}
+          <Show
+            when={label()}
+            fallback={
+              <Text variant="label" tone="dim" class="min-w-0 truncate">
+                {props.label}
+              </Text>
+            }
+          >
+            {label()}
+          </Show>
+          {props.trailing}
+        </button>
+        {props.actions}
+      </div>
       <Collapse open={isOpen()}>
         <div class={props.class ?? "mt-2"}>{props.children}</div>
       </Collapse>

@@ -69,10 +69,17 @@ class ConversationSummary(BaseModel):
     mode: str = DEFAULT_MODE
     # The **basename** of the directory a code thread works in, and nothing else about
     # it. Null for every other thread, and for a code thread whose project has since been
-    # deleted. Deliberately not the path and not the project id: the rail groups code
-    # threads under this, it is permanently on screen, and a full path across it would
-    # spell out the operator's clients to anyone standing behind them.
+    # deleted. Deliberately not the path: the rail groups code threads under this, it is
+    # permanently on screen, and a full path across it would spell out the operator's
+    # clients to anyone standing behind them.
     workspace: str | None = None
+    # The project the workspace above belongs to. On the wire beside the name because the
+    # rail *joins* on it: it lists every directory the operator works in, not only the
+    # ones that already hold threads, and two directories can share a basename. Joining on
+    # the name instead would merge two repositories into one section and point that
+    # section's controls at whichever won. An opaque id names nothing — it is the path
+    # that stays behind.
+    project_id: str | None = None
 
 
 class ToolCallImageOut(BaseModel):
@@ -250,6 +257,7 @@ def _summary(
         activity=activity,
         mode=view.mode,
         workspace=(workspaces or {}).get(view.project_id or ""),
+        project_id=view.project_id,
     )
 
 

@@ -1,13 +1,29 @@
-import { createEffect, createMemo, onCleanup, type JSX } from "solid-js";
+import { Show, createEffect, createMemo, onCleanup, type JSX } from "solid-js";
 import { useLocation, useNavigate } from "@solidjs/router";
-import { Button, Text } from "~/ui";
+import { Button, Text, confirm, toast, type MenuItem } from "~/ui";
+import { sessionModeSpec } from "~/lib/modes";
+import {
+  activeProjectId,
+  deleteProject,
+  updateProject,
+  useProjects,
+  type Project,
+} from "~/lib/stores/projects";
 import {
   activeSessionMode,
+  codeProjectId,
   setActiveSessionMode,
+  setCodeProjectId,
 } from "~/lib/stores/sessionMode";
 import { mainChat, refreshSessions, useChatSessions } from "../data";
+import {
+  directoryLabel,
+  registerAddDirectoryButton,
+  useAddDirectory,
+} from "../addDirectory";
 import type { ChatActivity } from "../model";
-import { SessionList } from "./SessionList";
+import type { WorkspaceDirectory } from "../sessionGroups";
+import { SessionList, type WorkspaceStatus } from "./SessionList";
 
 /** How often to re-read the list while a thread is working. A run in a thread the
  *  operator navigated away from ends server-side with nothing to tell this client,
@@ -22,14 +38,26 @@ const ACTIVITY_POLL_MS = 3000;
  *  persistent room controller), so the app shell only positions it — no chat
  *  state or logic leaks into the shell. Selecting a thread drives the same
  *  `currentId` the room renders; opening from off the chat route navigates there
- *  first. */
+ *  first.
+ *
+ *  **In a worktree mode the header button adds a directory rather than a thread.** A
+ *  code thread is cut from a directory's repository, so there is no such thing as one
+ *  that names no directory — the backend refuses the send outright. Threads start from
+ *  their directory's own section below; this button is how a directory gets there. It is
+ *  the same position in every mode and it makes two different things, which is the one
+ *  risk in the arrangement, so it does not also share a glyph: a folder here, a bare
+ *  plus on the row. */
 export function RecentsRail(): JSX.Element {
   const sessions = useChatSessions();
+  const projects = useProjects();
   const { currentId, setCurrentId, stream } = mainChat();
   const mode = activeSessionMode;
   const setMode = setActiveSessionMode;
   const location = useLocation();
   const navigate = useNavigate();
+  const addDirectory = useAddDirectory();
+
+  const rooted = () => sessionModeSpec(mode()).workspace === "worktree";
 
   /** The rows to render: the server's list, plus an echo of the run this client
    *  is already streaming.
@@ -64,6 +92,44 @@ export function RecentsRail(): JSX.Element {
    *  list keeps rendering its loading state rather than an empty one. */
   const inMode = createMemo(() => rows()?.filter((s) => s.mode === mode()));
 
+  /** The projects a worktree mode files under, or undefined while the listing is in
+   *  flight — the list treats the two differently, and must.
+   *
+   *  Scoped the way the backend scopes the conversations listing: with a project
+   *  active it returns that project's threads and the unfiled ones and nothing else, so
+   *  a rail drawing every directory would draw headings whose threads are being
+   *  filtered away underneath them. Archived projects drop out of the listing itself. */
+  const visible = createMemo((): Project[] | undefined => {
+    const dto = projects.latest;
+    // Undefined means *still loading*, and the list holds its loading arm on it. An
+    // errored resource never populates `latest`, so returning undefined there would
+    // hold that arm forever — a rail stuck on LOADING with no error, no retry and no
+    // way to reach ADD DIRECTORY. A failed read is no directories, which at least
+    // leaves the operator somewhere they can act.
+    if (!dto) return projects.error ? [] : undefined;
+    // `activeProjectId` already answers null while unscoped; asking twice would leave
+    // two copies of the scope rule to keep in agreement.
+    const active = activeProjectId();
+    return active ? dto.projects.filter((p) => p.id === active) : dto.projects;
+  });
+
+  const directories = createMemo(
+    (): readonly WorkspaceDirectory[] | undefined =>
+      visible()?.map((p) => ({ id: p.id, label: directoryLabel(p) })),
+  );
+
+  const byId = createMemo(
+    () => new Map((visible() ?? []).map((p) => [p.id, p])),
+  );
+  const status = (projectId: string): WorkspaceStatus | undefined => {
+    const repo = byId().get(projectId)?.repo;
+    if (!repo) return undefined;
+    if (!repo.isGitRepo) return { notARepo: true };
+    return repo.uncommittedChanges
+      ? { uncommitted: repo.uncommittedChanges }
+      : undefined;
+  };
+
   // Poll only while something is actually running — an idle rail makes no
   // requests, and the poll stops on its own once the last edge clears. Read off
   // `rows`, so the echo above opens the gate too: that is what lets the poll
@@ -94,6 +160,84 @@ export function RecentsRail(): JSX.Element {
     setCurrentId(null);
     toChat();
   };
+  const newThreadIn = (projectId: string) => {
+    setCodeProjectId(projectId);
+    startNew();
+  };
+
+  /** What a directory's own menu offers. Everything here acts on the *project*, which
+   *  is why the list does not build it: filing and unfiling a directory is the projects
+   *  seam's business, and the rail is only where the operator happens to be standing. */
+  const actions = (projectId: string): MenuItem[] => {
+    const project = byId().get(projectId);
+    const name = project?.name ?? "this directory";
+    return [
+      {
+        label: "Archive directory",
+        icon: "archive",
+        onSelect: () => void archive(projectId, name),
+      },
+      {
+        label: "Delete directory",
+        icon: "trash",
+        danger: true,
+        onSelect: () => void remove(projectId, name),
+      },
+    ];
+  };
+
+  /** Archiving takes the directory *and its threads* out of the rail. Said plainly
+   *  before it happens, because the threads are the part that surprises: they are not
+   *  deleted and they are not loose in the list — they come back with the directory. */
+  const archive = async (projectId: string, name: string) => {
+    const held = inMode()?.filter((s) => s.projectId === projectId).length ?? 0;
+    const ok = await confirm({
+      title: `Archive ${name}?`,
+      detail: held
+        ? `Its ${held} thread${held === 1 ? "" : "s"} leave the rail with it. Nothing is deleted — adding the directory again brings both back.`
+        : "It leaves the rail. Adding the directory again brings it back.",
+      tone: "alert",
+    });
+    if (!ok) return;
+    try {
+      await updateProject(projectId, { archived: true });
+      if (codeProjectId() === projectId) setCodeProjectId(undefined);
+      // The open thread goes with its directory. Archiving hides the section *and* the
+      // threads under it, so leaving one mounted in the room would strand it: a
+      // transcript on screen with no row anywhere in the rail, and no way back to it
+      // once the operator navigates away.
+      const open = currentId();
+      if (open && rows()?.find((s) => s.id === open)?.projectId === projectId)
+        setCurrentId(null);
+    } catch (err) {
+      toast.error(
+        (err as { detail?: string })?.detail ??
+          "Couldn't archive that directory",
+      );
+    }
+  };
+
+  /** Deleting keeps the threads and unfiles them — the backend's own rule, and the
+   *  difference from archiving that decides which one the operator wants. */
+  const remove = async (projectId: string, name: string) => {
+    const ok = await confirm({
+      title: `Delete ${name}?`,
+      detail:
+        "The directory on disk is untouched. Its threads are kept and move to Unfiled.",
+      tone: "alert",
+    });
+    if (!ok) return;
+    try {
+      await deleteProject(projectId);
+      if (codeProjectId() === projectId) setCodeProjectId(undefined);
+      refreshSessions();
+    } catch (err) {
+      toast.error(
+        (err as { detail?: string })?.detail ??
+          "Couldn't delete that directory",
+      );
+    }
+  };
 
   return (
     <div class="flex min-h-0 flex-1 flex-col pb-2">
@@ -101,9 +245,25 @@ export function RecentsRail(): JSX.Element {
         <Text variant="label" tone="dim">
           Recents
         </Text>
-        <Button variant="ghost" size="sm" leading="plus" onClick={startNew}>
-          New
-        </Button>
+        <Show
+          when={rooted()}
+          fallback={
+            <Button variant="ghost" size="sm" leading="plus" onClick={startNew}>
+              New
+            </Button>
+          }
+        >
+          <Button
+            ref={registerAddDirectoryButton}
+            variant="ghost"
+            size="sm"
+            leading="library"
+            disabled={addDirectory.busy()}
+            onClick={() => void addDirectory.add()}
+          >
+            Add directory
+          </Button>
+        </Show>
       </div>
       {/* The list takes whatever height is left rather than a fixed cap. The cap
           was right when six area sections sat beneath it and a long history would
@@ -119,6 +279,14 @@ export function RecentsRail(): JSX.Element {
           mode={mode()}
           currentId={currentId()}
           onSelect={select}
+          directories={rooted() ? directories() : undefined}
+          status={rooted() ? status : undefined}
+          actions={rooted() ? actions : undefined}
+          onNewThread={rooted() ? newThreadIn : undefined}
+          onAddDirectory={rooted() ? () => void addDirectory.add() : undefined}
+          stagedProjectId={
+            rooted() && currentId() === null ? (codeProjectId() ?? null) : null
+          }
         />
       </div>
     </div>

@@ -34,10 +34,14 @@ export interface ConversationSummaryDTO {
    *  thread list renders it without opening each conversation. */
   activity?: ChatActivity | null;
   /** The thread's mode, and — for a code thread — the basename of the directory it
-   *  works in. Both on the *listing* because the rail's shape depends on them: it
-   *  shows one mode at a time and groups code threads by workspace. */
+   *  works in plus the project that directory belongs to. All three on the *listing*
+   *  because the rail's shape depends on them: it shows one mode at a time and files
+   *  code threads under the directory they work in. The id is what it files *by* —
+   *  the rail lists every directory, not only the ones holding threads, and two of
+   *  them can share a basename. */
   mode?: string | null;
   workspace?: string | null;
+  project_id?: string | null;
 }
 
 /** One image on the wire. The REST detail and the SSE `tool.completed` event carry the

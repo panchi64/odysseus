@@ -133,3 +133,24 @@ export function hostLabel(url: string): string {
     return url;
   }
 }
+
+/** A directory as the two segments worth reading: its own name, and the one above it.
+ *
+ *  `hostLabel`'s counterpart for the other kind of address. A directory is named by
+ *  its last segment and by nothing else useful — but the operator has more than one
+ *  `frontend`, and a heading that says only that names two different repositories
+ *  identically. The parent is the smallest thing that tells them apart.
+ *
+ *  Two segments and never more: the rail is permanently on screen, and a full path
+ *  across it spells out the operator's clients to anyone standing behind them.
+ *  `parent` is empty at the filesystem root, where there is nothing above.
+ *
+ *  Separator-agnostic on purpose (`/` and `\` both) — the path is the host's, and this
+ *  runs in a browser that knows nothing about which host produced it. */
+export function pathLabel(path: string): { parent: string; name: string } {
+  const segments = path.split(/[/\\]+/).filter(Boolean);
+  return {
+    parent: segments.length > 1 ? segments[segments.length - 2] : "",
+    name: segments[segments.length - 1] ?? path,
+  };
+}
