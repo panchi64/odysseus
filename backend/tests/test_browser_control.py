@@ -26,7 +26,7 @@ from runs import Run, RunStream
 from services.browser import BrowserSessionManager, ControlledBrowserSession, LiveBrowser
 from services.browser import session as session_module
 from tools import RunDeps
-from tools.browse import TOOL_NAMES, browse_toolset
+from tools.browse import TOOL_NAMES, browse_instructions, browse_toolset
 
 OWNER = "operator"
 
@@ -443,3 +443,174 @@ def test_every_tool_is_declared_network_dependent(name: str):
     from tools.browse import NETWORK_TOOLS
 
     assert f"browse_{name}" in NETWORK_TOOLS
+
+
+# --- the operator closing the window ----------------------------------------------------
+
+
+async def test_a_window_the_operator_closed_is_not_silently_reopened(attached):
+    # The whole point: closing the window is how somebody says they are done with it, and
+    # the next tool call must not answer that by launching a replacement on their screen.
+    host = _FakeHost()
+    manager = _manager(host)
+    live = _live(manager, "c1")
+    live.context.pages.clear()  # they closed the last tab
+
+    assert await manager.acquire("c1", reopen=False) is None
+    assert manager.closed("c1")
+    assert attached == []  # ...and nothing was launched to replace it
+
+
+async def test_an_explicit_reopen_starts_a_fresh_window(attached):
+    # The way back. Something explicit — the model's own `navigate`, or the operator's
+    # "open the browser" control — is allowed to start over, and doing so clears the record.
+    manager = _manager(_FakeHost())
+    live = _live(manager, "c1")
+    live.context.pages.clear()
+    assert await manager.acquire("c1", reopen=False) is None
+
+    reopened = await manager.acquire("c1", reopen=True)
+
+    assert reopened is not None and reopened is not live
+    assert not manager.closed("c1")
+    assert len(attached) == 1
+
+
+async def test_the_refusal_stands_until_something_actually_reopens(attached):
+    # Not consumed by the first refusal. "They are done with this" holds until somebody
+    # says otherwise, or the second browse tool of the same turn would quietly reopen the
+    # window the first one just reported as closed.
+    manager = _manager(_FakeHost())
+    live = _live(manager, "c1")
+    live.context.pages.clear()
+
+    for _ in range(3):
+        assert await manager.acquire("c1", reopen=False) is None
+    assert attached == []
+
+
+async def test_an_idle_reap_leaves_no_such_record(attached):
+    # Ours, not theirs. An idle session is reaped to save a window and a driver, and the
+    # next call re-attaches with the login restored — the model never needed to hear about
+    # it, and reporting it as "the operator closed the browser" would be a lie.
+    manager = _manager(_FakeHost(), idle_ttl_s=0.0)
+    _live(manager, "c1")
+
+    await manager._sweep()  # noqa: SLF001
+
+    assert manager.existing("c1") is None
+    assert not manager.closed("c1")
+    assert await manager.acquire("c1", reopen=False) is not None
+
+
+async def test_quitting_chromium_is_the_operators_doing_too(attached):
+    # The other way they end it: quitting the browser rather than closing one window. Same
+    # meaning, so it leaves the same record.
+    host = _FakeHost()
+    manager = _manager(host)
+    _live(manager, "c1")
+    host.cdp_url = None
+
+    await manager._sweep()  # noqa: SLF001
+
+    assert manager.closed("c1")
+
+
+async def test_only_navigate_may_reopen_after_a_close(attached):
+    # A `click` on a page that no longer exists must not open a blank window and let the
+    # model believe the click landed; a `navigate` is it deliberately starting somewhere.
+    caps = ServiceContainer()
+    manager = _manager(_FakeHost())
+    caps.add(manager)
+    live = _live(manager, "c1")
+    live.context.pages.clear()
+    toolset = browse_toolset()
+
+    refusal = await toolset.bind("click", _ctx(caps, "c1"))
+
+    assert isinstance(refusal, str)
+    assert "closed the browser" in refusal
+    assert "not available" not in refusal  # ...the *other* degrade, which would be wrong
+    assert attached == []
+
+    assert not isinstance(await toolset.bind("navigate", _ctx(caps, "c1")), str)
+
+
+# --- what the model is told about the browser -------------------------------------------
+
+
+async def test_a_thread_with_no_browser_is_told_nothing():
+    # The category is dormant because eighteen schemas on every request is the most
+    # expensive thing in the catalog; a page of prose about them on every thread that never
+    # browses would undo that.
+    caps = ServiceContainer()
+    caps.add(_manager(_FakeHost()))
+    assert await browse_instructions(_ctx(caps, "c1")) == ""
+
+
+async def test_a_thread_with_no_browser_feature_at_all_is_told_nothing():
+    assert await browse_instructions(_ctx(ServiceContainer(), "c1")) == ""
+
+
+async def test_an_open_browser_brings_the_harness_guidance_and_ours():
+    # The bug this closes: taking `PlaywrightBrowserToolset` without `PlaywrightBrowser`
+    # left `get_instructions` behind, so the model got eighteen tool schemas and no account
+    # of how they fit together — not even that `aria-ref` handles come from `snapshot`.
+    caps = ServiceContainer()
+    manager = _manager(_FakeHost())
+    caps.add(manager)
+    _live(manager, "c1")
+
+    text = await browse_instructions(_ctx(caps, "c1"))
+
+    assert "aria-ref" in text  # the harness's half, borrowed rather than restated
+    assert "tabs('new')" in text  # ...and ours: opening a tab is a thing it may do
+    assert "close the window" in text  # ...and that the operator can end it
+
+
+@pytest.mark.parametrize("phrase", ["snapshot", "iframe", "wait_for", "scroll"])
+async def test_the_harness_guidance_is_borrowed_whole(phrase: str):
+    # Restating it here would mean two descriptions of eighteen tools drifting apart, and
+    # the one that drifted would still be the one shipped.
+    caps = ServiceContainer()
+    manager = _manager(_FakeHost())
+    caps.add(manager)
+    _live(manager, "c1")
+    assert phrase in await browse_instructions(_ctx(caps, "c1"))
+
+
+async def test_one_session_shares_one_toolset_so_parallel_calls_serialise():
+    # Tool calls within one model response run concurrently, and every browse tool acts on
+    # the *active tab* — so two of them racing would interleave on one page: a snapshot
+    # taken mid-navigation, a click landing after the page it was aimed at is gone. What
+    # prevents that is the harness's own `_operation_lock`, which is per toolset instance,
+    # so it only serialises anything while a conversation's calls all reach the *same*
+    # instance. Keyed by the session token (`bind`), they do — and a cache keyed anything
+    # more finely would silently hand out a lock per call.
+    caps = ServiceContainer()
+    manager = _manager(_FakeHost())
+    caps.add(manager)
+    _live(manager, "c1")
+    toolset = browse_toolset()
+
+    first, second = (
+        await toolset.bind("navigate", _ctx(caps, "c1")),
+        await toolset.bind("click", _ctx(caps, "c1")),
+    )
+
+    assert first is second
+    assert first._operation_lock is second._operation_lock  # noqa: SLF001 — the claim
+
+
+async def test_deleting_a_conversation_forgets_that_its_window_was_closed(tmp_path):
+    # The tombstone is keyed by conversation and has no reaper of its own, so the one
+    # place a key stops meaning anything has to drop it.
+    manager = _manager(_FakeHost(), state_dir=tmp_path)
+    live = _live(manager, "c1")
+    live.context.pages.clear()
+    assert await manager.acquire("c1", reopen=False) is None
+    assert manager.closed("c1")
+
+    await manager.purge("c1")
+
+    assert not manager.closed("c1")

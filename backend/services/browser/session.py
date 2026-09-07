@@ -83,6 +83,11 @@ class BrowserSessionManager:
         # concurrently, so two browse tools can race the first acquire of a thread; without
         # this they would each attach a session and one would be silently orphaned.
         self._creating: dict[str, asyncio.Lock] = {}
+        # Conversations whose window the *operator* closed. Not a cache and not an error
+        # state — a record of a decision somebody made, kept so the next tool call reports
+        # it instead of quietly launching a replacement window on their screen. Cleared
+        # the moment a session attaches again, which only something explicit can cause.
+        self._closed: set[str] = set()
         self._reaper: asyncio.Task[None] | None = None
 
     # ── lookup ───────────────────────────────────────────────────────────────────
@@ -92,9 +97,21 @@ class BrowserSessionManager:
         so a turn that never browsed pays nothing."""
         return self._sessions.get(key)
 
+    def closed(self, key: str) -> bool:
+        """Whether this conversation's window was closed by the operator rather than by us.
+
+        The distinction the caller needs in order to say something true. A session that was
+        reaped for idleness is *ours* to re-attach silently — the login is restored and the
+        model never needed to know. A window the operator closed is a thing they did, and
+        the honest report is that they did it.
+        """
+        return key in self._closed
+
     # ── lifecycle ────────────────────────────────────────────────────────────────
 
-    async def acquire(self, key: str, *, focus: bool = False) -> LiveBrowser | None:
+    async def acquire(
+        self, key: str, *, focus: bool = False, reopen: bool = True
+    ) -> LiveBrowser | None:
         """This conversation's browser, launching and attaching one on first use.
 
         Returns ``None`` when no browser could be opened, which is a degraded capability
@@ -104,6 +121,14 @@ class BrowserSessionManager:
         appearing behind the app would look like nothing happened. The agent never sets
         it: a tool call stealing focus mid-sentence is the panel-that-pops-up problem in
         a more disruptive form.
+
+        ``reopen`` is what a caller says when it is *allowed* to put a new window on the
+        operator's screen. It defaults to True because the operator's own control is a
+        caller too; the browse tools pass False for everything except an explicit
+        ``navigate`` (:data:`tools.browse.REOPENING_TOOLS`). Closing the window is how
+        somebody says they are done with it, and a tool call that silently launched a
+        replacement would overrule that — while still, from the model's side, behaving as
+        if the page it was working on had simply gone blank.
         """
         live = self._sessions.get(key)
         if live is not None and (self._host.cdp_url is None or live.abandoned):
@@ -111,9 +136,12 @@ class BrowserSessionManager:
             # that, and it runs on its own clock, so without this an operator who quits
             # Chromium and immediately reopens their browser gets a cheerful "open" on a
             # dead session — and the agent gets raw Playwright errors instead of the
-            # degrade. Drop it here and attach a fresh one below.
+            # degrade. Drop it here, and remember *who* ended it.
             await self.release(key)
+            self._closed.add(key)
             live = None
+        if live is None and key in self._closed and not reopen:
+            return None
         if live is None:
             lock = self._creating.setdefault(key, asyncio.Lock())
             async with lock:
@@ -122,6 +150,8 @@ class BrowserSessionManager:
                     live = await self._attach(key)
                     if live is None:
                         return None
+                    # A window is open again, so whatever was closed before is history.
+                    self._closed.discard(key)
                     async with self._lock:
                         self._sessions[key] = live
                     await self._enforce_cap()
@@ -215,6 +245,11 @@ class BrowserSessionManager:
         sessions — so it goes with the workspace, the plan and the history. Idempotent.
         """
         await self.release(key)
+        # ...including the note that its window was closed. The conversation is gone, so
+        # there is nobody left for that to be true about, and this is the one map keyed by
+        # conversation with no other reaper — every other entry it can hold belongs to a
+        # thread that still exists and can still reopen.
+        self._closed.discard(key)
         path = self._state_path(key)
         if path is not None:
             with contextlib.suppress(OSError):
@@ -286,12 +321,18 @@ class BrowserSessionManager:
     async def _sweep(self) -> None:
         """Reap what nobody is using — and every session at once when the window is gone.
 
-        Three ways a session ends here. The operator quit Chromium (or its proxy died), so
-        ``cdp_url`` is ``None`` and nothing any session holds is still real. They closed a
-        conversation's last tab, which is as clear a "done with this" as there is. Or it
-        simply sat unused — and *unused* counts the operator's own clicking, not only the
-        agent's tool calls, or a browser being worked in by hand would be reaped out from
-        under the person working in it.
+        Three ways a session ends here, and they do not all mean the same thing. The
+        operator quit Chromium (or its proxy died), so ``cdp_url`` is ``None`` and nothing
+        any session holds is still real. They closed a conversation's last tab, which is as
+        clear a "done with this" as there is. Or it simply sat unused — and *unused* counts
+        the operator's own clicking, not only the agent's tool calls, or a browser being
+        worked in by hand would be reaped out from under the person working in it.
+
+        **The first two are theirs and the third is ours**, so only the first two leave a
+        tombstone (:meth:`closed`). An idle reap is bookkeeping the model never needed to
+        hear about: the next tool call re-attaches, the saved login comes back with it, and
+        the only thing lost is where the page was pointed. A window somebody closed is a
+        decision, and the next tool call says so instead of reopening one.
         """
         gone = self._host.cdp_url is None
         now = time.monotonic()
@@ -306,8 +347,10 @@ class BrowserSessionManager:
                     live.touch()
                 elif live.idle_seconds(now) >= self._idle_ttl:
                     reasons.append((live, "idle"))
-            for live, _reason in reasons:
+            for live, reason in reasons:
                 self._sessions.pop(live.key, None)
+                if reason != "idle":
+                    self._closed.add(live.key)
             self._prune_creation_locks()
         for live, reason in reasons:
             logger.info("browser: reaped the session for %s (%s)", live.key, reason)

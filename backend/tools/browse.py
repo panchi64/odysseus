@@ -7,8 +7,17 @@ JavaScript, manage tabs, answer dialogs, and read the page's console and network
 **This is not `web_fetch`, and the difference is what it is for.** Fetch renders a URL and
 hands back its text — one page, no state, nothing to click. These tools keep a browser
 open *across* calls and across turns, which is what a login, a multi-step form, or an app
-that only exists after JavaScript runs actually needs. The instructions the capability
-ships say the same thing to the model, so it reaches for the cheap tool first.
+that only exists after JavaScript runs actually needs.
+
+**Using the toolset alone meant the model was never told any of that**
+(:func:`browse_instructions`). `PlaywrightBrowser` is two things — a per-run browser
+lifecycle we replace, and the when-to-use-it guidance that comes with the tools — and
+taking the toolset by itself
+quietly left the second behind. The model got eighteen tool schemas and no account of how
+they fit together: which tool reads a page, that `aria-ref` handles come from `snapshot`,
+what to do about an iframe or a spinner, that a second tab exists. Guessing at all of that
+is what a browsing turn looked like, and it read as the model being bad at browsing rather
+than as never having been told.
 
 **The session is the conversation's, not the run's.** `PlaywrightBrowser` (the capability)
 opens a browser when a run starts and closes it when the run ends; that lifecycle is
@@ -27,6 +36,14 @@ Nothing announces what they did; the model simply re-reads the page with `snapsh
 **Degrades, never fails.** A window that could not be launched — no Chromium, or its SSRF
 proxy refusing to start — means there is nothing to attach to; the tools say so and the
 model moves on, exactly as web fetch does under the same conditions.
+
+**And the operator can close it at any moment, which is not the same failure.** A window
+they closed is a thing they chose, so the tools report *that* — the page is gone, the
+login is not, and they may simply be done — instead of launching a replacement window on
+their screen mid-turn. Only `navigate` reopens (:data:`REOPENING_TOOLS`), because a
+navigation is the model deliberately starting somewhere; a `click` that silently opened a
+fresh blank window would let it believe the click landed. An *idle* reap is ours rather
+than theirs and stays invisible: the next call re-attaches with the login restored.
 """
 
 from __future__ import annotations
@@ -34,10 +51,12 @@ from __future__ import annotations
 from pydantic_ai import AbstractToolset, RunContext
 from pydantic_ai_harness.playwright import (
     EgressPolicy,
+    PlaywrightBrowser,
     PlaywrightBrowserSession,
     PlaywrightBrowserToolset,
 )
 
+from prompts.browse import BROWSER_ADDENDUM
 from services.browser import BrowserSessionManager
 
 from .deps import RunDeps
@@ -84,6 +103,26 @@ _UNAVAILABLE = (
     "Use web_fetch or web_search to read a page instead, or try again later."
 )
 
+#: Said when the *operator* closed the window rather than when none could be opened. It
+#: names what is gone (the page, and anything that was on it), what is not (the login),
+#: and the one call that starts over — so the model's next move is a decision rather than
+#: a retry of the call that just failed.
+_CLOSED = (
+    "The operator closed the browser window, so the page you were working on is gone "
+    "along with anything unsaved on it. This is something they did, not a failure to "
+    "retry: they may well be finished with it. If the work still needs a browser, say "
+    "what you were in the middle of and call navigate to open a fresh window — the saved "
+    "login for this conversation carries over, the page you were on does not. If it does "
+    "not, read what you need with web_fetch or web_search, or ask them how they want to "
+    "go on."
+)
+
+#: The one tool allowed to put a new window on the operator's screen after they closed
+#: one. A navigation is the model explicitly starting somewhere; every other tool acts on
+#: a page that no longer exists, so reopening for those would hand it a blank window and
+#: let it believe its click landed.
+REOPENING_TOOLS = frozenset({"navigate"})
+
 
 class BrowserToolset(ReboundToolset):
     """The harness browser tools, dispatched through the conversation's live session."""
@@ -93,9 +132,9 @@ class BrowserToolset(ReboundToolset):
         if sessions is None:
             return _UNAVAILABLE
         key = ctx.deps.workspace_key
-        live = await sessions.acquire(key)
+        live = await sessions.acquire(key, reopen=name in REOPENING_TOOLS)
         if live is None:
-            return _UNAVAILABLE
+            return _CLOSED if sessions.closed(key) else _UNAVAILABLE
         # A reaped conversation can be re-attached under a *new* session; the cached
         # toolset would still be pointed at the dead one, so it is keyed by the session's
         # token rather than by the conversation.
@@ -113,5 +152,48 @@ def browse_toolset() -> AbstractToolset[RunDeps]:
     needs no endpoint — it exists only to answer `get_tools` with the same definitions
     every run is offered.
     """
-    template = PlaywrightBrowserSession(policy=EgressPolicy(block_private_addresses=False))
+    template = PlaywrightBrowserSession(policy=_policy())
     return BrowserToolset("browse", _toolset_for(template))
+
+
+def _policy() -> EgressPolicy:
+    """The one policy shape both the real sessions and the instruction text are built from.
+
+    Unenforced by design — the SSRF proxy the window points at is the egress boundary, and
+    `services/browser/session.py` argues why Playwright routing is not usable here. It is
+    spelled once because the instructions *quote* it (`Allowed domains: …`), and a
+    description of a boundary that came from a different object than the boundary is the
+    kind of wrong nobody notices.
+    """
+    return EgressPolicy(block_private_addresses=False)
+
+
+async def browse_instructions(ctx: RunContext[RunDeps]) -> str:
+    """How to use the browser, for a conversation that currently has one open.
+
+    **Borrowed from the harness rather than restated.** `PlaywrightBrowser` carries the
+    guidance for its own eighteen tools and is maintained alongside them; constructing one
+    starts no browser and touches no window, so asking it for that text costs nothing and
+    cannot drift from the tools actually offered. Ours is appended
+    (:data:`prompts.browse.BROWSER_ADDENDUM`) and covers only what a general browser
+    capability cannot know: that the window is on the operator's screen, that the session
+    outlives the turn, and that either of them can end it.
+
+    **Silent until a browser is open, which is the whole reason this is affordable.** The
+    category is dormant precisely because eighteen schemas on every request of every
+    conversation is the most expensive thing in the catalog; a page of prose about them,
+    shipped to every thread that never browses, would undo that. A live session is the
+    cheapest honest signal that this thread is browsing — no I/O, no lookup — and it is
+    stable for as long as the browsing lasts, so the head of the request stays byte-stable
+    across the turns that matter for the prompt cache.
+
+    The first `navigate` of a thread therefore runs uninstructed, and that is the accepted
+    cost: the dormant index already says what the category is for, the model has just read
+    the tool schemas it asked to be shown, and every call after the browser is open has the
+    full text in front of it.
+    """
+    sessions = ctx.deps.caps.get_optional(BrowserSessionManager)
+    if sessions is None or sessions.existing(ctx.deps.workspace_key) is None:
+        return ""
+    harness = PlaywrightBrowser(policy=_policy()).get_instructions()(ctx)
+    return f"{harness}\n\n{BROWSER_ADDENDUM}" if harness else BROWSER_ADDENDUM

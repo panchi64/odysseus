@@ -14,19 +14,83 @@ from runs import RunRegistry, RunStatus
 
 
 # --- LoopBreaker (unit) ------------------------------------------------------
+def _ask(breaker: LoopBreaker, name: str, args: dict, answer: object, call_id: str) -> None:
+    """One whole tool call: the guard's pre-check, then the answer it came back with."""
+    breaker.check(name, args, call_id)
+    breaker.observe(call_id, answer)
+
+
 def test_loop_breaker_trips_on_identical_repeats():
     breaker = LoopBreaker(repeat_threshold=3)
-    breaker.check("search", {"q": "x"})
-    breaker.check("search", {"q": "x"})
+    _ask(breaker, "search", {"q": "x"}, "nothing found", "c1")
+    _ask(breaker, "search", {"q": "x"}, "nothing found", "c2")
     with pytest.raises(LoopDetected):
-        breaker.check("search", {"q": "x"})
+        breaker.check("search", {"q": "x"}, "c3")
 
 
 def test_loop_breaker_ignores_varied_calls():
     breaker = LoopBreaker(repeat_threshold=2)
-    breaker.check("search", {"q": "a"})
-    breaker.check("search", {"q": "b"})  # different args → no trip
-    breaker.check("other", {"q": "a"})  # different tool → no trip
+    _ask(breaker, "search", {"q": "a"}, "one", "c1")
+    _ask(breaker, "search", {"q": "b"}, "one", "c2")  # different args → no trip
+    _ask(breaker, "other", {"q": "a"}, "one", "c3")  # different tool → no trip
+
+
+def test_an_identical_call_that_answers_differently_is_progress():
+    # The browser is why this matters: `snapshot()` takes no arguments, so reading the
+    # page after the first click, the second and the third is three identical calls — and
+    # under an argument-only guard the third one killed the turn, in the middle of exactly
+    # the step-by-step work those tools exist for.
+    breaker = LoopBreaker(repeat_threshold=3)
+    for i, page in enumerate(("home", "search results", "the article", "the comments")):
+        _ask(breaker, "snapshot", {}, page, f"c{i}")
+    # ...and the guard has not merely been disabled: it still trips once the page stops
+    # moving, which is the thing it was always trying to catch.
+    _ask(breaker, "snapshot", {}, "the comments", "c9")
+    with pytest.raises(LoopDetected):
+        breaker.check("snapshot", {}, "c10")
+
+
+def test_a_call_that_answers_the_same_after_moving_starts_its_count_over():
+    # The count is of *consecutive* identical answers. A page that returns to a state it
+    # was in before is not evidence of a loop — the model got somewhere and came back.
+    breaker = LoopBreaker(repeat_threshold=3)
+    _ask(breaker, "snapshot", {}, "list", "c1")
+    _ask(breaker, "snapshot", {}, "detail", "c2")
+    _ask(breaker, "snapshot", {}, "list", "c3")
+    breaker.check("snapshot", {}, "c4")  # would have tripped on a running total
+
+
+def test_the_same_failure_three_times_is_a_loop():
+    # A failure is an answer like any other, and repeating one is the commonest loop
+    # there is: the model retries the identical call and reads the identical error.
+    breaker = LoopBreaker(repeat_threshold=3)
+    _ask(breaker, "click", {"selector": "#go"}, "element not found", "c1")
+    _ask(breaker, "click", {"selector": "#go"}, "element not found", "c2")
+    with pytest.raises(LoopDetected):
+        breaker.check("click", {"selector": "#go"}, "c3")
+
+
+def test_an_unsettled_call_never_advances_the_count():
+    # A call whose result never arrives (an abandoned turn) leaves a pending entry and
+    # nothing else — it must not be counted as an answer that failed to change.
+    breaker = LoopBreaker(repeat_threshold=2)
+    breaker.check("search", {"q": "x"}, "c1")
+    breaker.check("search", {"q": "x"}, "c2")
+    breaker.check("search", {"q": "x"}, "c3")
+
+
+def test_an_unserializable_answer_is_still_compared():
+    # Fingerprinting falls back to `repr`, so a result carrying an object json cannot
+    # render is compared like anything else rather than crashing the guard.
+    class Opaque:
+        def __repr__(self) -> str:
+            return "<same>"
+
+    breaker = LoopBreaker(repeat_threshold=3)
+    _ask(breaker, "grab", {}, Opaque(), "c1")
+    _ask(breaker, "grab", {}, Opaque(), "c2")
+    with pytest.raises(LoopDetected):
+        breaker.check("grab", {}, "c3")
 
 
 # --- Loop-breaker wired into a run -------------------------------------------

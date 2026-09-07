@@ -121,7 +121,7 @@ def _on_tool_event(
         # time. Counting it twice would halve the effective repeat threshold for every
         # tool an approval grant auto-approves, since those hops share one LoopBreaker.
         if loop_breaker is not None:
-            loop_breaker.check(part.tool_name, part.args_as_dict())
+            loop_breaker.check(part.tool_name, part.args_as_dict(), part.tool_call_id)
         run.emit(
             ToolStarted(
                 tool_call_id=part.tool_call_id,
@@ -131,6 +131,16 @@ def _on_tool_event(
         )
     elif isinstance(event, FunctionToolResultEvent):
         part = event.part
+        if loop_breaker is not None:
+            # Settle the call with what it answered. A tool that keeps being asked the same
+            # question only counts as looping while the answer stops changing, so the guard
+            # cannot know whether a call made progress until this event arrives. A failure
+            # is an answer like any other: the *same* error three times over is a loop, and
+            # one of the commonest.
+            answer = (
+                part.model_response() if isinstance(part, RetryPromptPart) else part.content
+            )
+            loop_breaker.observe(part.tool_call_id, answer)
         if isinstance(part, RetryPromptPart):
             run.emit(
                 ToolFailed(
