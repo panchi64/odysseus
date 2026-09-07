@@ -52,6 +52,17 @@ class SandboxError(OdysseusError):
     container could not start."""
 
 
+class HostExecutionError(OdysseusError):
+    """The host command could not be launched (a non-zero exit is a normal
+    :class:`SandboxResult`, not this).
+
+    Down here with the other error rather than beside the runner that raises it most
+    (``process.py``), because the *fence* raises it too — a scratch directory someone else
+    planted refuses the command before a process is ever started — and ``process.py``
+    imports ``host.py`` for the fence. One of the two had to stop owning the name, and an
+    error type is exactly what this module is for."""
+
+
 def contained_path(root: Path, relpath: str, *, what: str = "path") -> Path:
     """Resolve ``relpath`` under ``root``, refusing anything that escapes it.
 

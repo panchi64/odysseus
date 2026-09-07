@@ -15,6 +15,7 @@ hatch for when the operator's own machine has to change, which degrades and says
 from __future__ import annotations
 
 from .base import (
+    HostExecutionError,
     Sandbox,
     SandboxError,
     SandboxFile,
@@ -33,15 +34,18 @@ from .container import (
     run_subprocess,
 )
 from .detect import detect_sandbox
+from .gitenv import git_config_pins
 from .host import (
     HostConfinement,
     confine,
+    denied_read_paths,
+    host_scratch_dir,
     resolve_confinement,
     shutdown_confinement,
 )
 from .manager import SandboxSessionManager
 from .preview import PreviewHandle
-from .process import HostExecutionError, kill_tree, run_on_host, spawn_confined
+from .process import kill_tree, run_on_host, spawn_confined
 from .session import LiveWork, SandboxSession
 from .staging import (
     STAGE_DIR,
@@ -79,6 +83,9 @@ __all__ = [
     "HostConfinement",
     "HostExecutionError",
     "confine",
+    "denied_read_paths",
+    "git_config_pins",
+    "host_scratch_dir",
     "kill_tree",
     "resolve_confinement",
     "run_on_host",

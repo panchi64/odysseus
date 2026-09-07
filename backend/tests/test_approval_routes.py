@@ -165,11 +165,142 @@ async def test_approve_with_conversation_scope_records_grant(monkeypatch):
         )
         assert resp.status_code == 202
 
-        # The grant is recorded and visible on the conversation's grants surface.
-        granted = await app.state.approval_grants.active("operator", conv_id)
-        assert approval.tool_name in granted
+        # The grant is recorded and visible on the conversation's grants surface. The tool
+        # runs no command, so it is the whole-tool scope — an empty prefix.
+        granted = await app.state.approval_grants.list("operator", conv_id)
+        assert (approval.tool_name, ()) in {(g.tool_name, g.command_prefix) for g in granted}
         listed = (await client.get(f"/conversations/{conv_id}/grants")).json()
-        assert any(g["tool_name"] == approval.tool_name for g in listed)
+        assert any(
+            g["tool_name"] == approval.tool_name and g["command_prefix"] == [] for g in listed
+        )
+
+
+def command_categories():
+    """A catalog holding one approval-gated tool that *runs a command* — the shape a
+    conversation grant is scoped to rather than granted wholesale."""
+    toolset: FunctionToolset[RunDeps] = FunctionToolset()
+
+    @toolset.tool_plain(requires_approval=True, name="run_host_command")
+    def run_host_command(command: str) -> str:
+        return f"ran {command}"
+
+    return {"code": toolset}
+
+
+async def test_a_conversation_grant_on_a_command_names_the_command(monkeypatch):
+    # The scope is derived here, from the parked call, and never sent by the client: what
+    # the operator said yes to is the act the agent actually asked for.
+    _install_sensitive_tool(monkeypatch)
+    async with client_app() as (client, app):
+        swap_tool_catalog(app, command_categories())
+        run_id = (await client.post("/chat", json={"prompt": "run it"})).json()["run_id"]
+        run = await _await_parked(app, run_id)
+        approval = run.parked_payload.requests.approvals[0]
+        assert approval.tool_name == "code_run_host_command"
+        command = approval.args_as_dict()["command"]
+        conv_id = run.conversation_id
+
+        resp = await client.post(
+            f"/runs/{run_id}/approve",
+            json={
+                "decisions": [
+                    {
+                        "tool_call_id": approval.tool_call_id,
+                        "approved": True,
+                        "scope": "conversation",
+                    }
+                ]
+            },
+        )
+        assert resp.status_code == 202
+
+        listed = (await client.get(f"/conversations/{conv_id}/grants")).json()
+        assert [(g["tool_name"], g["command_prefix"]) for g in listed] == [
+            ("code_run_host_command", command.split())
+        ]
+
+        # Revoking is by the same pair, and the scope goes back **exactly as it was
+        # listed** — one parameter per word, never a sentence something else has to split.
+        # The whole-tool form leaves the narrower grant standing; only the matching scope
+        # drops it, which is what makes the listing and the delete one round trip.
+        assert (
+            await client.delete(f"/conversations/{conv_id}/grants/code_run_host_command")
+        ).status_code == 204
+        assert len((await client.get(f"/conversations/{conv_id}/grants")).json()) == 1
+        assert (
+            await client.delete(
+                f"/conversations/{conv_id}/grants/code_run_host_command",
+                params={"command_prefix": listed[0]["command_prefix"]},
+            )
+        ).status_code == 204
+        assert (await client.get(f"/conversations/{conv_id}/grants")).json() == []
+
+
+async def test_a_grant_names_the_command_the_operator_edited_it_to(monkeypatch):
+    # An override *replaces* the call's arguments, so the act being approved is the edited
+    # one. Deriving the standing yes from the arguments the model wrote would record a
+    # grant for a command nobody is going to run — and, worse, for the one the operator
+    # rejected by editing it away.
+    _install_sensitive_tool(monkeypatch)
+    async with client_app() as (client, app):
+        swap_tool_catalog(app, command_categories())
+        run_id = (await client.post("/chat", json={"prompt": "run it"})).json()["run_id"]
+        run = await _await_parked(app, run_id)
+        approval = run.parked_payload.requests.approvals[0]
+        conv_id = run.conversation_id
+
+        resp = await client.post(
+            f"/runs/{run_id}/approve",
+            json={
+                "decisions": [
+                    {
+                        "tool_call_id": approval.tool_call_id,
+                        "approved": True,
+                        "scope": "conversation",
+                        "override_args": {"command": "echo skipped"},
+                    }
+                ]
+            },
+        )
+        assert resp.status_code == 202
+        assert resp.json()["granted"] == [["echo", "skipped"]]
+
+        listed = (await client.get(f"/conversations/{conv_id}/grants")).json()
+        assert [g["command_prefix"] for g in listed] == [["echo", "skipped"]]
+
+
+async def test_a_command_no_scope_could_stand_for_records_nothing_and_says_so(monkeypatch):
+    # `grant_scopes` refuses a command the grammar cannot read, which is the right call —
+    # but the operator ticked a box that promised a standing yes, so the refusal is
+    # reported rather than left to be noticed as a missing chip.
+    _install_sensitive_tool(monkeypatch)
+    async with client_app() as (client, app):
+        swap_tool_catalog(app, command_categories())
+        run_id = (await client.post("/chat", json={"prompt": "run it"})).json()["run_id"]
+        run = await _await_parked(app, run_id)
+        approval = run.parked_payload.requests.approvals[0]
+        conv_id = run.conversation_id
+
+        resp = await client.post(
+            f"/runs/{run_id}/approve",
+            json={
+                "decisions": [
+                    {
+                        "tool_call_id": approval.tool_call_id,
+                        "approved": True,
+                        "scope": "conversation",
+                        "override_args": {"command": "cat $TARGET"},
+                    }
+                ]
+            },
+        )
+        assert resp.status_code == 202
+        assert resp.json() == {
+            "status": "resuming",
+            "granted": [],
+            "unscoped": [approval.tool_call_id],
+        }
+        assert (await client.get(f"/conversations/{conv_id}/grants")).json() == []
 
 
 async def test_egress_request_never_records_a_conversation_grant(monkeypatch):
@@ -204,7 +335,7 @@ async def test_egress_request_never_records_a_conversation_grant(monkeypatch):
         assert "tool.completed" in [e["type"] for e in events]
 
         # Nothing standing, on either surface the operator or the engine reads.
-        assert await app.state.approval_grants.active("operator", conv_id) == set()
+        assert await app.state.approval_grants.list("operator", conv_id) == []
         assert (await client.get(f"/conversations/{conv_id}/grants")).json() == []
 
 
@@ -236,8 +367,8 @@ async def test_failed_resume_rolls_back_the_recorded_grant(monkeypatch):
             },
         )
         assert resp.status_code == 409
-        granted = await app.state.approval_grants.active("operator", conv_id)
-        assert approval.tool_name not in granted
+        granted = await app.state.approval_grants.list("operator", conv_id)
+        assert approval.tool_name not in {g.tool_name for g in granted}
 
 
 async def test_approve_rejects_decision_mismatch(monkeypatch):

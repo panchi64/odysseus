@@ -23,16 +23,9 @@ from typing import IO
 
 from pydantic_ai_harness.shell._capability import LLM_API_KEY_ENV_PATTERNS
 
-from core.exceptions import OdysseusError
-
-from .base import SandboxResult
+from .base import HostExecutionError, SandboxResult
+from .gitenv import git_config_pins
 from .host import HostConfinement, confine
-
-
-class HostExecutionError(OdysseusError):
-    """The host command could not be launched (a non-zero exit is a normal
-    :class:`~services.sandbox.base.SandboxResult`, not this)."""
-
 
 #: How long a process group gets to shut itself down before it is killed outright. Long
 #: enough for a server to close its listeners and drop a lockfile, short enough that an
@@ -77,17 +70,34 @@ async def terminate_tree(proc: asyncio.subprocess.Process) -> None:
 
 
 def filtered_env() -> dict[str, str]:
-    """The parent environment without the operator's model credentials. Not a boundary —
-    a same-user process can reach the parent's environment through the OS — but the fence
-    denies the paths those keys are *stored* at, and this keeps them out of the one place
-    a command reads without even trying. Both host-side paths spawn through it: a key
-    denied to the shell and handed to the approved command would be the same secret
-    guarded on one route and not the other."""
-    return {
-        name: value
-        for name, value in os.environ.items()
-        if not any(fnmatch.fnmatchcase(name, pattern) for pattern in LLM_API_KEY_ENV_PATTERNS)
-    }
+    """The environment every command this process spawns on the host runs in.
+
+    Two rules, and they are here together because both answer the same question — what a
+    command reads out of its environment without trying — and because a caller that built
+    its own environment to get one of them would silently lose the other. That is not
+    hypothetical: passing the git pins in as an explicit ``env`` is exactly how the
+    credential filter came to be skipped on the host hatch.
+
+    **The operator's model credentials are removed.** Not a boundary — a same-user process
+    can reach the parent's environment through the OS — but the fence denies the paths
+    those keys are *stored* at, and this keeps them out of the one place a command reads
+    for free. A key denied to the shell and handed to the approved host command would be
+    the same secret guarded on one route and not the other.
+
+    **The git settings a repository must not choose for us are pinned over it**
+    (``gitenv.py``) — otherwise `git status` in a cloned worktree runs whatever that
+    repository's own config names as a filesystem monitor, and a pager blocks on a pipe.
+    Applied over the *filtered* environment, so an operator already passing git settings
+    this way is continued rather than overwritten and the two rules compose in one
+    direction only.
+    """
+    return git_config_pins(
+        {
+            name: value
+            for name, value in os.environ.items()
+            if not any(fnmatch.fnmatchcase(name, p) for p in LLM_API_KEY_ENV_PATTERNS)
+        }
+    )
 
 
 async def spawn_confined(

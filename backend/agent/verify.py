@@ -28,6 +28,7 @@ from prompts.agent import VERIFIER_NUDGE
 from runs import LimitNotice, Run, RunStatus
 from services.conversations import ConversationBinding, ConversationStore
 
+from .history import TurnStart
 from .meta import Judge
 from .metrics import no_room_for
 from .parking import DEFAULT_BINDING, ParkedTurn
@@ -61,6 +62,7 @@ async def verify_and_correct(
     vision: bool = True,
     drop_ref: list[tuple[int, int]] | None = None,
     context_threshold: float | None = None,
+    turn_start: TurnStart | None = None,
 ) -> TurnResult:
     """Judge the answer; on failure make a single bounded corrective re-attempt.
 
@@ -70,6 +72,13 @@ async def verify_and_correct(
     original request → corrected answer. If the correction itself parks for
     approval, the drop range rides on the parked payload so the resume cleans too;
     if it hits a bound, it is returned as-is (no premature persist, no lost answer).
+
+    ``turn_start`` is the same boundary the first pass ran under, threaded because the
+    correction is *part of that turn* rather than a turn of its own: a call the re-attempt
+    defers is reviewed at the Auto level like any other, and the review's opening line is
+    the operator's request read off this boundary (``agent/gating.py``). Without it the
+    correction reviewed against the tail window alone — at the one moment a turn is
+    guaranteed to have run far past its own opening request.
     """
     if not turn.answer or not turn.answer.strip():
         return turn  # nothing checkable to verify
@@ -112,6 +121,7 @@ async def verify_and_correct(
         partial_history_ref=partial_history_ref,
         store=store,
         request_limit=request_limit,
+        turn_start=turn_start,
         # No fold under a correction: `clean_drop` indexes the pre-fold history.
         correcting=True,
     )

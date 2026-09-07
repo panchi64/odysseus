@@ -20,7 +20,7 @@ from agent.factory import build_agent
 from core.container import ServiceContainer
 from core.timezone import local_zone_key
 from prompts.agent import SYSTEM_PROMPT
-from prompts.levels import MANUAL_LEVEL, PLAN_LEVEL
+from prompts.levels import AUTO_LEVEL, MANUAL_LEVEL, PLAN_LEVEL
 from prompts.modes import CODE_MODE
 from runs import Run, RunStream
 from tools.builtin import builtin_toolset
@@ -49,17 +49,51 @@ async def _brief(*, mode: str = "normal", permission: str = "edit") -> str:
 
 
 class TestTheLevelPart:
-    async def test_plan_and_manual_say_what_the_level_means(self):
+    async def test_each_level_that_contradicts_the_base_posture_says_so(self):
         assert PLAN_LEVEL in await _brief(permission="plan")
         assert MANUAL_LEVEL in await _brief(permission="manual")
+        assert AUTO_LEVEL in await _brief(permission="auto")
 
-    async def test_the_acting_levels_add_nothing(self):
-        """Edit and Auto are what the base prompt was written for. Restating it here would
-        cost head-of-prompt tokens on every turn of the levels most threads run at."""
-        for level in ("edit", "auto"):
+    async def test_edit_adds_nothing(self):
+        """Edit is what the base prompt was written for — act, and the approval gate
+        catches what is genuinely dangerous. Restating that here would cost head-of-prompt
+        tokens on every turn to agree with the paragraph above it."""
+        brief = await _brief(permission="edit")
+        for fragment in (PLAN_LEVEL, MANUAL_LEVEL, AUTO_LEVEL):
+            assert fragment not in brief
+
+    async def test_no_levels_fragment_reaches_another_level(self):
+        """The failure this file exists for: a fragment in a thread it does not describe
+        is a false premise the model has no way to check."""
+        for level, own in (
+            ("plan", PLAN_LEVEL),
+            ("manual", MANUAL_LEVEL),
+            ("auto", AUTO_LEVEL),
+        ):
             brief = await _brief(permission=level)
-            assert PLAN_LEVEL not in brief
-            assert MANUAL_LEVEL not in brief
+            for fragment in (PLAN_LEVEL, MANUAL_LEVEL, AUTO_LEVEL):
+                assert (fragment in brief) is (fragment is own)
+
+    async def test_the_auto_fragment_claims_nothing_about_tools_a_thread_may_not_have(
+        self,
+    ):
+        """Auto is every fresh thread's level, and the tools that take a `reach` are the
+        shell's — which only a `code` thread is offered
+        (`services/modes.MODE_SCOPED_TOOLS`). So the fragment has to be true in a normal
+        or research thread too: it asks the model to answer the question *where a tool
+        asks it*, rather than asserting that every command carries one."""
+        for mode in ("normal", "research", "code"):
+            assert AUTO_LEVEL in await _brief(mode=mode, permission="auto")
+        assert "Where a tool asks how far a command needs to reach" in AUTO_LEVEL
+        assert "Every shell command" not in AUTO_LEVEL
+
+    async def test_auto_asks_for_the_declaration_and_never_states_the_bar(self):
+        """The one thing an Auto thread's model has to *do* differently is declare a
+        reach. What clears the review is deliberately absent — from here as much as from
+        the reviewer's own prompt: a model told the bar writes for the bar."""
+        assert "reach" in AUTO_LEVEL
+        for tell in ("low", "high", "too_destructive", "authorization"):
+            assert tell not in AUTO_LEVEL
 
     async def test_a_plan_thread_is_told_its_missing_tools_are_deliberate(self):
         """The catalog is cut at Plan whether or not the model knows why. Without this it

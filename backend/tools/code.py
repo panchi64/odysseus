@@ -38,6 +38,7 @@ from services.sandbox import (
     SandboxError,
     SandboxSessionManager,
     SandboxSpec,
+    host_scratch_dir,
     resolve_confinement,
     run_on_host,
 )
@@ -410,7 +411,9 @@ def code_toolset() -> FunctionToolset[RunDeps]:
 
         Only for when the host itself must change; prefer ``code_execute`` for
         anything that does not need the real host. ``explanation`` MUST say what the
-        command does and its effect on the host.
+        command does and its effect on the host. It does **not** start in your
+        workspace — your file tools work inside the sandbox, which the host cannot
+        see — but in a scratch directory of its own, so name host paths in full.
 
         The command is normally confined: it cannot read the
         operator's credentials or this application's own data directory, and it has
@@ -423,8 +426,19 @@ def code_toolset() -> FunctionToolset[RunDeps]:
         # widen the fence around every other command running at the same moment and
         # outlive this one (`services/sandbox/host.confine`).
         confinement = await resolve_confinement(settings)
+        # Not the server process's own directory, which is the application's source tree:
+        # a relative path the model wrote would land among this backend's own files, and
+        # `cat .env` would read its keys. `host_scratch_dir` says why it is not the run's
+        # workspace either — the workspace is inside the fence's denied `data_dir`, and
+        # the command does not run in it, which is also why the permission layer measures
+        # a host command's paths against no root at all.
         try:
-            result = await run_on_host(command, timeout_s=timeout_s, confinement=confinement)
+            result = await run_on_host(
+                command,
+                timeout_s=timeout_s,
+                confinement=confinement,
+                cwd=host_scratch_dir(),
+            )
         except HostExecutionError as exc:
             return {"ok": False, "error": f"The host command could not be launched: {exc}"}
         payload = _exec_result(result, settings, sandboxed=False)

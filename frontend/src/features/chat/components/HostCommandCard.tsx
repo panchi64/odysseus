@@ -1,5 +1,6 @@
 import { For, Show, createSignal, type JSX } from "solid-js";
 import { Button, Panel, Row, Stack, StatusFlag, Text, type Status } from "~/ui";
+import { grantKey } from "../commandScope";
 import type { ApprovalDecision, HostCommand, HostCommandPhase } from "../model";
 import {
   ConversationGrantToggle,
@@ -25,8 +26,10 @@ const phaseFlag: Record<HostCommandPhase, { status: Status; label: string }> = {
  *
  * **More than one tool lands here**, which is why each command carries its own `name`:
  * the sandboxed host command and the worktree shell both run something the operator has
- * to see, and a conversation grant is recorded against a tool *name*. Keying the grant
- * off one literal would have quietly recorded the wrong tool for the other.
+ * to see, and a conversation grant is recorded against a tool *and the command it ran*.
+ * Keying the grant off one literal would have quietly recorded the wrong tool for the
+ * other; keying it off the tool alone would make one tick under a test run a standing yes
+ * to every command the thread goes on to try.
  *
  * The backend resumes the parked run only on a decision covering *every* pending
  * command, so decisions are collected and submitted as a single batch once all
@@ -52,16 +55,21 @@ export function HostCommandCard(props: {
     pending().every((c) => c.toolCallId in d);
   const allDecided = () => isComplete(decisions());
 
+  // The act a grant on one of these would name — the command, not the tool, since the
+  // backend scopes the grant to the command it was recorded from.
+  const keyOf = (command: HostCommand) =>
+    grantKey(command.name, command.command, command.toolCallId);
+
   async function decide(toolCallId: string, approved: boolean): Promise<void> {
     if (submitting()) return;
-    // Lock in this command's grant choice now, keyed by the tool that actually asked,
+    // Lock in this command's grant choice now, keyed by the act that actually asked,
     // rather than re-reading the checkbox at submit.
-    const tool = props.commands.find((c) => c.toolCallId === toolCallId)?.name;
+    const asked = props.commands.find((c) => c.toolCallId === toolCallId);
     const next = {
       ...decisions(),
       [toolCallId]: {
         approved,
-        scope: tool ? grant.scope(tool, approved) : ("once" as const),
+        scope: asked ? grant.scope(keyOf(asked), approved) : ("once" as const),
       },
     };
     setDecisions(next);
@@ -93,8 +101,8 @@ export function HostCommandCard(props: {
             held={command.toolCallId in decisions() && !allDecided()}
             submitting={submitting()}
             open={props.open}
-            sessionAllowed={grant.isAllowed(command.name)}
-            onToggleSession={(v) => grant.set(command.name, v)}
+            sessionAllowed={grant.isAllowed(keyOf(command))}
+            onToggleSession={(v) => grant.set(keyOf(command), v)}
             onDecide={decide}
           />
         )}
@@ -167,6 +175,18 @@ function Terminal(props: {
               {c().explanation}
             </Text>
           </Show>
+          {/* What the Auto review found, when one ran. `too_destructive` is the whole
+              reason it is here: the review used to refuse such a command itself, and now
+              it hands it over — so the finding has to arrive with the command rather than
+              on a collapsed row above it. */}
+          <Show when={c().risk === "too_destructive"}>
+            <Row gap={2} align="center">
+              <StatusFlag status="alert">Cannot be undone</StatusFlag>
+              <Text variant="micro" tone="warn" class="break-words">
+                {c().reviewReason}
+              </Text>
+            </Row>
+          </Show>
           <Show
             when={!decidedPending()}
             fallback={
@@ -181,6 +201,7 @@ function Terminal(props: {
                   state is captured into this command's decision the moment APPROVE is
                   clicked (see `decide`), so set it before approving. */}
               <ConversationGrantToggle
+                command={c().command}
                 checked={props.sessionAllowed}
                 disabled={props.submitting}
                 onChange={(v) => props.onToggleSession?.(v)}

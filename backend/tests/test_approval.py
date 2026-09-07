@@ -10,6 +10,7 @@ from core.container import ServiceContainer
 from core.db import init_db, make_engine
 from core.vault import Vault
 from runs import RunRegistry, RunStatus
+from services.conversations import ConversationBinding
 from services.notifications import NotificationService
 from tools import RunDeps
 
@@ -161,6 +162,10 @@ async def test_grant_short_circuit_resolves_a_dangling_notification(tmp_path):
         categories=_danger_categories(),
         capabilities=ServiceContainer.of(grants, service),
         conversation_id="c1",
+        # Edit rather than the default, which is Auto: there a grant feeds the review
+        # instead of settling the call on its own, and with no utility model bound the
+        # turn would park — which is the branch under test not firing.
+        binding=ConversationBinding(permission="edit"),
     )
     run = reg.submit(
         kind="chat",

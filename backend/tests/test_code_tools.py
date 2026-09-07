@@ -606,3 +606,37 @@ async def test_the_hatch_is_fenced_with_the_installations_allowlist_not_the_thre
     [confinement] = seen
     assert set(confinement.allowed_domains) == {"pypi.org"}
     assert confinement.allow_write == ("/tmp",)  # nothing else was disturbed
+
+
+async def test_an_approved_host_command_runs_in_its_own_scratch_directory(
+    monkeypatch, tmp_path
+):
+    """Not the server process's working directory, which is this backend's source tree.
+
+    That is where a host command used to start, so every relative path the model wrote
+    meant something among the application's own files — `cat .env` read its keys. The
+    run's workspace is not the answer either: in the modes this tool exists in it lives
+    under `data_dir`, which the host fence denies outright, so a command started there
+    cannot even resolve its own working directory.
+    """
+    monkeypatch.setattr(code_module, "host_scratch_dir", lambda: tmp_path)
+    (tmp_path / "here.txt").write_text("IN THE SCRATCH DIRECTORY")
+
+    reg = RunRegistry()
+    orch = build_chat_orchestrator(
+        "read the file",
+        model=TestModel(call_tools=["code_run_host_command"]),
+        categories={"code": code_toolset()},
+    )
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+    parked: ParkedTurn = run.parked_payload
+    call_id = parked.requests.approvals[0].tool_call_id
+    decision = {
+        call_id: ToolApproved(override_args={"command": "cat here.txt", "explanation": "x"})
+    }
+    await reg.resume(run.id, build_resume_orchestrator(parked, decision))
+    await run.wait()
+
+    completed = next(b for b in _bodies(run) if b.type == "tool.completed")
+    assert "IN THE SCRATCH DIRECTORY" in completed.result["stdout"]

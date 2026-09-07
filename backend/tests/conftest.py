@@ -64,13 +64,7 @@ def egress_policy(data_dir, domains: tuple[str, ...] = ("pypi.org",)):
     return EgressPolicy(engine, data_dir, domains)
 
 
-async def unfenced(
-    command: str,
-    *,
-    allowed_domains=(),
-    allow_write=(),
-    deny_read=(),
-) -> str:
+async def unfenced(command: str, *, profile=None) -> str:
     """A ``Confiner`` that rewrites nothing — the shell's fence, stood down for a test.
 
     The code-mode shell refuses to run anything unfenced, and the platform's confinement

@@ -191,8 +191,8 @@ async def test_run_now_creates_conversation_run_and_seeds_grants(monkeypatch):
         assert row["conversationId"] is not None
         assert "All set" in row["summary"]
 
-        granted = await app.state.approval_grants.active("operator", row["conversationId"])
-        assert granted == {"conversations_search", "corpus_retrieve"}
+        granted = await app.state.approval_grants.list("operator", row["conversationId"])
+        assert {g.tool_name for g in granted} == {"conversations_search", "corpus_retrieve"}
 
         # The task's own bookkeeping reflects the fire too.
         refreshed = (await client.get("/tasks")).json()["items"][0]
@@ -217,8 +217,8 @@ async def test_a_fire_drops_a_once_only_pre_authorization(monkeypatch):
         )
         result = await app.state.scheduler._executor(view)
         assert result.outcome == "ok"
-        granted = await app.state.approval_grants.active("operator", result.conversation_id)
-        assert granted == {"conversations_search"}
+        granted = await app.state.approval_grants.list("operator", result.conversation_id)
+        assert {g.tool_name for g in granted} == {"conversations_search"}
 
 
 async def test_run_now_skips_when_previous_execution_still_live():

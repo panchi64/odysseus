@@ -692,27 +692,40 @@ class ReviewStarted(_Body):
     tool call simply appearing to have been made.
 
     ``summary`` is the action's extracted worst case, in the same words the reviewer is
-    judging and the operator can read. Additive to v1; no bump."""
+    judging and the operator can read. ``detail`` is the act's own content where the tool
+    has some worth reading — a delegated task, a program, the reason given for opening a
+    credential — and null where there is none, which is most tools. ``reach`` is how far a
+    shell command *declared* it needs to go — the worktree, the network, or the host — and
+    is null for every kind of act that declares nothing, which is a different fact from
+    declaring the widest reach. Additive to v1; no bump."""
 
     type: Literal["review.started"] = "review.started"
     tool_call_id: str
     name: str
     summary: str
+    detail: str | None = None
+    reach: Literal["workspace", "network", "host"] | None = None
 
 
 class ReviewCompleted(_Body):
     """How the review ruled, on the three axes it ruled on.
 
     ``decision`` is the outcome the run then took — ``allow`` ran the call without a
-    prompt, ``ask`` parked it for the operator anyway, ``block`` refused it outright. It
-    carries deliberately more than the outcome: ``stage`` says whether a deterministic
-    allowlist or a model settled it, and the three axes say what the model saw. An
-    operator reading only "allowed" learns nothing they can act on; one reading
-    "low risk, neutral authorization, cleared by the shell judge" can tell an
+    prompt, ``ask`` parked it for the operator anyway. ``block``, which refused the call
+    outright, is no longer produced: an act the reviewer judged unrecoverable parks like
+    anything else it will not clear, since that is the one act the operator most needs put
+    in front of them. The word stays in the vocabulary because it is already written into
+    the stored events of threads reviewed before that changed. It
+    carries deliberately more than the outcome: ``stage`` says whether the structural judge
+    or a model settled it, ``tier`` says on which ground when the judge did, ``fenced``
+    whether an OS fence was there to hold the command to what it declared, and the three
+    axes say what the model saw. An operator reading only "allowed" learns nothing they can
+    act on; one reading "cleared structurally, fenced to the worktree" can tell an
     over-permissive rule from a well-judged call.
 
     The axes are null when the model stage never ran — the judge cleared it, or nothing
-    was available to review with. Additive to v1; no bump."""
+    was available to review with — and ``tier`` is null in the mirror case, whenever the
+    model settled it. Additive to v1; no bump."""
 
     type: Literal["review.completed"] = "review.completed"
     tool_call_id: str
@@ -720,6 +733,10 @@ class ReviewCompleted(_Body):
     decision: Literal["allow", "ask", "block"]
     stage: Literal["judge", "reviewer"]
     reason: str
+    tier: Literal["read", "sandbox", "workspace"] | None = None
+    #: Whether this host could confine the command at all. False is why an ordinary
+    #: contained command reached a model reviewer, and it is the operator's to fix.
+    fenced: bool = False
     risk: Literal["low", "high", "too_destructive"] | None = None
     authorization: Literal["explicitly_no", "neutral", "explicitly_yes"] | None = None
     correctness: str | None = None

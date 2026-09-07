@@ -55,7 +55,10 @@ class Conversation(SQLModel, table=True):
     # Manual mid-conversation. Nothing structural hangs off it — no branch, no workspace —
     # so re-pointing it strands nothing. Policy, not user content, so it stays in the
     # clear like `model`/`mode`/`ephemeral`.
-    permission_level: str = Field(default="edit")
+    # **The Python default only** — deliberately not a `server_default` change, so no
+    # migration re-points a thread the operator already set. Existing rows keep whatever
+    # they were stored with; a row written from here on starts where a fresh thread starts.
+    permission_level: str = Field(default="auto")
     # AEAD ciphertext of the thread's title. It is user content — an auto-generated
     # summary of the operator's own first message, and the most revealing single line a
     # thread has — so it is sealed like every peer entity's title (XC-SEC-3). Null for an

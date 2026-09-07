@@ -125,6 +125,15 @@ export interface Approval {
   summary: string;
   /** Longer plain-language explanation, when the tool provides one. */
   explanation?: string;
+  /** What a review made of this call before it was handed over, copied off the matching
+   *  `review.completed`. Present only at the Auto level, where the chassis tried to answer
+   *  first — and `too_destructive` is why this is carried at all: the reviewer's own
+   *  refusal became a park, so the one thing it can say about an irreversible act is said
+   *  here, on the card where the operator is deciding. */
+  risk?: "low" | "high" | "too_destructive";
+  /** The review's account of its verdict, in its own words — the axes it scored and, when
+   *  a standing grant supplied the authorization, that it did. */
+  reviewReason?: string;
   /** True once submitting a decision for this approval 409'd — the run had
    *  already resumed elsewhere (a second tab, a retried request) by the time
    *  this decision landed. Non-interactive: a refetch reconciles the transcript
@@ -182,6 +191,12 @@ export interface HostCommand {
   command: string;
   /** Plain-language description of the effect, shown for the approval decision. */
   explanation?: string;
+  /** What a review made of this command before it was handed over, copied off the
+   *  matching `review.completed` — the same two fields an `Approval` carries, for the
+   *  same reason. A terminal is where the shell commands land, and the shell is where
+   *  `too_destructive` actually shows up (`git commit --amend`, `rm -rf build`). */
+  risk?: "low" | "high" | "too_destructive";
+  reviewReason?: string;
   phase: HostCommandPhase;
   /** Captured output streams, present once the command has run. */
   exitCode?: number;
@@ -354,9 +369,23 @@ export interface Review {
   name: string;
   /** The action's worst case, in the same words the reviewer judged. */
   summary: string;
+  /** The act's own content where the tool has some worth reading — a delegated task, the
+   *  words a skill is being rewritten with, the reason given for opening a credential.
+   *  Undefined for most tools. Shown because the reviewer ruled on it: a decision made in
+   *  the operator's place should be reviewable on the same material. */
+  detail?: string;
+  /** How far a shell command said it needs to go. Undefined for acts that declare
+   *  nothing at all, which is not the same as declaring the widest reach. */
+  reach?: "workspace" | "network" | "host";
   decision?: "allow" | "ask" | "block";
-  /** Which stage settled it: the deterministic allowlist, or the model. */
+  /** Which stage settled it: the structural judge, or the model. */
   stage?: "judge" | "reviewer";
+  /** On which ground the judge cleared it, when it did. */
+  tier?: "read" | "sandbox" | "workspace";
+  /** Whether an OS fence was available to hold the command to what it declared. False is
+   *  why an ordinary contained command reached a reviewer, and it is the operator's to
+   *  fix — so it is shown rather than inferred from the absence of a tier. */
+  fenced?: boolean;
   reason?: string;
   risk?: "low" | "high" | "too_destructive";
   authorization?: "explicitly_no" | "neutral" | "explicitly_yes";
@@ -594,13 +623,27 @@ export const PERMISSION_LEVELS: readonly PermissionLevelSpec[] = [
   {
     id: "auto",
     label: "Auto",
-    description: "Acts on its own, reviewed, and asks only on doubt.",
+    description:
+      "Acts on its own inside the worktree, reviewed beyond it, asks only on doubt.",
   },
 ];
 
 /** The level a thread runs at when nothing says otherwise — the backend's
- *  `DEFAULT_PERMISSION`, which is also each mode's default today. */
-export const DEFAULT_PERMISSION_LEVEL: PermissionLevel = "edit";
+ *  `DEFAULT_PERMISSION`, which is also each mode's default today.
+ *
+ *  Auto reaches no further than Edit; it differs in who answers at the boundary, and
+ *  what it settles on its own is contained offline work an OS sandbox holds to the
+ *  worktree. This is the default for a **new** thread only — an existing one arrives
+ *  with its own stored level and keeps it. */
+export const DEFAULT_PERMISSION_LEVEL: PermissionLevel = "auto";
+
+/** The level that does the least — the backend's `STRICTEST_PERMISSION`, and where every
+ *  reading that is *not yet known* lands. A level rides every send and the backend
+ *  persists what it is sent, so an unknown one has to resolve somewhere that cannot widen
+ *  a thread the operator already narrowed. Distinct from the default on purpose: the
+ *  default is what a thread with no level yet *starts* at, which is a different question
+ *  from what to do about one whose level exists and has not arrived. */
+export const STRICTEST_PERMISSION_LEVEL: PermissionLevel = "plan";
 
 /** Whatever the wire said, as a level this build has a rule for.
  *
@@ -615,7 +658,7 @@ export function permissionLevel(value: string | undefined): PermissionLevel {
   if (!value) return DEFAULT_PERMISSION_LEVEL;
   return PERMISSION_LEVELS.some((spec) => spec.id === value)
     ? (value as PermissionLevel)
-    : "plan";
+    : STRICTEST_PERMISSION_LEVEL;
 }
 
 /** One decision in an approval response (mirrors the backend's shape). */
@@ -646,12 +689,18 @@ export interface ApprovalDecision {
   scope?: "once" | "conversation";
 }
 
-/** A live conversation-scoped tool auto-approval grant — the operator's
- *  visible + revocable record of what auto-approves for the rest of the thread. The
- *  TTL is backend-owned and not surfaced here (the strip shows the tool name only). */
+/** A live conversation-scoped auto-approval grant — the operator's visible + revocable
+ *  record of what auto-approves for the rest of the thread. The TTL is backend-owned and
+ *  not surfaced here (the strip shows the act, and nothing else). */
 export interface ApprovalGrant {
   /** The namespaced tool name that auto-approves, e.g. "corpus_retrieve". */
   toolName: string;
+  /** The command it is scoped to, as the words it was read as (`["uv", "run", "pytest"]`)
+   *  — empty for the whole tool. A tool that runs a command is granted per act, so one
+   *  thread can hold several grants on the same tool; this is what tells them apart, in
+   *  the chip and in the revoke. Kept as words rather than a sentence because the revoke
+   *  sends it straight back: joining is for the chip's label. */
+  commandPrefix: string[];
 }
 
 /** A conversation's compaction state — the same shape for both reductions. `override` is

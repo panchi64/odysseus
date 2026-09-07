@@ -157,6 +157,11 @@ SENSITIVITY_CLASSES: Mapping[Sensitivity, frozenset[str]] = {
             "plan_write_plan",
             "skills_create",
             "skills_edit",
+            # Killing a process this thread started. Nothing new runs and nothing outside
+            # the workspace changes — the reach is the reach of the command that was
+            # already approved into existence, and asking again to *end* it is asking the
+            # operator to authorize the smaller half of something they already allowed.
+            "shell_stop_command",
             # The View is this conversation's own surface: showing and tearing down its
             # live head changes what the operator sees and nothing they own.
             "view_close",
@@ -172,7 +177,6 @@ SENSITIVITY_CLASSES: Mapping[Sensitivity, frozenset[str]] = {
             "code_run_host_command",
             "shell_run_command",
             "shell_start_command",
-            "shell_stop_command",
             # A sub-agent's whole catalog, reached through one call. Its worst case is at
             # least the worst case of running a program, and its arguments say nothing
             # about which tools it will end up using.

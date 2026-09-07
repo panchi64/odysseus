@@ -13,7 +13,7 @@ import logging
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
@@ -789,15 +789,29 @@ class ApprovalGrantOut(BaseModel):
     visible + revocable list."""
 
     tool_name: str
+    #: The command this grant covers, as the leading words it was read as
+    #: (`["uv", "run", "pytest"]`); empty when the grant covers the whole tool. The words,
+    #: not a joined string: this is what identifies the grant to `DELETE` below, and a
+    #: joined form has to be split again by whoever sends it back — which is only
+    #: unambiguous while an invariant two layers down holds. Joining it for a label is the
+    #: client's job, and a label is all a joined form is good for.
+    command_prefix: list[str] = []
     expires_at: datetime
 
 
 @router.get("/{conversation_id}/grants", response_model=list[ApprovalGrantOut])
 async def list_grants(conversation_id: str, request: Request) -> list[ApprovalGrantOut]:
-    """The tools the operator allowed to auto-approve for the rest of this conversation."""
+    """What the operator allowed to auto-approve for the rest of this conversation."""
     await _require_owned(request, conversation_id)
     grants = await deps.approval_grants(request).list(OPERATOR_ID, conversation_id)
-    return [ApprovalGrantOut(tool_name=g.tool_name, expires_at=g.expires_at) for g in grants]
+    return [
+        ApprovalGrantOut(
+            tool_name=g.tool_name,
+            command_prefix=list(g.command_prefix),
+            expires_at=g.expires_at,
+        )
+        for g in grants
+    ]
 
 
 class PlanItemOut(BaseModel):
@@ -879,10 +893,25 @@ async def accept_plan(
 
 
 @router.delete("/{conversation_id}/grants/{tool_name}", status_code=204)
-async def revoke_grant(conversation_id: str, tool_name: str, request: Request) -> None:
-    """Revoke a conversation auto-approval — the next call to that tool asks again."""
+async def revoke_grant(
+    conversation_id: str,
+    tool_name: str,
+    request: Request,
+    command_prefix: Annotated[list[str] | None, Query()] = None,
+) -> None:
+    """Revoke one conversation auto-approval — the next call it covered asks again.
+
+    ``command_prefix`` identifies *which* grant on that tool, since a command-running tool
+    can hold several at once (`uv run pytest` and `git commit` are two separate standing
+    yeses). It is repeated once per word — exactly the list the listing handed out, so what
+    the operator sees and what this deletes cannot come apart. Absent revokes the whole-tool
+    grant; a scope that matches nothing is a no-op, like revoking a grant that already
+    lapsed.
+    """
     await _require_owned(request, conversation_id)
-    await deps.approval_grants(request).revoke(OPERATOR_ID, conversation_id, tool_name)
+    await deps.approval_grants(request).revoke(
+        OPERATOR_ID, conversation_id, tool_name, tuple(command_prefix or ())
+    )
 
 
 class CompactionOverrideUpdate(BaseModel):

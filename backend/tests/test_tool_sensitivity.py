@@ -86,6 +86,15 @@ class TestTheClassesAgreeWithTheExistingMarkings:
         assert sensitivity_of("code_execute") is Sensitivity.HOST_EXEC
         assert sensitivity_of("repo_inventory_agent_context") is Sensitivity.READ
 
+    def test_stopping_a_process_is_not_starting_one(self):
+        # `shell_stop_command` executes nothing new: it kills a process an already-approved
+        # `start_command` created and removes that process's temp files. Classed as host
+        # execution it would have parked a run for permission to *end* something the
+        # operator had already agreed to start — and at a level whose ceiling stops below
+        # host execution, the model could start a background server and never stop it.
+        assert sensitivity_of("shell_stop_command") is Sensitivity.WORKSPACE_WRITE
+        assert sensitivity_of("shell_check_command") is Sensitivity.READ
+
 
 class TestResolvingAName:
     def test_a_known_name_resolves_to_its_class(self):

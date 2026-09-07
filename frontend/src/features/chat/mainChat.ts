@@ -64,6 +64,10 @@ export interface MainChat {
    *  staged. */
   permission: Accessor<PermissionLevel>;
   setPermission: (level: PermissionLevel) => void;
+  /** Whether the level above is a stand-in for one still loading (`seatPermission`'s
+   *  `provisional`). The composer renders the control as pending on it rather than
+   *  asserting the placeholder as the thread's level. */
+  permissionPending: Accessor<boolean>;
 }
 
 let _mainChat: MainChat | undefined;
@@ -80,6 +84,10 @@ export function mainChat(): MainChat {
     // it, and it exists only so `seatPermission` can tell "the operator's choice for
     // the thread on screen" from "the last thread's level, still sitting there".
     let permissionOwner: string | null = null;
+    // Whether the seated level is the strictest-level stand-in for one still in flight.
+    // Only the seating effect writes it; an operator's own choice is never provisional,
+    // and it cannot be made while the control is pending on this flag.
+    const [permissionPending, setPermissionPending] = createSignal(false);
     const setPermission = (level: PermissionLevel): void => {
       permissionOwner = currentId();
       setLevel(level);
@@ -145,6 +153,7 @@ export function mainChat(): MainChat {
       if (seat) {
         permissionOwner = seat.owner;
         setLevel(seat.level);
+        setPermissionPending(seat.provisional);
       }
       if (loaded) setActiveSessionMode(loaded.mode);
     });
@@ -209,6 +218,7 @@ export function mainChat(): MainChat {
       markWarmResolved: () => setWarmResolved(true),
       permission,
       setPermission,
+      permissionPending,
     } satisfies MainChat;
   }));
 }

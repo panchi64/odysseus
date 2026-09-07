@@ -31,6 +31,14 @@ conversation grant, or — at the one level whose entire meaning is that they as
 their answers to be given for them — through the review. That asymmetry is what keeps
 adding a level from quietly deleting a protection nobody re-examined.
 
+**At Auto, "through the review" includes the review's own deterministic answer**, and for
+a self-gated *read* that answer costs no model call: ``judge.py`` clears a tool the
+shipped catalog classifies as observing on the strength of the class, at the tier it
+records as ``read``. The gate is still answered — by the stage the operator's chosen level
+delegates to — but nothing weighs the arguments, because for that class of tool there is
+nothing in them to weigh. It is the one place where a level's delegation resolves without
+a model, and the review row says so in those words rather than reporting it as a review.
+
 There is exactly one exemption in the other direction, and it is here rather than at a
 call site because both halves of the enforcement need it: the model's own task list is
 writable at every level (:data:`PLANNING_TOOLS`), since a read-only turn whose only
@@ -44,7 +52,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
 
-from prompts.levels import MANUAL_LEVEL, PLAN_LEVEL
+from prompts.levels import AUTO_LEVEL, MANUAL_LEVEL, PLAN_LEVEL
 from services.tool_sensitivity import (
     EXTERNAL_PREFIX,
     Sensitivity,
@@ -61,9 +69,19 @@ type PermissionLevel = Literal["plan", "manual", "edit", "auto"]
 PERMISSION_LEVELS: frozenset[str] = frozenset({"plan", "manual", "edit", "auto"})
 
 #: What a mode that names no level of its own starts a thread at, and what a caller with
-#: no level to pass gets. ``edit`` is the level a thread is most usefully at: the model
-#: works in the workspace and stops at the boundary of it.
-DEFAULT_PERMISSION: PermissionLevel = "edit"
+#: no level to pass gets.
+#:
+#: ``auto`` reaches no further than ``edit`` — the two share a ceiling — and differs only
+#: in who answers at that boundary: Edit stops and asks, Auto rules first and asks about
+#: what it will not settle. The default moved once the ruling became structural: contained
+#: offline work is cleared by the grammar and an OS fence rather than by a model's opinion
+#: of a program name, so the ordinary work of a thread stopped costing the operator a
+#: prompt while everything that leaves the workspace still reaches them.
+#:
+#: **This is the default for a *fresh* thread only.** Existing rows keep the level they
+#: were stored with (``models/conversation.py`` changed its Python default and not its
+#: column default, so no migration re-points a thread the operator already set).
+DEFAULT_PERMISSION: PermissionLevel = "auto"
 
 #: The level that does the least — where an unreadable stored value lands.
 STRICTEST_PERMISSION: PermissionLevel = "plan"
@@ -96,9 +114,9 @@ class PermissionSpec:
     approval_policy: ApprovalPolicy
     #: The prompt fragment this level adds, or "" when it adds nothing — mirroring
     #: ``ModeSpec.instructions``, and for the same reason: a level's prose belongs with the
-    #: rest of that level's declaration rather than in a branch at the engine. Two of the
-    #: four say nothing (:mod:`prompts.levels` explains which and why), so the registration
-    #: is unconditional and most threads pay no tokens for it.
+    #: rest of that level's declaration rather than in a branch at the engine. One of the
+    #: four says nothing (:mod:`prompts.levels` explains which and why), so the registration
+    #: is unconditional and a thread pays only for the level it is at.
     instructions: str = ""
 
 
@@ -121,17 +139,22 @@ PERMISSIONS: Mapping[PermissionLevel, PermissionSpec] = {
         approval_policy=ApprovalPolicy.ASK,
         instructions=MANUAL_LEVEL,
     ),
-    # The working default: change the workspace freely, stop at its edge. Running a
-    # program, reaching a mail or calendar server, driving the operator's own browser
-    # session and reading a credential all sit past that edge.
+    # Change the workspace freely, stop at its edge and ask. Running a program, reaching a
+    # mail or calendar server, driving the operator's own browser session and reading a
+    # credential all sit past that edge.
     "edit": PermissionSpec(
         level="edit", ceiling=Sensitivity.WORKSPACE_WRITE, approval_policy=ApprovalPolicy.ASK
     ),
-    # The same reach as Edit, with the operator's decision replaced by a review rather
-    # than removed: a deterministic judge, then a model reviewer, parking on any doubt
-    # and on every way the review can fail (`decide.py`).
+    # The default, and the same reach as Edit: the operator's decision is replaced by a
+    # review rather than removed — a structural judge over the command's own syntax, then
+    # a model reviewer, parking on any doubt and on every way the review can fail
+    # (`decide.py`). It says a line about itself because it asks the model to *declare*
+    # something (`prompts/levels.py`), which is the one thing here a model has to be told.
     "auto": PermissionSpec(
-        level="auto", ceiling=Sensitivity.WORKSPACE_WRITE, approval_policy=ApprovalPolicy.REVIEW
+        level="auto",
+        ceiling=Sensitivity.WORKSPACE_WRITE,
+        approval_policy=ApprovalPolicy.REVIEW,
+        instructions=AUTO_LEVEL,
     ),
 }
 

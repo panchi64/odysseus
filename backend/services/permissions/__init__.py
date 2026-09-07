@@ -1,20 +1,29 @@
 """The permission axis: what a level is (:mod:`levels`), what it rules (:mod:`decide`),
 and — at the one level whose meaning is that the operator's answers are given for them —
 what an action would do (:mod:`capability`, :mod:`shell_ast`, :mod:`shell_flags`) and who
-says so (:mod:`judge` over the allowlist in :mod:`read_only`, then :mod:`reviewer`).
-Imported through the package, so a caller names one home for all of it."""
+says so (:mod:`judge`, structurally, then :mod:`reviewer`). Imported through the package,
+so a caller names one home for all of it."""
 
-from services.permissions.capability import ActionKind, Capability, capability_of
+from services.permissions.capability import (
+    DEFAULT_REACH,
+    REACHES,
+    ActionKind,
+    Capability,
+    Reach,
+    capability_of,
+    declared_reach,
+    measured_against_root,
+)
 from services.permissions.decide import (
     Decision,
+    ReviewBudget,
     ReviewOutcome,
     ReviewStage,
     blocked_message,
     decide,
     review,
-    review_refusal,
 )
-from services.permissions.judge import Judgement, judge
+from services.permissions.judge import Judgement, Tier, judge
 from services.permissions.levels import (
     ACTING_PERMISSIONS,
     DEFAULT_PERMISSION,
@@ -35,17 +44,20 @@ from services.permissions.reviewer import (
     Reviewer,
     ReviewRequest,
     ReviewVerdict,
+    TranscriptEntry,
     make_utility_reviewer,
     review_transcript,
 )
-from services.permissions.shell_ast import ShellCommand
+from services.permissions.shell_ast import ShellCommand, command_prefixes, strip_comments
 
 __all__ = [
     "ACTING_PERMISSIONS",
     "DEFAULT_PERMISSION",
+    "DEFAULT_REACH",
     "PERMISSIONS",
     "PERMISSION_LEVELS",
     "PLANNING_TOOLS",
+    "REACHES",
     "STRICTEST_PERMISSION",
     "ActionKind",
     "ApprovalPolicy",
@@ -54,23 +66,30 @@ __all__ = [
     "Judgement",
     "PermissionLevel",
     "PermissionSpec",
+    "Reach",
+    "ReviewBudget",
     "ReviewOutcome",
     "ReviewRequest",
     "ReviewStage",
     "ReviewVerdict",
     "Reviewer",
     "ShellCommand",
+    "Tier",
+    "TranscriptEntry",
     "beyond_scope",
     "blocked_message",
     "capability_of",
+    "command_prefixes",
     "decide",
+    "declared_reach",
     "judge",
     "make_utility_reviewer",
+    "measured_against_root",
     "permission_level",
     "permission_spec",
     "review",
-    "review_refusal",
     "review_transcript",
     "stricter_permission",
+    "strip_comments",
     "tools_beyond_scope",
 ]

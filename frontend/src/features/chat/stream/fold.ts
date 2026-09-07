@@ -258,6 +258,11 @@ export function createFolder(
               toolCallId: ev.tool_call_id,
               name: ev.name,
               summary: ev.summary,
+              // What the reviewer was given beyond the one-line summary, for the tools
+              // that have any. Undefined rather than null, so the card renders the block
+              // only when there is one.
+              detail: ev.detail ?? undefined,
+              reach: ev.reach ?? undefined,
             },
           });
         });
@@ -269,6 +274,11 @@ export function createFolder(
           b.review.decision = ev.decision;
           b.review.stage = ev.stage;
           b.review.reason = ev.reason;
+          // How the call was bounded, not merely whether it was allowed: the tier says
+          // which structural ground cleared it, and `fenced` says whether this host could
+          // hold it there at all — the answer to "why did an ordinary command still ask?"
+          b.review.tier = ev.tier ?? undefined;
+          b.review.fenced = ev.fenced;
           // Null on the wire means the model stage never ran — the deterministic judge
           // cleared it, or there was nothing to review with. Undefined here so the card
           // renders the axes only when there are axes.
@@ -288,17 +298,27 @@ export function createFolder(
         // the wire — default it once here, in the mapper, so no consumer of the
         // stored block has to guard a `Object.keys(args)` or an `args.command`.
         const args: Record<string, unknown> = ev.args ?? {};
+        // At Auto the chassis tried to answer this call first, and what it found rides
+        // onto whichever card ends up asking: a park is now the whole of what an
+        // unrecoverable act produces, so the reviewer's `too_destructive` would otherwise
+        // be visible only on a collapsed row above the prompt being answered. Both
+        // surfaces take it, because the commands that earn that word are shell commands
+        // and those are the ones that render as a terminal.
         if (terminalResult(ev.name)) {
-          patchById(assistantId, (m) =>
+          patchById(assistantId, (m) => {
+            const review = findReview(m, ev.tool_call_id)?.review;
             upsertHost(m, ev.tool_call_id, ev.name, {
               command: typeof args.command === "string" ? args.command : "",
               explanation: ev.explanation ?? undefined,
+              risk: review?.risk,
+              reviewReason: review?.reason,
               phase: "pending",
-            }),
-          );
+            });
+          });
           break;
         }
         patchById(assistantId, (m) => {
+          const review = findReview(m, ev.tool_call_id)?.review;
           (m.blocks ?? (m.blocks = [])).push({
             kind: "approval",
             id: `approval-${ev.tool_call_id}`,
@@ -308,6 +328,8 @@ export function createFolder(
               args,
               summary: ev.summary,
               explanation: ev.explanation ?? undefined,
+              risk: review?.risk,
+              reviewReason: review?.reason,
             },
           });
         });

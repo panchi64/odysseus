@@ -209,3 +209,174 @@ test("the after-fold blocked detail is the backend's exact string", () => {
   );
   expect(CONTEXT_OVERFLOW_AFTER_FOLD_DETAIL).not.toBe(CONTEXT_OVERFLOW_DETAIL);
 });
+
+describe("a review's two frames", () => {
+  // The pair the operator reads when the chassis answered for them. What is pinned here
+  // is that the *grounds* survive the fold, not just the verdict: the declared reach
+  // arrives on the opening frame and the tier and the fence arrive on the closing one,
+  // and a card that showed only "allowed" would tell them nothing to act on.
+  const started = (
+    reach: "workspace" | "network" | "host" | null,
+    detail: string | null = null,
+  ): RunEvent => ({
+    type: "review.started",
+    seq: ++seq,
+    ts: "",
+    tool_call_id: "t1",
+    name: "shell_run_command",
+    summary: "Runs the shell command: uv run pytest",
+    detail,
+    reach,
+  });
+
+  const completed = (
+    tier: "read" | "sandbox" | "workspace" | null,
+    fenced: boolean,
+  ): RunEvent => ({
+    type: "review.completed",
+    seq: ++seq,
+    ts: "",
+    tool_call_id: "t1",
+    name: "shell_run_command",
+    decision: "allow",
+    stage: "judge",
+    reason: "stays inside the worktree and reaches no network",
+    tier,
+    fenced,
+    risk: null,
+    authorization: null,
+    correctness: null,
+  });
+
+  const review = (messages: ChatMessage[]) =>
+    messages.find((m) => m.id === "a1")?.blocks?.[0];
+
+  test("the declared reach lands with the row that opens", () => {
+    const h = harness(turn());
+    h.fold(started("network"));
+    const block = review(h.messages);
+    expect(block?.kind).toBe("review");
+    expect(block?.kind === "review" && block.review.reach).toBe("network");
+    // Nothing is decided yet — the row exists so a review that costs a model call reads
+    // as work in flight rather than as a stalled turn.
+    expect(block?.kind === "review" && block.review.decision).toBeUndefined();
+  });
+
+  test("the content the reviewer ruled on lands with it", () => {
+    // For the tools whose act is not written in one line — a delegated task, a skill's
+    // replacement text — the reviewer is given a `detail` beyond the summary. The row is
+    // where the operator checks a decision made in their place, so it is shown the same
+    // material rather than a paraphrase of it.
+    const h = harness(turn());
+    h.fold(started(null, "task: read the docs"));
+    const block = review(h.messages);
+    expect(block?.kind === "review" && block.review.detail).toBe(
+      "task: read the docs",
+    );
+  });
+
+  test("and most tools have none, which renders nothing rather than empty", () => {
+    const h = harness(turn());
+    h.fold(started("workspace"));
+    const block = review(h.messages);
+    expect(block?.kind === "review" && block.review.detail).toBeUndefined();
+  });
+
+  test("the ground and the fence land with the verdict", () => {
+    const h = harness(turn());
+    h.fold(started("workspace"));
+    h.fold(completed("workspace", true));
+    const block = review(h.messages);
+    expect(block?.kind === "review" && block.review.tier).toBe("workspace");
+    expect(block?.kind === "review" && block.review.fenced).toBe(true);
+    expect(block?.kind === "review" && block.review.decision).toBe("allow");
+  });
+
+  const unrecoverable = (name: string): RunEvent => ({
+    type: "review.completed",
+    seq: ++seq,
+    ts: "",
+    tool_call_id: "t1",
+    name,
+    decision: "ask",
+    stage: "reviewer",
+    reason: "too_destructive risk, authorization neutral",
+    tier: null,
+    fenced: true,
+    risk: "too_destructive",
+    authorization: "neutral",
+    correctness: null,
+  });
+
+  const asked = (name: string, command?: string): RunEvent => ({
+    type: "approval.required",
+    seq: ++seq,
+    ts: "",
+    tool_call_id: "t1",
+    name,
+    args: command ? { command } : {},
+    summary: `Runs ${name}`,
+    explanation: null,
+  });
+
+  const blockOf = (messages: ChatMessage[], kind: string) =>
+    messages.find((m) => m.id === "a1")?.blocks?.find((b) => b.kind === kind);
+
+  test("what the review found rides onto the card that asks", () => {
+    // The reviewer's own refusal became a park, so `too_destructive` is a finding the
+    // operator now has to read *while deciding* — not on a collapsed row above the prompt.
+    const h = harness(turn());
+    h.fold(started("workspace"));
+    h.fold(unrecoverable("mail_send"));
+    h.fold(asked("mail_send"));
+    const block = blockOf(h.messages, "approval");
+    expect(block?.kind === "approval" && block.approval.risk).toBe(
+      "too_destructive",
+    );
+    expect(block?.kind === "approval" && block.approval.reviewReason).toBe(
+      "too_destructive risk, authorization neutral",
+    );
+  });
+
+  test("it rides onto the terminal too, which is where the shell asks", () => {
+    // `git commit --amend` and `rm -rf build` are the acts that earn the word, and every
+    // one of them renders as a terminal rather than as an approval card — so a finding
+    // carried only onto the latter would never be seen on the calls it was written for.
+    const h = harness(turn());
+    h.fold(started("workspace"));
+    h.fold(unrecoverable("shell_run_command"));
+    h.fold(asked("shell_run_command", "git commit --amend"));
+    const block = blockOf(h.messages, "host_command");
+    expect(block?.kind === "host_command" && block.command.risk).toBe(
+      "too_destructive",
+    );
+    expect(block?.kind === "host_command" && block.command.reviewReason).toBe(
+      "too_destructive risk, authorization neutral",
+    );
+  });
+
+  test("an approval with no review behind it carries no verdict", () => {
+    // Every level but Auto: nothing ruled on it first, so there is nothing to show and
+    // the card must not imply a review happened.
+    const h = harness(turn());
+    h.fold(asked("mail_send"));
+    const block = blockOf(h.messages, "approval");
+    expect(block?.kind === "approval" && block.approval.risk).toBeUndefined();
+    expect(
+      block?.kind === "approval" && block.approval.reviewReason,
+    ).toBeUndefined();
+  });
+
+  test("a null tier is an absence, and an unfenced host is a fact worth keeping", () => {
+    // Null on the wire means the model stage settled it, so there is no structural
+    // ground to name; `fenced: false` is the separate, actionable fact that this
+    // machine could not have held the command to what it declared.
+    const h = harness(turn());
+    h.fold(started(null));
+    h.fold(completed(null, false));
+    const block = review(h.messages);
+    expect(block?.kind === "review" && block.review.tier).toBeUndefined();
+    expect(block?.kind === "review" && block.review.reach).toBeUndefined();
+    expect(block?.kind === "review" && block.review.fenced).toBe(false);
+  });
+});

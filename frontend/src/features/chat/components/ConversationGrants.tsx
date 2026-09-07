@@ -4,8 +4,9 @@ import { fetchGrants, revokeGrant } from "../data";
 import { MetaSep } from "./MetaSep";
 import type { ApprovalGrant } from "../model";
 
-/** The conversation's active tool auto-approval grants — what the operator allowed to
- *  skip the per-call approval prompt for the rest of this thread. Renders nothing when
+/** The conversation's active auto-approval grants — what the operator allowed to
+ *  skip the per-call approval prompt for the rest of this thread, each named by the act it
+ *  covers (a command where the tool runs one, else the tool). Renders nothing when
  *  there are none, and carries no band of its own: it is one segment of the composer's
  *  readout line, which owns the layout.
  *
@@ -51,24 +52,50 @@ export function ConversationGrants(props: {
   };
   const items = (): ApprovalGrant[] => current()?.items ?? [];
 
-  async function revoke(toolName: string) {
+  // What a grant is *called* — the command it names where it has one, else the tool.
+  // A tool that runs a command holds one grant per act, so the tool name alone would put
+  // two indistinguishable chips side by side and revoke the wrong one. Joining the words
+  // is presentation and stops here: the revoke sends the words themselves.
+  // A scope recorded under a wider reach leads with `@host` / `@network` (the backend's
+  // marker), which reads better as a suffix: "brew install wget (host)".
+  const label = (g: ApprovalGrant) => {
+    const [head, ...rest] = g.commandPrefix;
+    if (head?.startsWith("@")) return `${rest.join(" ")} (${head.slice(1)})`;
+    return g.commandPrefix.join(" ") || g.toolName;
+  };
+
+  // Which grant a row *is*, for the optimistic removal below. Compared word by word rather
+  // than through the label, so two scopes cannot collapse into one on the way to a string.
+  const isSame = (a: ApprovalGrant, b: ApprovalGrant) =>
+    a.toolName === b.toolName &&
+    a.commandPrefix.length === b.commandPrefix.length &&
+    a.commandPrefix.every((word, i) => word === b.commandPrefix[i]);
+
+  async function revoke(grant: ApprovalGrant) {
     const id = current()?.id;
     if (!id) return;
+    const name = label(grant);
     const ok = await confirm({
-      title: `Stop auto-approving ${toolName}?`,
-      detail:
-        "The agent will pause and ask for approval the next time it calls this tool in this conversation.",
+      title: `Stop auto-approving ${name}?`,
+      detail: grant.commandPrefix.length
+        ? "The agent will pause and ask for approval the next time it runs this command in this conversation."
+        : "The agent will pause and ask for approval the next time it calls this tool in this conversation.",
       confirmLabel: "Revoke",
       cancelLabel: "Cancel",
       tone: "alert",
     });
     if (!ok) return;
     try {
-      await revokeGrant(id, toolName);
+      await revokeGrant(id, grant.toolName, grant.commandPrefix);
       mutate((g) =>
-        g ? { ...g, items: g.items.filter((x) => x.toolName !== toolName) } : g,
+        g
+          ? {
+              ...g,
+              items: g.items.filter((x) => !isSame(x, grant)),
+            }
+          : g,
       );
-      toast.success(`Stopped auto-approving ${toolName}.`);
+      toast.success(`Stopped auto-approving ${name}.`);
     } catch {
       toast.error("Unable to revoke the grant.");
       void refetch();
@@ -99,9 +126,9 @@ export function ConversationGrants(props: {
             <div class="flex flex-wrap gap-2">
               <For each={items()}>
                 {(g) => (
-                  <Chip leading="check" onClick={() => revoke(g.toolName)}>
+                  <Chip leading="check" onClick={() => revoke(g)}>
                     <span class="inline-flex items-center gap-1">
-                      {g.toolName}
+                      {label(g)}
                       <Icon name="close" size={12} />
                     </span>
                   </Chip>

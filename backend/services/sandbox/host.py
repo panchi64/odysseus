@@ -32,12 +32,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import stat
 import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 from core.config import Settings
+
+from .base import HostExecutionError
 
 logger = logging.getLogger(__name__)
 
@@ -68,16 +71,100 @@ _resolved: HostConfinement | None = None
 _resolve_lock = asyncio.Lock()
 
 
-def denied_reads(settings: Settings) -> tuple[str, ...]:
-    """Paths no host-side command may read, whichever fence it runs under.
+def host_scratch_dir() -> Path:
+    """The directory an approved host command starts in.
 
-    The data directory carries the vault, the sealed workspaces and the database. It is
-    denied here rather than left to the credential list because it is the one path whose
-    exposure would undo at-rest encryption wholesale. Derived once for both callers — the
-    approved host command and the code-mode shell — because a path added to one fence and
-    not the other is a hole nobody notices.
+    Neither obvious answer is usable. The server process's own working directory is the
+    application's source tree — its `.env`, its config, its database url — so a command
+    approved to read "a file here" would be reading those, and every relative path the
+    model wrote would mean something in a directory nobody described to it. The run's
+    workspace is no better: a `normal`/`research` thread's is inside ``data_dir``, which
+    the fence below denies outright, so a command started there cannot resolve its own
+    working directory, let alone write in it.
+
+    So host commands get a scratch directory of their own: under the OS temp root, which
+    the fence allows writing to; holding nothing the operator did not put there through
+    this tool; and stable across calls, so one command's output is still there for the
+    next — which is the one property the old server-directory behaviour had.
+
+    **Stable and predictable under a shared root is a squattable pair**, so the path is
+    claimed rather than merely created — see :func:`_claim_scratch`. This matters on Linux,
+    where ``gettempdir()`` is the world-writable ``/tmp`` (macOS gives each user a private
+    ``TMPDIR`` under ``/var/folders``), and it matters twice over: the directory is both
+    where every approved command starts *and* an entry in the fence's write allowlist, so
+    whoever controls it controls what a relative path in an approved command resolves to.
+    """
+    scratch = scratch_path()
+    _claim_scratch(scratch)
+    return scratch
+
+
+def scratch_path() -> Path:
+    """Where the scratch directory sits, without creating or checking anything.
+
+    Split from the claim so a *profile* can name the path without a squatted directory
+    taking confinement resolution down with it: the refusal belongs to the command that
+    would have run there, not to the process that configures the fence for every later
+    command. Two profiles name it, for opposite reasons — this module's allows writing it
+    (it is where an approved host command starts), and the worktree fence
+    (``fence.py``) denies it, so a command nobody approved cannot plant something in the
+    directory an approved one will run in.
+    """
+    return Path(tempfile.gettempdir()) / f"odysseus-host-{os.getuid()}"
+
+
+def denied_read_paths(settings: Settings) -> tuple[str, ...]:
+    """The paths no confined command may read, whichever profile is confining it.
+
+    One list with two consumers — the host escape hatch below and the worktree fence
+    (``fence.py``) — because the invariant is a comparison between them: a command the
+    deterministic stage cleared for itself must never be fenced *more loosely* than one the
+    operator read and approved. Two copies of this list could only ever drift into breaking
+    that, and silently.
+
+    The data directory is the entry that matters most, and the one an operator's own
+    ``host_command_deny_read`` would not think to name: it holds the vault, the sealed
+    workspaces and the database, so exposing it would undo at-rest encryption wholesale.
     """
     return (*settings.host_command_deny_read, str(Path(settings.data_dir).resolve()))
+
+
+def _claim_scratch(scratch: Path) -> None:
+    """Make ``scratch`` a directory this user owns and nobody else can read, or refuse it.
+
+    ``mkdir(exist_ok=True)`` is not enough on its own: it swallows the "already there" case
+    whenever :meth:`Path.is_dir` is true, and ``is_dir`` follows symlinks — so a symlink
+    planted at this path by another local user is silently accepted, and everything below
+    lands wherever it points. The name carries the uid so two accounts on one host do not
+    contend for the same path in the first place; this then checks what is actually there
+    with :func:`os.lstat`, which does not follow the link.
+
+    A refusal raises rather than falling back to some other directory. There is no safe
+    second choice — the alternatives are the source tree and the denied data directory —
+    and a squatted scratch path is a fact the operator needs to see, not route around.
+    """
+    try:
+        scratch.mkdir(mode=0o700, exist_ok=True)
+        info = os.lstat(scratch)
+    except OSError as exc:
+        raise HostExecutionError(
+            f"the host scratch directory {scratch} is unusable: {exc}"
+        ) from exc
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise HostExecutionError(
+            f"the host scratch directory {scratch} is a symlink or not a directory — "
+            "refusing to run an approved command in a path someone else redirected"
+        )
+    if info.st_uid != os.getuid():
+        raise HostExecutionError(
+            f"the host scratch directory {scratch} is owned by uid {info.st_uid}, "
+            "not this process — refusing to run an approved command in it"
+        )
+    if info.st_mode & 0o077:
+        # Ours, but wider than it should be — a directory this process created under an
+        # older, laxer version of this function, or under a permissive umask. Tighten it:
+        # the command's output is the operator's, and on a shared host the temp root is not.
+        os.chmod(scratch, 0o700)
 
 
 async def resolve_confinement(settings: Settings) -> HostConfinement:
@@ -127,19 +214,25 @@ async def _configure(settings: Settings) -> HostConfinement:
                 "the filesystem deny rules; install it to fence host commands",
             )
         return HostConfinement(False, "the platform's sandbox dependencies are unavailable")
-    deny_read = list(denied_reads(settings))
+    deny_read = list(denied_read_paths(settings))
     # Writes are deny-by-default in this runtime, so the allow list is not a hardening knob
     # — it is what keeps an approved command able to do the thing it was approved for. The
     # runtime's own defaults (`/dev/null`, `/dev/stdout`, the tty) come first: without them
     # even `echo` into a pipe fails, which would read as the tool being broken.
     # `gettempdir()` rather than a literal `/tmp`: macOS gives each user a private
     # `TMPDIR` under `/var/folders`, so a hardcoded path would miss where temp files
-    # actually land (`XC-PORT-1`).
+    # actually land (`XC-PORT-1`). The scratch directory is under it and named anyway,
+    # because it is the one path a host command *has* to be able to write: it is where the
+    # command starts. What used to stand here was `os.getcwd()` — the application's own
+    # source tree, which is neither where a command runs nor anywhere one should write.
+    # Named, not claimed: `host_scratch_dir` does the claiming, on the call that will
+    # actually run there, so a squatted path refuses one command rather than leaving every
+    # later one unfenced.
     allow_write = [
         *get_default_write_paths(),
         *settings.host_command_allow_write,
         tempfile.gettempdir(),
-        os.getcwd(),
+        str(scratch_path()),
     ]
     # Imported here rather than at module scope: `services.egress` reads `safe_key` out of
     # this package, so the two only meet at call time.

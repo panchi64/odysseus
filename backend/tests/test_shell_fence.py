@@ -53,17 +53,23 @@ class _Projects:
 
 
 class _Recorder:
-    """A confiner that runs the command untouched and remembers how it was fenced."""
+    """A confiner that runs the command untouched and remembers how it was fenced.
+
+    The profile is the whole of what the shell hands its fence, so reading it here is
+    reading the boundary the OS would have been given — `tools/shell.py` builds it from the
+    declared reach and the runner passes it straight through.
+    """
 
     def __init__(self) -> None:
         self.calls: list[dict] = []
 
-    async def __call__(self, command: str, *, allowed_domains, allow_write, deny_read) -> str:
+    async def __call__(self, command: str, *, profile) -> str:
         self.calls.append(
             {
-                "allowed_domains": set(allowed_domains),
-                "allow_write": tuple(allow_write),
-                "deny_read": tuple(deny_read),
+                "allowed_domains": set(profile.network.allowed_domains),
+                "allow_write": tuple(profile.filesystem.allow_write),
+                "deny_read": tuple(profile.filesystem.deny_read),
+                "deny_write": tuple(profile.filesystem.deny_write),
             }
         )
         return command
@@ -242,7 +248,7 @@ async def test_without_a_fence_the_tools_refuse_and_say_what_is_missing(tmp_path
     async def no_primitive(_settings):
         return HostConfinement(False, "ripgrep (`rg`) is not installed")
 
-    monkeypatch.setattr("tools.shell.resolve_confinement", no_primitive)
+    monkeypatch.setattr("tools.shell.fence.fence_available", no_primitive)
     shell = await _shell(tmp_path, confiner=None)
     refusal = await shell.call("run_command", command="echo should-not-run")
     assert "cannot be confined" in refusal
@@ -255,10 +261,14 @@ async def test_the_fence_is_asked_for_this_conversations_egress_and_its_worktree
     await policy.allow("conv-a", ["files.example.com"])
     recorder = _Recorder()
     shell = await _shell(tmp_path, confiner=recorder, egress=policy)
-    await shell.call("run_command", command="echo fenced")
+    # `reach="network"` is what asks for a route out at all. A `workspace` command — the
+    # default, and the overwhelming majority — is fenced with an *empty* domain list and
+    # reaches nothing, which is asserted just below.
+    await shell.call("run_command", command="echo fenced", reach="network")
 
     [call] = recorder.calls
-    # Everything this conversation may reach, which on the host decides whether the
+    # Everything this conversation may reach: the installation's list plus whatever
+    # `code_request_egress` widened for this workspace. On the host it decides whether the
     # command gets a route out at all — the proxy filters against the installation's list.
     assert call["allowed_domains"] == {"pypi.org", "files.example.com"}
     # Writes land in the run's own worktree, which is not the operator's checkout...
@@ -275,15 +285,36 @@ async def test_the_fence_is_asked_for_this_conversations_egress_and_its_worktree
     assert str(Path(get_settings().data_dir).resolve()) in call["deny_read"]
 
 
+async def test_a_workspace_command_is_fenced_to_no_network_at_all(tmp_path):
+    # The default declaration, and the one that makes the rest affordable: an ordinary
+    # build or test run asks for nothing off the machine, so an emptied domain list is not
+    # a degraded fence but the whole point of declaring `workspace`. A conversation's own
+    # egress grants do not widen it — they are the answer to a `network` declaration.
+    policy = egress_policy(tmp_path, ("pypi.org",))
+    await policy.allow("conv-a", ["files.example.com"])
+    recorder = _Recorder()
+    shell = await _shell(tmp_path, confiner=recorder, egress=policy)
+    await shell.call("run_command", command="echo fenced")
+
+    [call] = recorder.calls
+    assert call["allowed_domains"] == set()
+
+
 async def test_the_project_repository_is_writable_where_git_stores_and_nowhere_else(tmp_path):
     # `.git/hooks` is code the operator's own git runs later, outside every fence, and
     # `.git/config` can name a command it runs for them. Neither is storage, and handing
     # either over would change what happens on the operator's machine without the merge
     # they approve — so the parts git writes are named one by one rather than the
-    # directory holding them. The ref store is named more precisely still: only the
-    # namespace coding branches live in, because git is not the enforcer here and a
-    # writable `refs/heads` is `git update-ref refs/heads/main <sha>` — the operator's own
-    # branch moved without the merge that is supposed to move it.
+    # directory holding them.
+    #
+    # The ref store is named most precisely of all: **this thread's own branch**, not the
+    # `ody/` namespace every coding thread shares. A namespace-wide grant was already
+    # narrow enough to keep the operator's `main` out of reach; naming the single ref a
+    # commit actually opens also keeps one thread out of another thread's branch, and a
+    # commit opens its ref through a `.lock` beside it, which is why each path appears
+    # twice. `packed-refs.lock` is the one addition that is not a write: every ref update
+    # takes it to check for a packed copy to retire, and denying it leaves the commit
+    # landing with an error printed beside it — which the model reads as a failed commit.
     recorder = _Recorder()
     shell = await _shell(tmp_path, confiner=recorder)
     await shell.call("run_command", command="echo fenced")
@@ -291,18 +322,27 @@ async def test_the_project_repository_is_writable_where_git_stores_and_nowhere_e
     [call] = recorder.calls
     git = (tmp_path / "project" / ".git").resolve()
     workspace = await run_workspace(shell.ctx)
-    assert workspace is not None
+    assert workspace is not None and workspace.branch is not None
     gitdir = Path((workspace.root / ".git").read_text().partition("gitdir:")[2].strip())
+    branch = workspace.branch
     granted = {path for path in _resolved(call["allow_write"]) if path.startswith(str(git))}
+    ref, log = git / "refs" / "heads" / branch, git / "logs" / "refs" / "heads" / branch
     assert granted == {
         str(gitdir.resolve()),  # this worktree's own index and HEAD, not its siblings'
         str(git / "objects"),
-        str(git / "refs" / "heads" / "ody"),
-        str(git / "logs" / "refs" / "heads" / "ody"),
+        str(git / "packed-refs.lock"),
+        str(ref),
+        f"{ref}.lock",
+        str(log),
+        f"{log}.lock",
     }
-    # Nothing granted contains a branch of the operator's.
-    operator_branch = git / "refs" / "heads" / "main"
-    assert not any(operator_branch.is_relative_to(Path(path)) for path in granted)
+    # Nothing granted contains a branch of the operator's — nor another thread's.
+    for out_of_reach in (git / "refs" / "heads" / "main", git / "refs" / "heads" / "ody"):
+        assert not any(out_of_reach.is_relative_to(Path(path)) for path in granted)
+    # And the repository's own config and hooks are denied outright, not merely unnamed.
+    denied = _resolved(call["deny_write"])
+    assert str(git / "config") in denied
+    assert str(git / "hooks") in denied
 
 
 async def test_every_command_goes_through_the_fence_including_background_ones(tmp_path):

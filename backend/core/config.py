@@ -188,7 +188,28 @@ class Settings(BaseSettings):
     # Read-denied even under approval. The data directory is added to this at runtime
     # because it holds the vault, the sealed workspaces and the database: the agent must
     # never read its own encrypted store from the host, whatever it was approved to do.
-    host_command_deny_read: tuple[str, ...] = ("~/.ssh", "~/.aws", "~/.gnupg", "~/.config/gh")
+    #
+    # The rest of the list is the operator's *other* credentials, and it is deliberately
+    # longer than the obvious four. The fence has a read denylist and no read allowlist,
+    # so this is the only thing standing between a fenced command and a file outside the
+    # worktree — and a command that reaches the network is a command that can send what it
+    # read. Everything named here is a standing credential (a registry login, a cluster
+    # token, a cloud session) or a shell history, which is where the ones nobody meant to
+    # store end up.
+    host_command_deny_read: tuple[str, ...] = (
+        "~/.ssh",
+        "~/.aws",
+        "~/.gnupg",
+        "~/.config/gh",
+        "~/.netrc",
+        "~/.docker",
+        "~/.kube",
+        "~/.config/gcloud",
+        "~/.azure",
+        "~/Library/Keychains",
+        "~/.zsh_history",
+        "~/.bash_history",
+    )
     # Writes are **deny-by-default** under the confinement, so this list is what makes the
     # tool usable at all — an approved "change my host" command that cannot write anything
     # would fail confusingly rather than safely. Kept broad on purpose (the operator read
@@ -196,6 +217,28 @@ class Settings(BaseSettings):
     # egress allowlist, which are the exfiltration paths. The credential paths above are
     # additionally write-denied, so a confined command can neither read nor clobber them.
     host_command_allow_write: tuple[str, ...] = ("~", "/tmp", "/var/tmp")
+    # The same knob for the *worktree* fence (`services/sandbox/fence.py`), and a separate
+    # list rather than a reuse of the one above, because the two are approved differently:
+    # a host command is one the operator read, and a worktree command at `reach="workspace"`
+    # is one nobody was asked about. Widening this one to `~` would mean an unreviewed
+    # command may write anywhere in the operator's home, which is the fence dissolved.
+    #
+    # So the seed is the build caches and nothing else. Every one of them is content the
+    # tool would re-download rather than something the operator wrote, and without them the
+    # ordinary work this tier exists to clear does not run at all: `uv` fails to initialise
+    # `~/.cache/uv`, `npm ci` cannot write `~/.npm/_cacache`, `cargo` cannot write its
+    # registry. Deliberately *not* here are the sibling paths that name a program to run —
+    # `~/.cargo/config.toml`, `~/.gradle/init.gradle`, `~/.npmrc` — since a fence a command
+    # can write its way out of is not one.
+    worktree_command_allow_write: tuple[str, ...] = (
+        "~/.cache",
+        "~/Library/Caches",
+        "~/.npm/_cacache",
+        "~/.bun/install/cache",
+        "~/.cargo/registry",
+        "~/.cargo/git",
+        "~/go/pkg/mod",
+    )
 
     # Meta-loop. The no-progress guard trips after this many identical tool
     # calls in a turn. The verifier (a post-turn judge + one bounded corrective
@@ -220,11 +263,17 @@ class Settings(BaseSettings):
     # therefore parks, like every other way the review can fail. `review_max_tokens` is
     # the output cap, sized like the title call's: reasoning is requested off, but a
     # runtime that ignores the lever reasons anyway and the cap has to leave room for a
-    # think block plus three short fields. `review_transcript_messages` is how much of the
-    # thread the reviewer reads, counted from the end.
+    # think block plus three short fields. `review_transcript_entries` is how much of the
+    # thread the reviewer reads, counted from the end in **entries of prose** — the
+    # operator's and the assistant's own words — rather than in messages, since a single
+    # tool round trip is two messages and a window measured in those held nothing but tool
+    # traffic after a few calls. The turn's opening request is always included on top of
+    # it. `review_max_per_turn` caps how many *model* reviews one turn may spend: a
+    # structurally-cleared command costs none, and past the cap the calls park.
     review_timeout_s: float = 30.0
     review_max_tokens: int = 2048
-    review_transcript_messages: int = 12
+    review_transcript_entries: int = 12
+    review_max_per_turn: int = 12
 
     # Web search. `web_search_result_limit` caps results from the SearXNG provider;
     # `web_search_timeout_s` bounds one query (its own budget, not the fetch timeout).

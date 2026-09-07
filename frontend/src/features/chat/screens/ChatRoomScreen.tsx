@@ -66,6 +66,7 @@ export function ChatRoomScreen(): JSX.Element {
     markWarmResolved,
     permission,
     setPermission,
+    permissionPending,
   } = mainChat();
   // Straight from the app-wide store, not through the room controller: the mode is
   // the window's, and re-exposing it on the chat handle only hid that.
@@ -284,6 +285,10 @@ export function ChatRoomScreen(): JSX.Element {
                   <PermissionControl
                     level={permission()}
                     onLevelChange={setPermission}
+                    // While an opened thread's own level is still in flight the seat holds
+                    // the strictest one as a placeholder; the control reports that rather
+                    // than naming a level the thread may not be at.
+                    pending={permissionPending()}
                   />
                 }
                 trailing={

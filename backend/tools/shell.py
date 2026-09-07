@@ -4,25 +4,61 @@ Four tools: `run_command` (blocking), `start_command` / `check_command` / `stop_
 (background), so a dev server or a long test run is a process the agent checks on rather
 than a turn that blocks for ten minutes. Rebound per run to the project's worktree, the
 same way `files` is. The mechanics are in ``services/sandbox/shell_runner.py``; this file
-is the contract the model sees.
+is the contract the model sees, and the one place that turns what the model *said* into
+the boundary the OS holds it to.
 
-**The fence is required here.** Every command is wrapped by the same OS-level confinement
-an approved host command runs under — the credential paths and the data directory
-unreadable, writes landing in the worktree and the build caches, egress off the machine
-only to the installation's allowlist (loopback stays open, so a dev server and its tests
-work; ``services/sandbox/host.py`` states what that leaves reachable). Unlike the host
-hatch, which degrades and says so because the operator approved *that specific command*,
-this refuses when the platform has no
-primitive: nobody consented to an unfenced agent shell, and a code conversation is a long
-stretch of commands nobody reads one by one.
+**The two executing tools take a third argument: `reach`.** The model states how far a
+command needs to go — the worktree, the network, or the operator's whole machine — and
+this file turns that declaration into an OS fence profile
+(``services/sandbox/fence.workspace_profile``) which ``FencedShell`` spawns the command
+under. A `workspace` command that writes outside the worktree, or reaches the network at
+all, fails *inside* the fence with a note it can act on instead of quietly succeeding. The
+same declaration is what the permission layer rules on
+(``services/permissions/judge.py``), so what a command was cleared for and what it can
+actually do are one statement rather than two that drift.
 
-What makes that fence affordable is everything around it — the throwaway branch the edits
-land on, the merge the operator has to approve, one approval on the conversation's first
-command, and code mode being chosen for a thread bound to a project they named. An
-allowlist of programs was considered instead of that approval and rejected: an agent
-writing code needs whatever build tool the project uses, so any allowlist honest enough to
-be useful is long enough to be meaningless, and it would still be bypassable through an
-allowed interpreter.
+**Three layers, one line each, and they do not overlap.** The model *declares* a reach;
+this file *translates* it into a profile; ``FencedShell`` *applies* the profile to a
+process. Nothing below this file knows what a reach is, and nothing above it builds a
+sandbox config. That is the seam to preserve — a fence detail leaking up into the tool, or
+a permissions concept leaking down into the runner, is how this becomes two mechanisms
+again.
+
+**The fence is required here.** Every command is wrapped by OS-level confinement — the
+credential paths and the data directory unreadable, writes landing in the worktree and the
+build caches, egress only where the declared reach allows (loopback stays open, so a dev
+server and its tests work; ``services/sandbox/host.py`` states what that leaves reachable).
+Unlike the host hatch, which degrades and says so because the operator approved *that
+specific command*, this refuses when the platform has no primitive: nobody consented to an
+unfenced agent shell, and a code conversation is a long stretch of commands nobody reads
+one by one.
+
+**Reads are the one half of a declaration the fence cannot hold.** The runtime offers a
+read denylist and no read allowlist, so what bounds a read is the stage that ruled on the
+command (``services/permissions/judge.py``, ``shell_ast.py``) — never this wrapper. What
+the fence makes binding is the *write* and *egress* halves. The tracked working directory
+is contained for the same reason: the judge measures relative paths against the worktree
+root, so a `cd` that escaped it would leave every later containment claim measured against
+the wrong place (``FencedShell._apply_captured_cwd``).
+
+**The fence is applied to every command — cleared or not.** A declaration is a statement
+about the command, and it costs nothing to hold a command to its own statement whether the
+operator approved it by hand or a review cleared it. In particular a command the
+deterministic stage *declined* is still fenced to what it declared: its refusals are about
+readability, and keying the fence off them would let a command escape by being written so
+nothing could read it. The two exceptions are the approver's own — see :func:`_profile`.
+
+What makes that affordable is everything around it: the throwaway branch the edits land
+on, the merge the operator has to approve, one approval on the conversation's first
+command, `denied_env_patterns` keeping the operator's model keys out of every spawned
+environment, the git config pins that take the keys turning an ordinary `git status` into
+an execution back off the repository (``services/sandbox/gitenv.py``), and code mode being
+chosen for a thread bound to a project they named. An allowlist of programs was considered
+instead of all of it and rejected twice over: an agent writing code needs whatever build
+tool the project uses, so any allowlist honest enough to be useful is long enough to be
+meaningless, and it would still be bypassable through an allowed interpreter. Bounding
+what a spawned program may *do* covers `make`, `npm run` and a test suite without naming
+any of them.
 
 **Refused outright outside a worktree mode.** `mode_disabled_tools` already hides these
 tools from every mode whose spec does not admit the `shell` category, but that is a
@@ -32,11 +68,10 @@ and a sandbox thread. The check is here too.
 
 from __future__ import annotations
 
-import os
 import sys
-import tempfile
 from functools import partial
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic_ai import AbstractToolset, FunctionToolset, RunContext
 from pydantic_ai.exceptions import ApprovalRequired
@@ -44,13 +79,17 @@ from pydantic_ai.exceptions import ApprovalRequired
 from core.config import Settings, get_settings
 from services.egress import EgressPolicy
 from services.modes import mode_spec
-from services.projects import BRANCH_PREFIX
-from services.sandbox.host import confine, denied_reads, resolve_confinement
+from services.permissions import Reach, capability_of
+from services.sandbox import denied_read_paths, fence
 from services.sandbox.shell_runner import Confiner, FencedShell
 from services.workspace import RunWorkspace
 
 from .deps import RunDeps
 from .rebound import WorkspaceToolset
+from .workspace import run_workspace
+
+if TYPE_CHECKING:  # pragma: no cover — the fence's own type, never imported at runtime
+    from sandbox_runtime import SandboxRuntimeConfig
 
 #: Long enough for a real build or test suite; short enough that a hung command doesn't
 #: hold the turn open indefinitely. The agent can pass its own timeout per call, and any
@@ -77,6 +116,16 @@ EXECUTING_TOOLS = frozenset({"run_command", "start_command"})
 #: rejected for being.
 GATED_TOOLS = frozenset(f"shell_{name}" for name in EXECUTING_TOOLS)
 
+#: The prefix `tools/toolsets.py` will put in front of these names. Spelled here because
+#: the capability extraction is keyed on the namespaced name and this file only ever sees
+#: the bare one.
+_NAMESPACE = "shell_"
+
+#: A root no run will ever have. The template toolset exists to answer `get_tools`, which
+#: does not depend on where a command would run, and a plausible-looking path here would
+#: invite the assumption that it does.
+_TEMPLATE_ROOT = Path("/nonexistent-template-root")
+
 _WRONG_MODE = (
     "Shell commands are only available in a code conversation, which runs in a "
     "project's git worktree. This conversation runs in a container — use `code_execute` "
@@ -100,7 +149,7 @@ async def _fence_gap(confiner: Confiner | None) -> str:
     """
     if confiner is not None:
         return ""
-    resolved = await resolve_confinement(get_settings())
+    resolved = await fence.fence_available(get_settings())
     return "" if resolved.active else resolved.reason
 
 
@@ -131,120 +180,144 @@ async def _guard(
     return None
 
 
-async def _domains(ctx: RunContext[RunDeps]) -> frozenset[str]:
-    """Everything this conversation may reach. No policy means nothing is known to be
-    allowed, and the command runs with no network at all — the fence is not the place to
-    guess.
+async def _domains(ctx: RunContext[RunDeps]) -> tuple[str, ...]:
+    """Everything this conversation may reach, for a command that declared `network`.
 
-    What the host fence does with this is coarser than the set suggests: one proxy serves
-    every confined process, so it filters against the installation-wide allowlist and this
-    only decides whether the command gets a route out at all (see
-    ``services/sandbox/host.confine``). A conversation's own grants widen the container
-    fence, not this one.
+    The installation's allowlist plus whatever `code_request_egress` has widened for this
+    workspace (``services/egress.py``). No policy bound means nothing is known to be
+    allowed and the command reaches nothing — the fence is not the place to guess.
+
+    A grant can only ever *narrow* what actually happens, and saying so here is more use
+    than a docstring that implies otherwise: one proxy serves every confined process and
+    filters against the configuration installed at boot, so a per-call list wider than the
+    installation's buys nothing. What the per-call list decides is whether this command
+    gets a route out at all.
     """
     policy = ctx.deps.caps.get_optional(EgressPolicy)
     if policy is None:
-        return frozenset()
-    return await policy.allowed_for(ctx.deps.workspace_key)
-
-
-#: The corner of the ref store coding conversations own — every one of their branches is
-#: namespaced under it (``services/projects/worktree.py``), and nothing of the operator's
-#: is.
-_BRANCHES = BRANCH_PREFIX.rstrip("/")
-
-#: What a command in a worktree writes inside the project's *common* repository: the object
-#: store, and the ref and reflog a commit moves — those two only under the branch namespace
-#: above. `refs` and `logs` whole would be the operator's own ref store, and git is not the
-#: enforcer here: `git update-ref refs/heads/main <sha>`, `git branch -f`, or a plain
-#: redirect into the file would move the branch they have checked out, which is the merge
-#: they approve happening without them. The rest of `.git` is left out because two of its
-#: entries are exits rather than storage — `hooks/` is code the operator's own `git` runs
-#: later, outside every fence, and `config` can name a command it runs for them
-#: (`core.sshCommand`, aliases). Enumerating also fails in the safe direction as `.git`
-#: grows entries nobody here has heard of yet.
-_GIT_WRITES = ("objects", f"refs/heads/{_BRANCHES}", f"logs/refs/heads/{_BRANCHES}")
-
-
-def _git_paths(root: Path) -> tuple[str, ...]:
-    """Where this worktree's git writes outside ``root``, if anywhere.
-
-    A coding workspace is a linked worktree, so its `.git` is a *pointer file* and the
-    index, the refs and the object store live in the project's own repository — which is
-    outside the worktree and therefore outside everything else on the write list. Without
-    them `git add`, `git commit` and even a `git status` that has to refresh the index are
-    denied, which is the one workflow the throwaway branch exists for. `git stash` is not
-    on that list: `refs/stash` is shared with the operator's own checkout, so it stays out
-    of reach along with every other ref they own.
-    """
-    pointer = root / ".git"
-    try:
-        # A directory (a plain clone rather than a worktree) raises here, and is already
-        # covered by `root` itself.
-        marker = pointer.read_text(encoding="utf-8").partition("gitdir:")[2].strip()
-    except (OSError, ValueError):
         return ()
-    if not marker:
-        return ()
-    gitdir = Path(marker) if Path(marker).is_absolute() else root / marker
-    # `<project>/.git/worktrees/<name>` — this worktree's own index and HEAD live there,
-    # and only there; the objects and refs land in the repository that owns that directory.
-    # Its siblings are other conversations' worktrees, so the grant is this one by name.
-    parent = gitdir.parent
-    if parent.name != "worktrees":
-        return tuple(str(gitdir / name) for name in _GIT_WRITES)
-    return (str(gitdir), *(str(parent.parent / name) for name in _GIT_WRITES))
+    return tuple(sorted(await policy.allowed_for(ctx.deps.workspace_key)))
 
 
-def _writable(root: Path) -> tuple[str, ...]:
-    """Where a command may write: its own worktree, the parts of the repository behind it
-    that git has to touch, and the caches a build fills.
+async def _profile(
+    name: str,
+    command: str,
+    reach: Reach,
+    workspace: RunWorkspace,
+    domains: tuple[str, ...],
+    settings: Settings,
+) -> SandboxRuntimeConfig | None:
+    """The fence profile this command runs under, or None to run it as written.
 
-    Writes are deny-by-default under the confinement, so this is not a hardening knob — it
-    is what keeps `npm install` and `cargo build` from failing in a way that reads as the
-    tool being broken. `gettempdir()` rather than a literal `/tmp` because macOS gives each
-    user a private `TMPDIR` under `/var/folders`.
+    **Built from the declaration, not from a judgement**, and that separation is the whole
+    of it: the permission layer's stages answer *who must approve*, and this answers *what
+    the boundary is*. Nothing is threaded through the park, the approval payload or the
+    resume, and a call the operator approved by hand at another level is fenced identically,
+    having never passed a gate at all.
+
+    Keying it off the deterministic stage instead would hand the model the boundary as a
+    lever. That stage declines `ls $(true)` and `git commit -m 'fix the parser'` for being
+    *unreadable* — not for reaching anywhere — so running what it declined unwrapped would
+    let any command escape the fence by being written so nothing could read it, and the
+    reviewer that then allowed it was never asked about the fence.
+
+    There are exactly two ways out and each is somebody's explicit yes. A `host`
+    declaration asks for the unfenced machine, which is what the approver was shown — and
+    what separates it from :func:`_guard`'s refusal, which is about a *platform* that
+    cannot fence rather than an operator who chose not to. A declaration the command's own
+    syntax **contradicts** — a `workspace` command naming `/etc/passwd` or a URL — was
+    approved in the words it was read in, and fencing it to the reach it plainly does not
+    have would break that act rather than bound it.
+
+    **An empty allowed-domains list is not one of them.** A `network` declaration with
+    nothing allowed still runs fenced, with no egress at all — the command fails at the
+    boundary and says so, which is the whole point of the declaration. Reading the empty
+    list as "no list to hold it to" and lifting the fence inverted the setting: an operator
+    who empties it to reach *less* would have handed every approved networked command the
+    loosest execution path there is, write confinement and the read denials included.
     """
-    home = Path.home()
-    # uv keeps its cache outside `~/.cache` on macOS, so the platform's own location is
-    # asked for rather than assumed; an operator's `UV_CACHE_DIR` wins over both.
-    uv_cache = os.environ.get("UV_CACHE_DIR") or str(
-        home / ("Library/Caches/uv" if sys.platform == "darwin" else ".cache/uv")
+    if reach == "host":
+        return None
+    capability = capability_of(
+        f"{_NAMESPACE}{name}", {"command": command, "reach": reach}, root=workspace.root
     )
-    return (
-        str(root),
-        *_git_paths(root),
-        tempfile.gettempdir(),
-        str(home / ".cache"),
-        str(home / ".npm"),
-        str(home / ".cargo"),
-        uv_cache,
+    if capability.escapes or (reach == "workspace" and capability.network):
+        return None
+    return fence.workspace_profile(
+        workspace.root,
+        fence.GitDirs.read(workspace.root),
+        workspace.branch,
+        allowed_domains=domains if reach == "network" else (),
+        # The host hatch's own denials, not a second list: a per-call profile replaces the
+        # global one rather than narrowing it, and a command the deterministic stage
+        # cleared for itself must never be fenced more loosely than one the operator read
+        # and approved.
+        deny_read=denied_read_paths(settings),
+        # A *separate* setting from the host hatch's, and the asymmetry is the point: a
+        # host command is one the operator read, so its list may be as broad as `~`; a
+        # `workspace` command is one nobody was asked about, so the same breadth here would
+        # be the fence dissolved. Seeded with the build caches and nothing else.
+        allow_write=settings.worktree_command_allow_write,
+        linux=sys.platform.startswith("linux"),
     )
 
 
-def _tools_for(shell: FencedShell) -> FunctionToolset[RunDeps]:
+def _tools_for(shell: FencedShell, settings: Settings) -> FunctionToolset[RunDeps]:
     """The four tools, over one bound shell."""
     toolset: FunctionToolset[RunDeps] = FunctionToolset()
 
-    @toolset.tool
+    async def profile_for(
+        ctx: RunContext[RunDeps], name: str, command: str, reach: Reach
+    ) -> SandboxRuntimeConfig | None:
+        """This call's boundary — resolved here so both executing tools ask one question.
+
+        The workspace is read per call rather than captured when the shell was built, and
+        that is not incidental: `WorkspaceToolset` caches one :class:`FencedShell` per
+        *root* and shares it across every run working there, while the branch a profile
+        scopes its ref writes to belongs to the run. Freezing the branch into the shell
+        would fence one thread's commits to another thread's ref.
+
+        It costs no second resolution — `bind` has already filled the run's memo
+        (``tools/workspace.run_workspace``), so this is the very object it refused or
+        allowed on. `None` cannot reach here for the same reason: a run with no workspace
+        was turned away in words before any tool body ran.
+        """
+        workspace = await run_workspace(ctx)
+        if workspace is None:  # pragma: no cover — `bind` refuses this before we get here
+            return None
+        return await _profile(name, command, reach, workspace, await _domains(ctx), settings)
+
+    @toolset.tool(metadata={"code_arg_name": "command", "code_arg_language": "shell"})
     async def run_command(
-        ctx: RunContext[RunDeps], command: str, timeout_seconds: float | None = None
+        ctx: RunContext[RunDeps],
+        command: str,
+        reach: Reach = "workspace",
+        timeout_seconds: float | None = None,
     ) -> str:
-        """Execute a shell command and return its output.
+        """Execute a shell command in the project's worktree and return its output.
 
         Args:
             command: The shell command to run.
+            reach: How far this command needs to go. `workspace` runs it fenced to the
+                worktree with no network — the right answer for builds, tests, git and
+                anything reading or writing the checkout. `network` additionally allows the
+                domains the operator has permitted, for installing dependencies. `host`
+                lifts the fence for a command that has to act on the machine itself. A
+                command that needs more than it declared fails inside the fence and says
+                so; declare again rather than working around it.
             timeout_seconds: Maximum seconds to wait (default: 300).
 
         Returns:
             Labeled stdout/stderr output with exit code on non-zero exit.
         """
-        return await shell.run(
-            command, domains=await _domains(ctx), timeout_seconds=timeout_seconds
-        )
+        profile = await profile_for(ctx, "run_command", command, reach)
+        output = await shell.run(command, profile=profile, timeout_seconds=timeout_seconds)
+        return fence.annotate(output) if profile is not None else output
 
-    @toolset.tool
-    async def start_command(ctx: RunContext[RunDeps], command: str) -> str:
+    @toolset.tool(metadata={"code_arg_name": "command", "code_arg_language": "shell"})
+    async def start_command(
+        ctx: RunContext[RunDeps], command: str, reach: Reach = "workspace"
+    ) -> str:
         """Start a long-running command in the background (e.g. a server or watcher).
 
         Callers MUST call `stop_command(command_id)` when done to terminate the
@@ -252,11 +325,14 @@ def _tools_for(shell: FencedShell) -> FunctionToolset[RunDeps]:
 
         Args:
             command: The shell command to run in the background.
+            reach: How far this command needs to go — the same three answers
+                `run_command` takes, enforced the same way.
 
         Returns:
             A message containing the unique command ID for later check/stop calls.
         """
-        return await shell.start(command, domains=await _domains(ctx))
+        profile = await profile_for(ctx, "start_command", command, reach)
+        return await shell.start(command, profile=profile)
 
     @toolset.tool
     async def check_command(ctx: RunContext[RunDeps], command_id: str) -> str:
@@ -295,16 +371,12 @@ def _toolset_for(
     shell = FencedShell(
         root,
         confiner=confiner,
-        # The same paths the host hatch cannot read: one derivation, so a path added
-        # for one fence cannot be left out of the other.
-        deny_read=denied_reads(settings),
-        allow_write=_writable(root),
         default_timeout=_TIMEOUT_S,
         max_output_chars=_MAX_OUTPUT_CHARS,
     )
     if shells is not None:
         shells.append(shell)
-    return _tools_for(shell)
+    return _tools_for(shell, settings)
 
 
 def shell_toolset(
@@ -322,10 +394,12 @@ def shell_toolset(
     it left running has to be reaped with it (``tools/worker.py``).
     """
     settings = get_settings()
-    build = partial(_toolset_for, confiner=confiner or confine, settings=settings, shells=shells)
+    build = partial(
+        _toolset_for, confiner=confiner or fence.wrap, settings=settings, shells=shells
+    )
     return WorkspaceToolset(
         "shell",
-        build(Path("/nonexistent-template-root")),
+        build(_TEMPLATE_ROOT),
         build,
         guard=partial(_guard, confiner=confiner),
     )

@@ -26,15 +26,18 @@ import re
 import shlex
 import tempfile
 import uuid
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import IO, Concatenate, Protocol
+from typing import IO, TYPE_CHECKING, Concatenate, Protocol
 
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai_harness._output import truncate_tail
 from pydantic_ai_harness.shell._capability import _DEFAULT_DENIED_COMMANDS
 
 from .process import filtered_env, kill_tree, spawn_confined, terminate_tree
+
+if TYPE_CHECKING:  # pragma: no cover — the fence's own type, never imported at runtime
+    from sandbox_runtime import SandboxRuntimeConfig
 
 #: Destructive programs (`rm`, `dd`, `mkfs`, `shutdown`, …) refused by name. Taken from the
 #: harness rather than restated: it is a guardrail against a slip, not a boundary — the
@@ -59,17 +62,16 @@ _RECOVERABLE_ERRNOS: dict[int | None, str] = {
 
 
 class Confiner(Protocol):
-    """Rewrites a command so the OS holds it to what it may reach. A protocol rather than
-    the function itself because a test driving the real fence would be testing seatbelt."""
+    """Rewrites a command so the OS holds it to ``profile``. A protocol rather than
+    :func:`services.sandbox.fence.wrap` itself because a test driving the real fence would
+    be testing seatbelt.
 
-    async def __call__(
-        self,
-        command: str,
-        *,
-        allowed_domains: Iterable[str],
-        allow_write: Iterable[str],
-        deny_read: Iterable[str],
-    ) -> str: ...
+    The profile arrives per call and is built elsewhere (``services/sandbox/fence.py``,
+    from the reach the model declared). Nothing in this module knows what a reach is: the
+    shell runs a process under a boundary it is handed, and what that boundary should be is
+    a permissions question answered one layer up in ``tools/shell.py``."""
+
+    async def __call__(self, command: str, *, profile: SandboxRuntimeConfig) -> str: ...
 
 
 def _recoverable[**P](
@@ -120,30 +122,37 @@ class FencedShell:
         root: Path,
         *,
         confiner: Confiner,
-        deny_read: Sequence[str],
-        allow_write: Sequence[str],
         default_timeout: float,
         max_output_chars: int,
     ) -> None:
+        self._root = root
         self._cwd = root
         self._confine = confiner
-        self._deny_read = tuple(deny_read)
-        self._allow_write = tuple(allow_write)
         self._default_timeout = default_timeout
         self._max_output_chars = max_output_chars
         self._background: dict[str, _Background] = {}
 
+    @property
+    def cwd(self) -> Path:
+        """The directory the next command will start in — the worktree root, or wherever
+        inside it an earlier `cd` left the session."""
+        return self._cwd
+
     @_recoverable
     async def run(
-        self, command: str, *, domains: Iterable[str], timeout_seconds: float | None = None
+        self,
+        command: str,
+        *,
+        profile: SandboxRuntimeConfig | None,
+        timeout_seconds: float | None = None,
     ) -> str:
-        """Run ``command`` to completion and return its labelled output."""
+        """Run ``command`` to completion under ``profile`` and return its labelled output."""
         _check(command)
         timeout = timeout_seconds if timeout_seconds is not None else self._default_timeout
         wrapped, cwd_file = self._with_cwd_capture(command)
         out, err = _stream_files("run")
         try:
-            proc = await self._spawn(wrapped, domains, out, err)
+            proc = await self._spawn(wrapped, profile, out, err)
             out.close()
             err.close()
             try:
@@ -174,13 +183,13 @@ class FencedShell:
             _unlink(out.name, err.name, str(cwd_file))
 
     @_recoverable
-    async def start(self, command: str, *, domains: Iterable[str]) -> str:
-        """Start ``command`` in the background and return the id it is checked by."""
+    async def start(self, command: str, *, profile: SandboxRuntimeConfig | None) -> str:
+        """Start ``command`` in the background under ``profile``, and return its id."""
         _check(command)
         command_id = uuid.uuid4().hex[:12]
         out, err = _stream_files(command_id)
         try:
-            proc = await self._spawn(command, domains, out, err)
+            proc = await self._spawn(command, profile, out, err)
         except BaseException:
             _unlink(out.name, err.name)
             raise
@@ -235,15 +244,18 @@ class FencedShell:
             await self.stop(command_id)
 
     async def _spawn(
-        self, command: str, domains: Iterable[str], out: IO[bytes], err: IO[bytes]
+        self, command: str, profile: SandboxRuntimeConfig | None, out: IO[bytes], err: IO[bytes]
     ) -> asyncio.subprocess.Process:
-        """Fence ``command``, then start it in the tracked directory with a filtered env."""
-        fenced = await self._confine(
-            command,
-            allowed_domains=domains,
-            allow_write=self._allow_write,
-            deny_read=self._deny_read,
-        )
+        """Fence ``command``, then start it in the tracked directory with a filtered env.
+
+        ``None`` runs it as written. That is not this module's decision and it is not a
+        fallback: `tools/shell.py` returns no profile only where somebody's explicit yes
+        asked for the unfenced machine, and a host with no fence at all refuses the tools
+        outright long before anything reaches here. Applying a fence "just in case" would
+        break the act that was approved; inventing one here would put the decision in two
+        places.
+        """
+        fenced = command if profile is None else await self._confine(command, profile=profile)
         return await spawn_confined(
             fenced, cwd=self._cwd, env=filtered_env(), stdout=out, stderr=err
         )
@@ -257,17 +269,41 @@ class FencedShell:
         return wrapped, Path(name)
 
     def _apply_captured_cwd(self, cwd_file: Path) -> None:
-        """Move the tracked directory to wherever the command ended up, ignoring junk.
+        """Move the tracked directory to wherever the command ended up — **while that is
+        still inside the worktree**.
+
+        The containment is the load-bearing half. The permission layer measures every
+        relative path a later command writes against the worktree root
+        (``services/permissions/shell_ast.py``), so a `cd` that moved the tracked directory
+        out of the worktree would leave every later containment claim measured against the
+        wrong place: `cat secrets.txt` would clear as contained while reading some other
+        directory's file. The fence would not catch it either — it bounds writes and egress,
+        never reads.
+
+        Both spellings of the root are compared, because the two ends disagree about it on
+        macOS: the shell starts at the path it was given and `pwd` reports the one the
+        kernel resolved, so `/tmp/wt` and `/private/tmp/wt` are one directory under two
+        names and comparing against a single spelling would stop tracking `cd` entirely.
 
         The whole read is guarded, not only the open: the command it belongs to already
         succeeded, so a capture that is not UTF-8 or a path the OS refuses to stat is
         bookkeeping this can drop, not a tool failure to report."""
         try:
             recorded = cwd_file.read_text(encoding="utf-8").strip()
-            if recorded and Path(recorded).is_dir():
-                self._cwd = Path(recorded)
+            if not recorded:
+                return
+            landed = Path(recorded)
+            if landed.is_dir() and self._contains(landed):
+                self._cwd = landed
         except (OSError, ValueError):
             return
+
+    def _contains(self, candidate: Path) -> bool:
+        """Whether ``candidate`` is the worktree root or something under it."""
+        for root in (self._root, self._root.resolve()):
+            if candidate == root or root in candidate.parents:
+                return True
+        return False
 
     def _capped(self, text: str) -> str:
         """Trimmed from the front — the exit code and the id line are at the tail."""

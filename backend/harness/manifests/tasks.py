@@ -99,7 +99,15 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
         pause; anything outside it still parks + notifies exactly like an
         interactive run. Reuses `routes.chat`'s own turn composition
         (`resolve_turn_models`/`compose_turn`) so a task's run is submitted through
-        the identical path a live chat turn is — no forked run-submission logic."""
+        the identical path a live chat turn is — no forked run-submission logic.
+
+        **These seeds are whole-tool grants, including on a tool that runs commands** —
+        the one place `services/approval_grants.py` still writes the empty scope for one
+        of those, and deliberately. A grant recorded from an approval names the command
+        the agent asked to run; here there is no such call yet, only a tool name the
+        operator wrote on the task itself ahead of every turn it will ever take. Scoping
+        it to a command nobody has proposed is not possible, and refusing the seed would
+        leave a task parked forever on exactly the tool it was configured to use."""
         models = await resolve_turn_models(registry, None, None, owner_id=view.owner_id)
         conversation_id = await conversations.create_conversation(
             view.owner_id, title=view.title

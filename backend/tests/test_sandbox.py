@@ -5,20 +5,25 @@ from __future__ import annotations
 
 import asyncio
 import os
+import stat
 import subprocess
+from pathlib import Path
 
 import pytest
 
 import services.sandbox.container as container_mod
+import services.sandbox.host as host_mod
 from core.config import Settings
 from services.sandbox import (
     ContainerSandbox,
     HostConfinement,
+    HostExecutionError,
     SandboxError,
     SandboxFile,
     SandboxResult,
     SandboxSpec,
     detect_sandbox,
+    host_scratch_dir,
     run_on_host,
 )
 from services.sandbox.container import (
@@ -323,6 +328,69 @@ async def test_run_on_host_executes_and_reports_exit():
     assert ok.ok and "hostran" in ok.stdout
     bad = await run_on_host("exit 3")
     assert bad.exit_code == 3 and not bad.ok
+
+
+async def test_a_host_command_runs_where_the_caller_says(tmp_path):
+    # Without a `cwd` a subprocess inherits the *server process's* working directory —
+    # wherever the backend was started — and every relative path in the command means
+    # something among this application's own files instead.
+    (tmp_path / "here.txt").write_text("found")
+    result = await run_on_host("cat here.txt", cwd=tmp_path)
+    assert result.ok and "found" in result.stdout
+
+
+async def test_the_scratch_directory_exists_and_is_not_the_application_itself():
+    # It has to be usable the moment a command is approved (nothing else creates it), and
+    # it must not be the directory the server was started in, which is the source tree the
+    # relative paths in an approved command used to land in.
+    scratch = host_scratch_dir()
+    assert scratch.is_dir()
+    assert scratch != Path(os.getcwd())
+    result = await run_on_host("pwd", cwd=scratch)
+    assert str(scratch.resolve()) in result.stdout
+
+
+def test_the_scratch_directory_is_this_user_s_alone():
+    # On Linux `gettempdir()` is the shared `/tmp`, so a fixed name under it is a path any
+    # local account can reach. The uid in the name keeps two accounts from contending for
+    # one directory, and 0700 keeps the output of an approved command — which is the
+    # operator's — from being readable by everyone else on the host.
+    scratch = host_scratch_dir()
+    assert str(os.getuid()) in scratch.name
+    assert stat.S_IMODE(scratch.lstat().st_mode) == 0o700
+
+
+def test_a_scratch_path_someone_else_planted_is_refused(monkeypatch, tmp_path):
+    # `Path.mkdir(exist_ok=True)` swallows the already-there case whenever `is_dir()` is
+    # true, and `is_dir()` follows symlinks — so before this, a link planted at the scratch
+    # path was silently adopted, and it is both the cwd of every approved host command and
+    # an entry in the fence's write allowlist.
+    elsewhere = tmp_path / "attacker"
+    elsewhere.mkdir()
+    planted = tmp_path / "tmproot"
+    planted.mkdir()
+    monkeypatch.setattr(host_mod.tempfile, "gettempdir", lambda: str(planted))
+    link = host_mod.scratch_path()
+    link.symlink_to(elsewhere, target_is_directory=True)
+    with pytest.raises(HostExecutionError, match="symlink"):
+        host_scratch_dir()
+
+
+def test_a_scratch_directory_this_process_owns_is_tightened_rather_than_refused(
+    monkeypatch, tmp_path
+):
+    # The ordinary case for an existing install: our own directory, created before it was
+    # created narrowly. Refusing it would break the tool over a mode we can simply fix.
+    root = tmp_path / "tmproot"
+    root.mkdir()
+    monkeypatch.setattr(host_mod.tempfile, "gettempdir", lambda: str(root))
+    host_mod.scratch_path().mkdir(mode=0o755)
+    assert stat.S_IMODE(host_scratch_dir().lstat().st_mode) == 0o700
+
+
+async def test_a_host_command_takes_the_environment_it_is_given(tmp_path):
+    result = await run_on_host("echo $ODYSSEUS_TEST_MARK", env={"ODYSSEUS_TEST_MARK": "pinned"})
+    assert "pinned" in result.stdout
 
 
 async def test_host_timeout_kills_the_whole_process_group(tmp_path):

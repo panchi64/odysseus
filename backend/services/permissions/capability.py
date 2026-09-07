@@ -25,6 +25,22 @@ can do" are the same fact: it returns something and leaves nothing different beh
 whatever its arguments say. Those calls are described from the class alone
 (:attr:`ActionKind.READ`) — not because reading arguments would be hard, but because
 there is nothing in them left to find.
+
+**Between "read off a grammar" and "named by its argument keys" sits a third reading, and
+it lives next door** (``projections.py``): the per-tool table that says how one of this
+installation's *own* tools presents itself, because describing a mail send by its keys
+alone ("Calls mail_send with arguments body, subject, to") leaves the reviewer's third
+axis, ``correctness``, with nothing to rule on. That table is a separate module for the
+reason it is a table at all — it changes when a shipped tool's arguments change, which is
+not when this file's reading of a *deferred call* changes, and the question a security
+reader has of it ("does anything quote a mail body") is one they should be able to answer
+by reading one file.
+
+**A projection makes a review better informed; it never makes one unnecessary.** These
+capabilities stay :attr:`ActionKind.OPAQUE` with a non-empty :attr:`Capability.unbounded`,
+because quoting four arguments of a mail send does not turn the far side of a mail server
+into something this process read. Nothing here can be cleared by ``judge.py``, before or
+after — only the amount the model reviewer has to work with changed.
 """
 
 from __future__ import annotations
@@ -32,10 +48,38 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from services.permissions.shell_ast import ShellCommand, escapes_workspace, shell_reach
+from services.permissions.projections import describe
+from services.permissions.shell_ast import (
+    ShellCommand,
+    escapes_workspace,
+    shell_reach,
+    strip_comments,
+)
 from services.tool_sensitivity import EXTERNAL_PREFIX, Sensitivity, classified, sensitivity_of
+
+#: How far a shell command says it needs to reach, declared by the model on the call and
+#: enforced by the tool that runs it (``tools/shell.py``). It is a *declaration*, not a
+#: measurement: the grammar walk checks it against what the command actually names, and a
+#: fence built to match it is what makes a contradiction fail rather than merely be noted.
+type Reach = Literal["workspace", "network", "host"]
+
+#: The declared values, as a set to validate an argument against.
+REACHES: frozenset[str] = frozenset({"workspace", "network", "host"})
+
+#: What a call that names no reach at all is taken to have declared. It is the executing
+#: tools' own schema default, so an omitted argument is not a missing declaration — it is
+#: the declaration the tool will act on, and the judge has to model what will run.
+DEFAULT_REACH: Reach = "workspace"
+
+#: The tools whose schema actually carries a ``reach`` argument (``tools/shell.py``). Only
+#: for these does an absent argument mean :data:`DEFAULT_REACH`; for every other shell-shaped
+#: tool it means the call declared nothing, which is a different fact and has to read as one
+#: — the reviewer's prompt and the operator's review row both say what was declared, and a
+#: tool with no such argument reporting "workspace" is the chassis putting words in the
+#: model's mouth.
+_REACH_ARG_TOOLS = frozenset({"shell_run_command", "shell_start_command"})
 
 
 class ActionKind(StrEnum):
@@ -63,8 +107,8 @@ class Capability:
 
     Deliberately **not** a verdict. This module says what an action reaches; ``judge.py``
     says whether that is allowed and ``reviewer.py`` says whether it was wanted. Keeping
-    the three apart is what lets the allowlist change without the extraction changing, and
-    what lets a test pin "this command reads these two files" independently of any policy.
+    the three apart is what lets the rule change without the extraction changing, and what
+    lets a test pin "this command reads these two files" independently of any policy.
     """
 
     #: The namespaced tool the operator's model asked for.
@@ -74,6 +118,17 @@ class Capability:
     #: the review events and into the reviewer's prompt, so it is the same sentence the
     #: operator reads and the model is judged against — two wordings would be two facts.
     summary: str
+    #: The act's own model-authored content, where a tool has some worth reading and it is
+    #: too long for a line — a delegated task, a research question, a program, the reason
+    #: given for opening a credential. None where there is none, which is most tools.
+    #:
+    #: Kept apart from :attr:`summary` rather than appended to it because the two are read
+    #: in different places and by different rules: the summary is the line on the operator's
+    #: review row and the one sentence the reviewer scores against, while this is the body
+    #: it may need in order to say whether the act matches the request. Both ride inside the
+    #: reviewer's untrusted fence (``reviewer.py``) — a projection quotes the model's own
+    #: words, and quoting them is not the same as trusting them.
+    detail: str | None = None
     #: Every command a shell action would run, in the order they appear.
     commands: tuple[ShellCommand, ...] = ()
     #: Paths the action names for reading.
@@ -82,10 +137,25 @@ class Capability:
     writes: tuple[str, ...] = ()
     #: Environment variables the command sets for what it runs.
     env_writes: tuple[str, ...] = ()
-    #: Whether the action names something off this machine (a URL, a network redirect).
+    #: Whether this act can reach off the machine at all — and it has **two** producers,
+    #: which is why it is not named "names an address". For a command, it is what the
+    #: grammar walk saw written in it (a URL, a network redirect). For a call into the
+    #: conversation's container, it is the egress *switch* that call flipped, since the
+    #: program itself was never read. Anything reporting this to a reader has to say which
+    #: of the two it is looking at (``reviewer.py``) — a measurement the reviewer is told
+    #: outranks the model's own text has to be true of the act in front of it.
     network: bool = False
     #: Paths that leave the workspace, or that we cannot place inside it.
     escapes: tuple[str, ...] = ()
+    #: How far the call *said* it needs to reach. None for every kind of act that declares
+    #: nothing — a mail send, a file write, an MCP call — which is a different fact from
+    #: declaring the widest reach, and the two must not read the same on a review row.
+    reach: Reach | None = None
+    #: Whether this act runs inside the conversation's own container rather than on the
+    #: host. The container is itself a fence, so an offline call to one is bounded without
+    #: anything here having read its program — which is the only way an interpreter's
+    #: program is ever bounded.
+    sandboxed: bool = False
     #: Why the worst case could not be pinned down — one entry per construct that was not
     #: interpreted. Non-empty means nothing here may be read as complete.
     unbounded: tuple[str, ...] = field(default_factory=tuple)
@@ -128,20 +198,117 @@ _PATH_ARG: dict[str, str] = {
 }
 
 
-def shell_capability(tool: str, command: str, *, root: Path | None) -> Capability:
-    """One shell command as a capability — the grammar walk, wrapped in the common shape."""
-    reach = shell_reach(command, root=root)
+#: Shell-shaped tools whose command does **not** run in the run's workspace.
+#: `code_run_host_command` runs on the operator's own machine, where a sandbox thread's
+#: workspace is a directory the host fence denies outright and a worktree does not exist
+#: at all (the mode registry scopes this tool out of code mode). So there is no root its
+#: paths can honestly be placed against — and placing them against one anyway is exactly
+#: what let `cat .env` read as a workspace file.
+_HOST_COMMAND_TOOLS = frozenset({"code_run_host_command"})
+
+#: What goes on the record when a command's paths could not be placed. Both belong in
+#: ``unbounded`` rather than reading as a clean walk, because that is what they are: every
+#: relative path in the command means *something*, and neither case can say what — which
+#: is the one thing the deterministic stage would have to know to clear it. Two wordings
+#: because the operator reads them on the review row, and "there is no workspace" and
+#: "the workspace is not where this runs" are different facts about their machine.
+_UNPLACED = "there is no workspace directory to measure this command's paths against"
+_UNPLACED_ON_THE_HOST = (
+    "runs on the host, where the workspace this run's paths would be measured against "
+    "is not the directory it starts in"
+)
+
+
+def measured_against_root(tool: str) -> bool:
+    """Whether this tool's worst case depends on where the run's workspace is.
+
+    Only a command that runs *in* that workspace and a file target are placed against a
+    root; every other tool is described by its name, its class and its argument keys, and
+    the answer is the same wherever the run works. A host command is in that second group
+    for a less obvious reason — it runs on the host, not in the workspace, so a root would
+    be the wrong measure rather than a missing one. The caller that has to *open* a
+    workspace to supply the root asks first (``agent/gating.py``): opening one is a `git
+    worktree add` or a container start, and paying it to judge a mail send buys nothing.
+    """
+    if tool in _HOST_COMMAND_TOOLS:
+        return False
+    return tool in _COMMAND_ARG or tool in _PATH_ARG
+
+
+#: Shell-shaped tools whose command runs inside the conversation's own container. The
+#: container is the fence there, so nothing about the command has to be understood for the
+#: act to be bounded — see :attr:`Capability.sandboxed`.
+_SANDBOXED_TOOLS = frozenset({"code_execute"})
+
+
+def declared_reach(tool: str, args: dict[str, Any]) -> Reach | None:
+    """How far this call says it needs to reach, or None when it said nothing.
+
+    Four readings, and each is the conservative one for its case. A **host command**
+    declares ``host`` whatever its arguments say: it runs on the operator's machine, which
+    is the definition of the widest reach. An argument **absent from a tool that has one**
+    is :data:`DEFAULT_REACH` — not a missing declaration but the schema default the tool
+    will actually run under, and reading it as anything else would make every call that
+    left the argument off escalate while running fenced to the worktree anyway. A tool with
+    **no such argument at all** declares nothing, and says so with ``None``: `code_execute`
+    cannot state a reach, so reporting one for it would be this module writing a
+    declaration the model never made. A **value this module does not recognise** is
+    ``host``, and an explicit ``null`` is one of those: the tool's own validation would
+    refuse it, so no such call ever runs, and the widest reading is the only one that
+    cannot be wrong about a call that somehow did.
+    """
+    if tool in _HOST_COMMAND_TOOLS:
+        return "host"
+    if "reach" not in args:
+        return DEFAULT_REACH if tool in _REACH_ARG_TOOLS else None
+    value = args["reach"]
+    return value if value in REACHES else "host"
+
+
+def shell_capability(
+    tool: str, command: str, *, root: Path | None, reach: Reach | None = DEFAULT_REACH
+) -> Capability:
+    """One shell command as a capability — the grammar walk, wrapped in the common shape.
+
+    The summary carries the command **without its comments**. A comment changes nothing
+    about what runs; it is the one part of a command addressed to whoever *reads* it, and
+    both readers here are ones an author might want to talk into something — the reviewer
+    that scores the act, and the operator looking at the approval row. What runs is
+    untouched, and the walk above still read the whole thing.
+
+    **No root is a fact about the reading, not a permissive default.** Absolute and upward
+    paths already read as escapes without one (``escapes_workspace``), but a bare
+    `cat .env` names no directory at all, so nothing escapes and nothing is written — and
+    a stage looking only at those fields would clear a command whose working directory
+    this process never established. It is recorded as unread instead, which escalates the
+    whole capability the way any uninterpreted construct does.
+
+    A host command is read that way **whatever root it is handed**: it runs on the
+    operator's machine rather than in the workspace, so a root here would be a wrong
+    measure rather than a missing one, and the decision belongs where the reading is made
+    rather than at each of the callers that happen to know a root.
+
+    ``reach`` is what the call *declared*, carried onto the capability unexamined. Checking
+    it against the paths the walk found is a policy question and belongs to the stage that
+    rules (``judge.py``); recording the two side by side is this module's whole job.
+    """
+    on_the_host = tool in _HOST_COMMAND_TOOLS
+    root = None if on_the_host else root
+    walk = shell_reach(command, root=root)
+    unplaced = () if root is not None else (_UNPLACED_ON_THE_HOST if on_the_host else _UNPLACED,)
     return Capability(
         tool=tool,
         kind=ActionKind.SHELL,
-        summary=f"Runs the shell command: {command}",
-        commands=reach.commands,
-        reads=reach.reads,
-        writes=reach.writes,
-        env_writes=reach.env_writes,
-        network=reach.network,
-        escapes=reach.escapes,
-        unbounded=reach.unbounded,
+        summary=f"Runs the shell command: {strip_comments(command)}",
+        commands=walk.commands,
+        reads=walk.reads,
+        writes=walk.writes,
+        env_writes=walk.env_writes,
+        network=walk.network,
+        escapes=walk.escapes,
+        reach=reach,
+        sandboxed=tool in _SANDBOXED_TOOLS,
+        unbounded=(*walk.unbounded, *unplaced),
     )
 
 
@@ -184,11 +351,15 @@ def capability_of(tool: str, args: dict[str, Any], *, root: Path | None = None) 
         # Only a *classified* name qualifies. An unknown one resolves to the class that
         # reaches furthest (`tool_sensitivity`), so nothing an operator's own MCP server
         # names can arrive here wearing a read's clothes.
-        return Capability(
-            tool=tool,
-            kind=ActionKind.READ,
-            summary=f"Reads with {tool}, using {_arg_shape(args)}",
+        #
+        # A projection here is for the **operator's row**, not for a ruling: the class has
+        # already settled the act, and `kind` stays READ so it still clears with no review.
+        # What it buys is that the row says which page was opened rather than which
+        # argument keys were passed.
+        summary, detail = describe(
+            tool, args, fallback=f"Reads with {tool}, using {_arg_shape(args)}"
         )
+        return Capability(tool=tool, kind=ActionKind.READ, summary=summary, detail=detail)
 
     if tool == _EGRESS_TOOL:
         return Capability(
@@ -201,14 +372,17 @@ def capability_of(tool: str, args: dict[str, Any], *, root: Path | None = None) 
             unbounded=("what an opened host carries is not written in the request",),
         )
 
+    summary, detail = describe(tool, args, fallback=f"Calls {tool} with {_arg_shape(args)}")
     return Capability(
         tool=tool,
         kind=ActionKind.OPAQUE,
-        summary=f"Calls {tool} with {_arg_shape(args)}",
-        # The name and the argument keys are the *whole* of what was read, and an action
-        # whose effect is its own is by definition not written in them. Leaving this empty
-        # would make `bounded` — the property whose entire job is to say "the fields here
-        # describe the whole act" — answer True about an act nothing here described.
+        summary=summary,
+        detail=detail,
+        # A projection quotes more of the call; it does not turn the far side of a mail
+        # server or a sub-agent's whole catalog into something this process read. So the
+        # reason stands whether or not one applied — and `bounded`, the property whose
+        # entire job is to say "the fields here describe the whole act", keeps answering
+        # False about an act nothing here bounded.
         unbounded=("this tool's effect is not written in its arguments",),
     )
 
@@ -225,17 +399,29 @@ def _command_capability(
             unbounded=("the call carries no command to read",),
         )
     if tool == "code_execute" and args.get("language", "python") != "bash":
+        language = args.get("language", "python")
+        summary, detail = describe(
+            tool,
+            # The schema default filled in, for the reason `declared_reach` fills in its
+            # own: an omitted argument is not an absent fact but the value the tool will
+            # run under, and both the review row and the reviewer are describing what is
+            # about to happen rather than what was typed.
+            {**args, "language": language},
+            fallback="Runs a program in the conversation's sandbox container",
+        )
         return Capability(
             tool=tool,
             kind=ActionKind.OPAQUE,
-            summary="Runs a program in the conversation's sandbox container",
+            summary=summary,
+            detail=detail,
+            sandboxed=True,
             unbounded=("an interpreter's program is not bounded by its arguments",),
         )
-    # `network` here is the grammar walk's own — a URL named in the command. Egress is no
-    # longer a flag on the run, so there is no tool argument left to widen it with: the
-    # workspace reaches what its allowlist names, and adding to that list is its own
-    # approval-gated call.
-    return shell_capability(tool, command, root=root)
+    # `network` on the returned capability is the grammar walk's own — a URL named in the
+    # command. There is no tool argument left to widen it with: egress is no longer a flag
+    # on the run, so the workspace reaches what its allowlist names and adding to that list
+    # is its own approval-gated call.
+    return shell_capability(tool, command, root=root, reach=declared_reach(tool, args))
 
 
 def _file_capability(
