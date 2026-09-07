@@ -19,7 +19,7 @@ from agent.answers import AnswerError, questions_of, render_answer
 from agent.gating import GrantApproved
 from routes import deps
 from runs import Run, RunStatus, parse_last_event_id, sse_response
-from services.approval_grants import covered_by_grant
+from services.approval_grants import ONCE_ONLY_TOOLS, covered_by_grant
 from services.settings_store import get_inactivity_timeout, get_wall_clock_timeout
 
 router = APIRouter(prefix="/runs", tags=["runs"])
@@ -293,10 +293,17 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
     for decision in body.decisions:
         if decision.approved:
             decisions[decision.tool_call_id] = ToolApproved(override_args=decision.override_args)
-            if decision.scope == "conversation" and parked.conversation_id is not None:
-                tool_name = tool_by_id[decision.tool_call_id]
-                if tool_name not in to_grant:
-                    to_grant.append(tool_name)
+            tool_name = tool_by_id[decision.tool_call_id]
+            # A once-only tool's call is approved; its *scope* is not honoured. Silently
+            # rather than as a 400: the client offering the checkbox is not wrong to have
+            # offered it, and the operator's decision on this call still stands.
+            if (
+                decision.scope == "conversation"
+                and parked.conversation_id is not None
+                and tool_name not in ONCE_ONLY_TOOLS
+                and tool_name not in to_grant
+            ):
+                to_grant.append(tool_name)
         else:
             decisions[decision.tool_call_id] = ToolDenied(
                 message=decision.message or "The operator denied this action."

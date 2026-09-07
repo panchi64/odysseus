@@ -366,6 +366,22 @@ class TestTheOtherKindsOfAction:
             "code_execute", {"code": "ls -la", "language": "bash"}, root=ROOT
         ).kind is ActionKind.SHELL
 
+    def test_widening_the_egress_allowlist_is_never_cleared_here(self):
+        # `code_request_egress` carries no command and no path, so it falls through to the
+        # opaque description on purpose: its effect is a standing widening of what the
+        # workspace may reach, which no grammar walk can bound and no cheap stage may
+        # vouch for. Every one of these has to reach the operator.
+        capability = capability_of(
+            "code_request_egress", {"domains": ["evil.example.com"], "reason": "x"}, root=ROOT
+        )
+        assert capability.kind is ActionKind.OPAQUE
+        assert not capability.bounded
+        assert not judge(capability).approved
+        # And the host is named in the summary, because that summary is the whole of what
+        # the Auto reviewer is handed: a card reading "calls this tool with arguments
+        # domains, reason" clears the fence's one exit without anyone seeing the host.
+        assert "evil.example.com" in capability.summary
+
     def test_a_tool_whose_effect_is_its_own_is_never_called_fully_read(self):
         # `bounded` promises that the fields beside it describe the *whole* act. For a
         # tool whose effect is not written in its arguments they describe none of it, so

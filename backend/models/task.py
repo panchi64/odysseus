@@ -63,7 +63,7 @@ class TaskOutcome(StrEnum):
 
 def new_webhook_token() -> str:
     """An unguessable per-task webhook credential — same construction as the previews
-    proxy token (`secrets.token_urlsafe(32)`, `services/sandbox/session.py`)."""
+    proxy token (`secrets.token_urlsafe(32)`, `services/sandbox/manager.py`)."""
     return secrets.token_urlsafe(32)
 
 

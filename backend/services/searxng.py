@@ -173,8 +173,9 @@ class ManagedSearxng:
 
     def _flags(self) -> list[str]:
         """Isolation + the loopback-published port + the read-only config mount.
-        Kept apart from the sandbox's ``hardened_flags`` (which forces a read-only
-        root + ``/work`` mount that don't fit a long-lived service)."""
+        Kept apart from the sandbox's ``hardened_flags`` (whose ``/work`` bind mount,
+        workspace env and uid pinning belong to an agent's box, not to a long-lived
+        service that only needs its own config)."""
         settings_path = self._write_settings()
         return [
             "--network", "bridge",  # SearXNG needs egress to query upstream engines

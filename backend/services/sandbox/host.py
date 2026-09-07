@@ -1,25 +1,30 @@
-"""The deliberate host-execution escape hatch — the one non-sandboxed path.
+"""The OS-level fence for everything that runs outside a container, and the escape hatch.
 
-This is the exception to everything its sibling modules enforce: it runs a command
-**directly on the host**. It exists for the legitimate case where the operator
-genuinely needs their own machine changed. It is therefore reachable by the agent
-*only* through an approval-gated tool whose request carries a plain-language
-explanation of what the command does — never as a silent fallback, never without
-explicit per-call consent. Kept here, beside the sandbox, so both execution paths
-live in one place and the contrast is impossible to miss.
+Two paths execute on the operator's real machine: the code-mode shell, working in a
+project's throwaway worktree, and ``code_run_host_command``, the approval-gated exception
+that exists for when the host itself must change. Both are fenced the same way, by
+``sandbox-runtime`` (seatbelt on macOS, bubblewrap on Linux, no container): credential
+paths and the data directory are unreadable, writes are deny-by-default, and egress to the
+*outside* goes only to allowlisted domains. :func:`confine` is that fence, applied per
+command; :func:`resolve_confinement` is the once-per-process machinery behind it.
+
+**Loopback is outside the allowlist, deliberately and not for free.** A dev server, its
+test suite and every tool that talks to one are compute, so the profile permits
+``localhost``. What that also permits is whatever else listens there — including the
+loopback ports this application publishes for its own managed containers, some of which
+(the web-fetch browser's DevTools port) speak an unauthenticated protocol that can fetch
+on a command's behalf. So the honest statement of this fence is that it bounds where a
+command may reach *off the machine*, not that everything it can reach is on the list.
 
 **Approval is not the only thing holding the line.** What the operator read and agreed
 to is the command; what a command can *reach* once running is a separate question, and
-one they cannot audit from a single line of shell. So an approved command is also fenced
-at the OS level — ``sandbox-runtime`` (seatbelt on macOS, bubblewrap on Linux, no
-container) denies reads of the credential paths and the data directory, and allows egress
-only to configured domains.
+one they cannot audit from a single line of shell.
 
-**This one degrades where the sandbox fails closed, deliberately.** ``detect.py`` disables
-sandboxed execution outright when no runtime exists, because nothing was promised there.
-Here the operator has explicitly approved *this* command, and refusing it because a
-platform primitive is missing would break the single case the tool exists for. So a
-missing primitive means the command runs unconfined and says so, rather than not running.
+**The hatch degrades where everything else fails closed, deliberately.** The shell refuses
+outright without a fence, and ``detect.py`` disables sandboxed execution when no runtime
+exists, because nothing was promised in either case. Here the operator has explicitly
+approved *this* command, and refusing it because a platform primitive is missing would
+break the single case the tool exists for — so it runs unconfined and says so.
 """
 
 from __future__ import annotations
@@ -27,27 +32,20 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import signal
 import tempfile
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 from core.config import Settings
-from core.exceptions import OdysseusError
-
-from .base import SandboxResult
 
 logger = logging.getLogger(__name__)
 
 
-class HostExecutionError(OdysseusError):
-    """The host command could not be launched (a non-zero exit is a normal
-    :class:`SandboxResult`, not this)."""
-
-
 @dataclass(frozen=True)
 class HostConfinement:
-    """Whether an approved host command will be OS-confined, and why not when it won't.
+    """The fence an approved host command runs under: whether it applies, why not when it
+    doesn't, and what it lets through.
 
     Resolved before the run rather than reported after it, so the tool can tell the
     model — and through it the operator — what actually held, instead of implying a fence
@@ -56,6 +54,9 @@ class HostConfinement:
 
     active: bool
     reason: str = ""
+    allowed_domains: tuple[str, ...] = ()
+    allow_write: tuple[str, ...] = ()
+    deny_read: tuple[str, ...] = ()
 
 
 # The confinement primitive is a process-global singleton, so it is configured once and
@@ -65,6 +66,18 @@ _resolved: HostConfinement | None = None
 # Guards the configure-once: `_configure` awaits, so two approvals resolving at the same
 # moment would both pass a bare `is None` check and initialize the singleton twice.
 _resolve_lock = asyncio.Lock()
+
+
+def denied_reads(settings: Settings) -> tuple[str, ...]:
+    """Paths no host-side command may read, whichever fence it runs under.
+
+    The data directory carries the vault, the sealed workspaces and the database. It is
+    denied here rather than left to the credential list because it is the one path whose
+    exposure would undo at-rest encryption wholesale. Derived once for both callers — the
+    approved host command and the code-mode shell — because a path added to one fence and
+    not the other is a hole nobody notices.
+    """
+    return (*settings.host_command_deny_read, str(Path(settings.data_dir).resolve()))
 
 
 async def resolve_confinement(settings: Settings) -> HostConfinement:
@@ -114,11 +127,7 @@ async def _configure(settings: Settings) -> HostConfinement:
                 "the filesystem deny rules; install it to fence host commands",
             )
         return HostConfinement(False, "the platform's sandbox dependencies are unavailable")
-    # The data directory carries the vault, the sealed workspaces and the database. It is
-    # denied here rather than left to the credential list because it is the one path whose
-    # exposure would undo at-rest encryption wholesale.
-    data_dir = str(Path(settings.data_dir).resolve())
-    deny_read = [*settings.host_command_deny_read, data_dir]
+    deny_read = list(denied_reads(settings))
     # Writes are deny-by-default in this runtime, so the allow list is not a hardening knob
     # — it is what keeps an approved command able to do the thing it was approved for. The
     # runtime's own defaults (`/dev/null`, `/dev/stdout`, the tty) come first: without them
@@ -132,21 +141,43 @@ async def _configure(settings: Settings) -> HostConfinement:
         tempfile.gettempdir(),
         os.getcwd(),
     ]
-    # Everything read-denied is write-denied too. Read denial alone would still let a
-    # command clobber the vault or an ssh key it could not read.
-    deny_write = list(deny_read)
+    # Imported here rather than at module scope: `services.egress` reads `safe_key` out of
+    # this package, so the two only meet at call time.
+    from services.egress import normalise_domain
+
+    # Through the same funnel an approved domain goes through, so what an operator wrote
+    # in the setting means the same thing at both fences. Left raw, `Files.PythonHosted.org`
+    # or a pasted URL would be allowed by the container's proxy and refused here.
+    domains = [normalise_domain(d) for d in settings.egress_allowed_domains]
     try:
         await SandboxManager.initialize(
             SandboxRuntimeConfig(
-                network=NetworkConfig(allowed_domains=list(settings.host_command_allowed_domains)),
+                # The same allowlist the container fence reads. An approved command is
+                # still only approved for what the operator read; where it may *reach* is
+                # one installation-wide policy, not a second list that drifts from it.
+                # `allow_local_binding` because a dev server or a test suite opening a
+                # localhost socket is compute, not egress — and it is read off this global
+                # config at wrap time, so a per-call config could not supply it. It is
+                # all-or-nothing (the profile emits one `localhost:*` rule), which is why
+                # the module docstring states the residual rather than the allowlist
+                # covering everything a command can reach.
+                network=NetworkConfig(allowed_domains=domains, allow_local_binding=True),
                 filesystem=FilesystemConfig(
-                    deny_read=deny_read, allow_write=allow_write, deny_write=deny_write
+                    deny_read=deny_read, allow_write=allow_write, deny_write=list(deny_read)
                 ),
             )
         )
     except Exception as exc:  # noqa: BLE001 - any init failure means "not confined"
         return HostConfinement(False, f"sandbox-runtime could not initialize ({exc})")
-    return HostConfinement(True)
+    # Carried on the resolution rather than re-derived at the run: `confine` fences each
+    # command individually, and these are the settings half of what it needs — the same
+    # values the global init above was given, so the two cannot drift.
+    return HostConfinement(
+        True,
+        allowed_domains=tuple(domains),
+        allow_write=tuple(allow_write),
+        deny_read=tuple(deny_read),
+    )
 
 
 async def shutdown_confinement() -> None:
@@ -172,71 +203,50 @@ async def shutdown_confinement() -> None:
         logger.warning("host-command confinement did not shut down cleanly", exc_info=True)
 
 
-async def _confine(command: str) -> str:
-    """``command`` rewritten to run under the platform's sandbox."""
-    from sandbox_runtime import SandboxManager
-
-    return await SandboxManager.wrap_with_sandbox(command)
-
-
-def _kill_tree(proc: asyncio.subprocess.Process) -> None:
-    """Kill the whole process group, not just the shell — otherwise a child the command
-    spawned (a server, a backgrounded job) outlives whatever stopped its parent."""
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        proc.kill()
-    except OSError:  # already reaped, or no such group
-        pass
-
-
-async def run_on_host(
+async def confine(
     command: str,
     *,
-    timeout_s: float = 120.0,
-    confinement: HostConfinement | None = None,
-) -> SandboxResult:
-    """Run ``command`` in the host shell, after approval. Bounded by a wall-clock
-    timeout; the process group is killed on overrun — and on cancellation, so a stopped
-    run never leaves the command's tree running on the operator's machine.
+    allowed_domains: Iterable[str],
+    allow_write: Iterable[str],
+    deny_read: Iterable[str],
+) -> str:
+    """``command`` rewritten to run under the platform's sandbox, fenced for *this* call.
 
-    ``confinement`` is resolved by the caller (see :func:`resolve_confinement`) and passed
-    in rather than looked up here, so the tool reports the same fence it asked for. ``None``
-    runs the command unconfined.
+    :func:`resolve_confinement` settles the machinery once per process — the platform
+    probe, the proxy listeners — but not where a particular command may write, because the
+    two callers do not agree on that: the code-mode shell writes into one conversation's
+    worktree, the approved host command wherever the operator allowed. Those rules are
+    genuinely per-call, because they go into the wrapper the OS itself enforces.
+
+    **The network half is coarser, and that is a property of the runtime, not a choice
+    here.** One proxy serves the whole process and filters every request against the
+    configuration installed at initialisation, so ``allowed_domains`` decides only whether
+    this command gets a route out *at all* — an empty set gets no proxy and no network.
+    Which hosts it may then reach is the installation-wide allowlist, identical for every
+    command. Folding a conversation's own grants in would mean writing them into that one
+    shared configuration, where they would widen the fence around every other command
+    running at that moment — a background dev server started by another thread included —
+    and stay there after the granting command exited. That is a per-call approval turned
+    into a process-wide standing grant, so the host fence does not honour them: on the
+    host only ``egress_allowed_domains`` moves the line.
     """
-    if confinement is not None and confinement.active:
-        try:
-            command = await _confine(command)
-        except Exception as exc:  # noqa: BLE001 - wrapping must never lose the command
-            raise HostExecutionError(f"failed to confine host command: {exc}") from exc
-    try:
-        proc = await asyncio.create_subprocess_shell(
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,  # own process group, so we can kill the whole tree
-        )
-    except (OSError, ValueError) as exc:
-        raise HostExecutionError(f"failed to launch host command: {exc}") from exc
-
-    try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
-    except TimeoutError:
-        _kill_tree(proc)
-        await proc.wait()
-        return SandboxResult(
-            exit_code=124, stdout="", stderr="host command timed out", timed_out=True
-        )
-    except BaseException:
-        # Cancellation lands here — the run hit its inactivity/wall-clock bound, or the
-        # operator pressed Stop. Unwinding without reaping would leave the approved
-        # command's whole tree alive on the operator's real machine with no run left to
-        # stop it, which is precisely what the process group exists to prevent. Not
-        # awaited: this coroutine is already being torn down, and the group is signalled.
-        _kill_tree(proc)
-        raise
-    return SandboxResult(
-        exit_code=proc.returncode or 0,
-        stdout=out.decode("utf-8", "replace"),
-        stderr=err.decode("utf-8", "replace"),
+    from sandbox_runtime import (
+        FilesystemConfig,
+        NetworkConfig,
+        SandboxManager,
+        SandboxRuntimeConfig,
     )
+
+    # Everything read-denied is write-denied too. Read denial alone would still let a
+    # command clobber the vault or an ssh key it could not read.
+    denied = list(deny_read)
+    return await SandboxManager.wrap_with_sandbox(
+        command,
+        custom_config=SandboxRuntimeConfig(
+            network=NetworkConfig(allowed_domains=sorted(set(allowed_domains))),
+            filesystem=FilesystemConfig(
+                deny_read=denied, allow_write=list(allow_write), deny_write=denied
+            ),
+        ),
+    )
+

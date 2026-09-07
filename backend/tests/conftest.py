@@ -46,3 +46,36 @@ core.crypto._KEK_PARALLELISM = 1
 core.crypto._PASSWORD_HASHER = core.crypto.PasswordHasher(
     time_cost=1, memory_cost=8, parallelism=1
 )
+
+
+def egress_policy(data_dir, domains: tuple[str, ...] = ("pypi.org",)):
+    """A real :class:`~services.egress.EgressPolicy` over a throwaway database.
+
+    Here rather than in each suite because four of them need one now — the session
+    manager writes the allowlist file on every cold acquire, so it is a construction
+    argument rather than a thing under test in most of them. Real rather than a stub: the
+    file on disk *is* the interface the fences read, and a stub would only re-describe it.
+    """
+    from core.db import init_db, make_engine  # noqa: PLC0415 — after the patches above
+    from services.egress import EgressPolicy  # noqa: PLC0415
+
+    engine = make_engine("sqlite:///:memory:")
+    init_db(engine)
+    return EgressPolicy(engine, data_dir, domains)
+
+
+async def unfenced(
+    command: str,
+    *,
+    allowed_domains=(),
+    allow_write=(),
+    deny_read=(),
+) -> str:
+    """A ``Confiner`` that rewrites nothing — the shell's fence, stood down for a test.
+
+    The code-mode shell refuses to run anything unfenced, and the platform's confinement
+    is switched off for the whole suite (above), so every test that wants a command to
+    actually execute passes this. Wrapping in the real one instead would mean testing
+    seatbelt, on whichever machines happen to have it.
+    """
+    return command

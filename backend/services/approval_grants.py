@@ -23,6 +23,15 @@ from core.serde import as_utc
 from models._fields import new_id, utcnow
 from models.approval_grant import ApprovalGrant
 
+#: Tools no grant may ever cover, whatever scope was asked for. A grant auto-approves a
+#: *tool name*, and nothing narrower — so a standing one on the egress request would not
+#: mean "this domain again", it would mean every domain the agent goes on to name, which
+#: is the whole of what the fence is for. The domain the operator did approve is
+#: remembered separately, by the egress policy; what stays per call is the act of adding
+#: one. Lives here, next to the store, because both writers of a grant must consult it —
+#: the approve route and a scheduled task's pre-authorization.
+ONCE_ONLY_TOOLS = frozenset({"code_request_egress"})
+
 
 @dataclass(frozen=True)
 class GrantInfo:

@@ -6,7 +6,7 @@ session when a run starts and closes it when the run ends, which is right for a 
 agent and wrong for a chat thread: an operator who watches the agent log into a site and
 then says "now open the billing page" is talking about *that* page. So the capability's
 per-run lifecycle is bypassed here and the session is keyed by conversation instead,
-reaped on idleness the way a sandbox session is (``services/sandbox/session.py`` is the
+reaped on idleness the way a sandbox session is (``services/sandbox/manager.py`` is the
 model this follows, down to the token tombstones).
 
 **It attaches; it does not launch.** The session connects over CDP to the containerized

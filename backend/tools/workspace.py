@@ -51,7 +51,7 @@ async def run_workspace(ctx: RunContext[RunDeps]) -> RunWorkspace | None:
         mode=deps.mode,
         project_id=deps.project_id,
         conversation_id=deps.conversation_id,
-        sandbox_key=deps.sandbox_key,
+        workspace_key=deps.workspace_key,
         owner_id=deps.owner_id,
         sessions=deps.caps.get_optional(SandboxSessionManager),
         projects=deps.caps.get_optional(ProjectStore),

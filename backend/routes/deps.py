@@ -30,6 +30,7 @@ from services.conversation_search import ConversationSearch
 from services.conversations import ConversationStore
 from services.corpus import CorpusIndex
 from services.credential_store import CredentialStore
+from services.egress import EgressPolicy
 from services.external_tools import ExternalTools
 from services.integrations import IntegrationService
 from services.mail import MailService
@@ -181,6 +182,10 @@ def conversation_plans(request: Request) -> ConversationPlans:
 
 def approval_grants(request: Request) -> ApprovalGrantStore:
     return request.app.state.approval_grants
+
+
+def egress(request: Request) -> EgressPolicy:
+    return request.app.state.egress
 
 
 def skills(request: Request) -> SkillStore:

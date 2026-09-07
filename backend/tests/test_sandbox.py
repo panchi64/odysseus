@@ -28,7 +28,7 @@ from services.sandbox.container import (
     runtime_fault_line,
     workspace_env_defaults,
 )
-from services.sandbox.host import _configure
+from services.sandbox.host import _configure, confine
 
 
 def _runtime_ready() -> bool:
@@ -119,15 +119,21 @@ def test_run_argv_is_locked_down_by_default(tmp_path):
     sandbox = ContainerSandbox(runtime="docker", image="img:1")
     argv = sandbox._run_argv("docker", SandboxSpec(command=["echo", "hi"]), tmp_path)
     joined = " ".join(argv)
-    assert "--network none" in joined  # egress off by default
+    # The one-shot path belongs to no workspace, so there is no allowlist to fence it
+    # against and no sidecar to route through: it gets no interface at all.
+    assert "--network none" in joined
     assert "--cap-drop ALL" in joined
     # Runs as the workspace's host owner, not the image's root: with all caps
     # dropped an in-container root can't write the uid-owned /work, so installs
-    # fall back to the tiny /tmp tmpfs and die with ENOSPC.
+    # fall back to the /tmp tmpfs and nothing the agent installs survives.
     assert f"--user {os.getuid()}:{os.getgid()}" in joined
     assert "--security-opt no-new-privileges" in joined
-    assert "--read-only" in joined
-    assert "--pids-limit 256" in joined
+    # No read-only root. It bought nothing `--user` does not already buy — the image's
+    # tree is root-owned and this box is not root — while turning every world-writable
+    # scratch path into an error the agent could not act on.
+    assert "--read-only" not in joined
+    assert "--tmpfs /tmp:rw,size=1g" in joined
+    assert "--pids-limit 1024" in joined
     assert f"{tmp_path}:/work" in joined  # copies mounted, not host files
     # The command is preserved verbatim at the tail, wrapped by the in-container
     # timeout, which the image precedes.
@@ -136,10 +142,26 @@ def test_run_argv_is_locked_down_by_default(tmp_path):
     assert "--kill-after=5" in joined
 
 
-def test_run_argv_opens_network_only_when_asked(tmp_path):
-    sandbox = ContainerSandbox(runtime="podman")
-    argv = sandbox._run_argv("podman", SandboxSpec(command=["x"], network=True), tmp_path)
-    assert "--network bridge" in " ".join(argv)
+def test_hardened_flags_take_a_network_name_never_a_switch(tmp_path):
+    # There is no spelling of these flags that reaches the open web: `None` is no
+    # interface at all, and a name is one of a workspace's `--internal` networks, whose
+    # only exit is the proxy sidecar sharing it.
+    def flags(network):
+        return " ".join(
+            hardened_flags(
+                network=network,
+                memory="512m",
+                cpus="1.0",
+                pids_limit=256,
+                workdir="/work",
+                mount=tmp_path,
+                env={},
+            )
+        )
+
+    assert "--network none" in flags(None)
+    assert "--network odysseus-net-s1" in flags("odysseus-net-s1")
+    assert "bridge" not in flags("odysseus-net-s1")
 
 
 def test_env_is_explicit_only(tmp_path):
@@ -168,7 +190,7 @@ def test_workspace_env_defaults_point_under_the_workdir():
 def test_hardened_flags_inject_install_redirects(tmp_path):
     joined = " ".join(
         hardened_flags(
-            network=False,
+            network=None,
             memory="512m",
             cpus="1.0",
             pids_limit=256,
@@ -183,7 +205,7 @@ def test_hardened_flags_inject_install_redirects(tmp_path):
 
 def test_explicit_env_overrides_a_default(tmp_path):
     flags = hardened_flags(
-        network=False,
+        network=None,
         memory="512m",
         cpus="1.0",
         pids_limit=256,
@@ -270,6 +292,31 @@ async def test_cancelling_a_runtime_command_kills_the_child(monkeypatch):
     assert child.returncode is not None
 
 
+async def test_force_remove_gives_up_on_a_daemon_that_never_answers(monkeypatch):
+    # Removal is what boot reconciliation and the reaper both run, and a container whose
+    # mount is wedged makes the daemon take the call and never answer. Unbounded, that
+    # parks app startup with nothing in the log; bounded, boot moves on and the next one
+    # tries again.
+    spawned: list[asyncio.subprocess.Process] = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def hanging_exec(*_argv, **kwargs):
+        proc = await real_exec("sleep", "30", **kwargs)
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", hanging_exec)
+
+    async with asyncio.timeout(10):  # the assertion is that this returns at all
+        await container_mod.force_remove_container("docker", "odysseus-sbx-wedged", timeout_s=0.1)
+
+    [child] = spawned
+    # Killed, not merely abandoned — an orphaned client per stuck container would
+    # outlive every boot that hit one.
+    await asyncio.wait_for(child.wait(), timeout=5)
+    assert child.returncode is not None
+
+
 # --- the deliberate host escape hatch ----------------------------------------
 async def test_run_on_host_executes_and_reports_exit():
     ok = await run_on_host("echo hostran")
@@ -297,9 +344,84 @@ async def test_confinement_is_off_when_the_operator_disables_it():
 async def test_a_disabled_confinement_still_runs_the_command():
     # The inverse of the sandbox rule, on purpose: the operator approved *this* command,
     # so a missing (or switched-off) fence means it runs unconfined and says so — not
-    # that an approved command silently refuses.
+    # that an approved command silently refuses. (The code-mode shell is the other way
+    # round; see `test_shell_fence.py`.)
     result = await run_on_host("echo ran", confinement=HostConfinement(False, "disabled"))
     assert result.ok and "ran" in result.stdout
+
+
+async def test_the_hatch_runs_where_and_with_what_it_was_told(tmp_path):
+    # `cwd` and `env` exist so the code-mode shell can share this spawn; the hatch itself
+    # passes neither, and a regression that dropped them would be silent there.
+    result = await run_on_host("pwd; echo $ODYSSEUS_TEST_MARKER", cwd=tmp_path, env={
+        "PATH": os.environ["PATH"],
+        "ODYSSEUS_TEST_MARKER": "carried",
+    })
+    assert result.ok
+    assert str(tmp_path.resolve()) in result.stdout
+    assert "carried" in result.stdout
+
+
+async def test_the_hatch_does_not_hand_the_operators_model_keys_to_the_command(monkeypatch):
+    # The fence denies the paths those keys are *stored* at and says nothing about the
+    # environment, so an inherited one puts them in the transcript of the single command
+    # the operator approved without ever being shown that it could read them. The
+    # code-mode shell already filters; the hatch is the more guarded path of the two.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-not-for-the-command")
+    monkeypatch.setenv("ODYSSEUS_TEST_MARKER", "kept")
+    result = await run_on_host("echo [$OPENAI_API_KEY] [$ODYSSEUS_TEST_MARKER]")
+    assert result.ok
+    assert "sk-not-for-the-command" not in result.stdout
+    assert "kept" in result.stdout  # only the credentials go, not the whole environment
+
+
+async def test_confining_one_command_leaves_what_every_other_one_reaches_alone(monkeypatch):
+    # One proxy serves every confined process here, and it filters each request against
+    # the *process-global* configuration. So teaching it a caller's domains would widen
+    # the fence around everything else running at that moment — another conversation's
+    # background server included — and leave it widened after this command exited: a
+    # per-call approval turned into a process-wide standing grant.
+    from sandbox_runtime import (
+        FilesystemConfig,
+        NetworkConfig,
+        SandboxManager,
+        SandboxRuntimeConfig,
+    )
+    from sandbox_runtime import manager as runtime_manager
+
+    seen: list = []
+
+    async def wrap(command, *, custom_config=None, **_kwargs):
+        # Stubbed rather than run: what a real wrap produces is seatbelt's or bubblewrap's
+        # business, and only on the machines that have them.
+        seen.append(custom_config)
+        return command
+
+    monkeypatch.setattr(SandboxManager, "wrap_with_sandbox", wrap)
+    before = SandboxManager.get_config()
+    SandboxManager.update_config(
+        SandboxRuntimeConfig(
+            network=NetworkConfig(allowed_domains=["pypi.org"], allow_local_binding=True),
+            filesystem=FilesystemConfig(deny_read=["/keys"], allow_write=["/tmp"]),
+        )
+    )
+    try:
+        await confine(
+            "curl https://files.example.com",
+            allowed_domains=["files.example.com"],
+            allow_write=["/work"],
+            deny_read=["/keys"],
+        )
+        # The filesystem half is per-call, because the OS wrapper is what enforces it...
+        [config] = seen
+        assert config.filesystem.allow_write == ["/work"]
+        # ...and the installation's allowlist is still the only thing the proxy will
+        # filter against for anything else on this host.
+        assert SandboxManager.get_config().network.allowed_domains == ["pypi.org"]
+    finally:
+        # Restored through the module global rather than `update_config`, which has no way
+        # to say "there was no configuration here".
+        runtime_manager._config = before
 
 
 async def test_confinement_denies_reading_the_data_directory(tmp_path):
@@ -316,6 +438,7 @@ async def test_confinement_denies_reading_the_data_directory(tmp_path):
 
 
 # --- container integration (only when a real runtime is present) -------------
+@pytest.mark.container
 @pytest.mark.skipif(not _runtime_ready(), reason="no usable container runtime")
 async def test_container_runs_python_in_isolation():
     sandbox = ContainerSandbox()
@@ -324,22 +447,13 @@ async def test_container_runs_python_in_isolation():
     assert result.stdout.strip() == "42"
 
 
-# Resolving a public name proves egress; the same call fails closed without it.
-_DNS_PROBE = "import socket; socket.gethostbyname('pypi.org'); print('reached')"
-
-
+@pytest.mark.container
 @pytest.mark.skipif(not _runtime_ready(), reason="no usable container runtime")
-async def test_no_egress_by_default():
+async def test_the_one_shot_path_has_no_interface_at_all():
+    # This backend's own path is a throwaway run over a throwaway directory: no network
+    # object, so not even a name to resolve. A workspace that needs an exit gets one
+    # through a session and its proxy — see `tests/test_sandbox_session.py`.
     sandbox = ContainerSandbox()
-    result = await sandbox.run(SandboxSpec(command=["python", "-c", _DNS_PROBE], timeout_s=60))
+    probe = "import socket; socket.gethostbyname('pypi.org'); print('reached')"
+    result = await sandbox.run(SandboxSpec(command=["python", "-c", probe], timeout_s=60))
     assert not result.ok  # no route, no DNS — the lookup raises and exits non-zero
-
-
-@pytest.mark.skipif(not _runtime_ready(), reason="no usable container runtime")
-async def test_egress_when_requested():
-    sandbox = ContainerSandbox()
-    result = await sandbox.run(
-        SandboxSpec(command=["python", "-c", _DNS_PROBE], network=True, timeout_s=60)
-    )
-    assert result.ok
-    assert "reached" in result.stdout

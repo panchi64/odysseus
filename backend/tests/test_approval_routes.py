@@ -29,6 +29,18 @@ def danger_categories():
     return {"danger": toolset}
 
 
+def egress_categories():
+    """A `code` category whose one tool is namespaced `code_request_egress` — the name
+    `ONCE_ONLY_TOOLS` pins."""
+    toolset: FunctionToolset[RunDeps] = FunctionToolset()
+
+    @toolset.tool_plain(requires_approval=True)
+    def request_egress(domain: str) -> str:
+        return f"allowed {domain}"
+
+    return {"code": toolset}
+
+
 def _install_sensitive_tool(monkeypatch):
     """Point the model at a TestModel; pair with ``swap_tool_catalog(app,
     danger_categories())`` after boot so the catalog is exactly the one
@@ -158,6 +170,42 @@ async def test_approve_with_conversation_scope_records_grant(monkeypatch):
         assert approval.tool_name in granted
         listed = (await client.get(f"/conversations/{conv_id}/grants")).json()
         assert any(g["tool_name"] == approval.tool_name for g in listed)
+
+
+async def test_egress_request_never_records_a_conversation_grant(monkeypatch):
+    # A conversation grant auto-approves a tool *name*, so one on the egress request would
+    # not mean "this domain again" — it would mean every domain the agent goes on to name.
+    # The call is approved; the scope is dropped.
+    _install_sensitive_tool(monkeypatch)
+    async with client_app() as (client, app):
+        swap_tool_catalog(app, egress_categories())
+        run_id = (await client.post("/chat", json={"prompt": "reach pypi"})).json()["run_id"]
+        run = await _await_parked(app, run_id)
+        approval = run.parked_payload.requests.approvals[0]
+        conv_id = run.conversation_id
+        assert approval.tool_name == "code_request_egress"
+
+        resp = await client.post(
+            f"/runs/{run_id}/approve",
+            json={
+                "decisions": [
+                    {
+                        "tool_call_id": approval.tool_call_id,
+                        "approved": True,
+                        "scope": "conversation",
+                    }
+                ]
+            },
+        )
+        assert resp.status_code == 202
+
+        # The call itself went through — dropping the scope must not read as a denial.
+        events = await collect_sse_events(client, run_id)
+        assert "tool.completed" in [e["type"] for e in events]
+
+        # Nothing standing, on either surface the operator or the engine reads.
+        assert await app.state.approval_grants.active("operator", conv_id) == set()
+        assert (await client.get(f"/conversations/{conv_id}/grants")).json() == []
 
 
 async def test_failed_resume_rolls_back_the_recorded_grant(monkeypatch):

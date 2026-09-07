@@ -31,6 +31,7 @@ def _catalog() -> list:
     return tool_catalog(full_tool_categories())
 
 
+
 class TestTheNamesAreReal:
     def test_every_scoped_name_exists_in_the_catalog(self):
         names = {t.name for t in _catalog()}

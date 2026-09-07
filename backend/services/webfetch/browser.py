@@ -40,6 +40,7 @@ from playwright.async_api import Browser, BrowserContext, Playwright, async_play
 
 from services.sandbox import (
     await_listening,
+    await_log_marker,
     detached_run_argv,
     discover_runtime,
     ensure_image,
@@ -326,24 +327,9 @@ class ManagedBrowser:
                 err.decode("utf-8", "replace").strip(),
             )
             return False
-        return await self._await_proxy_ready(runtime)
-
-    async def _await_proxy_ready(self, runtime: str) -> bool:
-        """Poll the proxy's logs for its readiness line (it prints one when listening), then
-        confirm the container is still running — a print-then-crash would otherwise leave the
-        log line behind and mark a dead proxy ready (every fetch would then fail)."""
-        for _ in range(int(self._startup_timeout_s / 0.25) + 1):
-            _timed_out, _code, out, _err = await run_subprocess(
-                [runtime, "logs", _PROXY_CONTAINER], timeout_s=5.0
-            )
-            if b"PROXY-READY" in out:
-                _t, _c, state, _e = await run_subprocess(
-                    [runtime, "inspect", "-f", "{{.State.Running}}", _PROXY_CONTAINER],
-                    timeout_s=5.0,
-                )
-                return b"true" in state.lower()
-            await asyncio.sleep(0.25)
-        return False
+        return await await_log_marker(
+            runtime, _PROXY_CONTAINER, b"PROXY-READY", timeout_s=self._startup_timeout_s
+        )
 
     async def _discover_ws(self, host_port: int) -> str:
         """Read the CDP websocket endpoint from ``/json/version`` and rewrite its authority

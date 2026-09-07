@@ -4,30 +4,39 @@ reaper, and (with a runtime) file continuity across calls and across a reap."""
 from __future__ import annotations
 
 import asyncio
+import shutil
+import threading
 import time
+from pathlib import Path
 
+import httpx
 import pytest
 
+import services.sandbox.manager as manager_mod
+import services.sandbox.reconcile as reconcile_mod
 import services.sandbox.session as session_mod
+import services.sandbox.sidecar as sidecar_mod
 from core.config import Settings
 from core.vault import Vault
 from services.sandbox import (
     ContainerSandbox,
     PreviewHandle,
     SandboxError,
-    SandboxResult,
     SandboxSession,
     SandboxSessionManager,
     SandboxSpec,
 )
-from services.sandbox.session import (
-    ImageWarmup,
-    _excluded,
-    _restore_workspace,
-    _safe_key,
-    _seal_workspace,
+from services.sandbox.base import safe_key
+from services.sandbox.fork import fork_marker
+from services.sandbox.seal import (
+    excluded,
+    partial_marker,
+    restore_workspace,
+    seal_workspace,
 )
+from services.sandbox.warmup import ImageWarmup
 
+from .conftest import egress_policy
 from .test_sandbox import _runtime_ready
 
 _EXCLUDES = Settings().sandbox_session_seal_excludes
@@ -39,9 +48,23 @@ async def _vault(tmp_path) -> Vault:
     return vault
 
 
+class _NoRuntime(ContainerSandbox):
+    """A backend that resolves no container runtime, whatever the developer happens to
+    have installed. The default for these tests, which exercise bookkeeping — sessions,
+    seals, sweeps, boot reconciliation — and must never reach a real daemon: several of
+    those paths issue `rm --force` / `network rm` by name, and a developer running the
+    suite with the app live would otherwise have their own running sandbox removed
+    from under them. A test that genuinely wants a runtime asks for one by name."""
+
+    @property
+    def runtime(self) -> str | None:
+        return None
+
+
 def _manager(tmp_path, vault, **overrides) -> SandboxSessionManager:
-    backend = overrides.pop("backend", None) or ContainerSandbox()
+    backend = overrides.pop("backend", None) or _NoRuntime()
     opts = dict(
+        egress=egress_policy(tmp_path),
         data_dir=tmp_path,
         idle_ttl_s=1800.0,
         reap_interval_s=60.0,
@@ -51,19 +74,34 @@ def _manager(tmp_path, vault, **overrides) -> SandboxSessionManager:
     return SandboxSessionManager(backend, vault, **opts)
 
 
+def _session(tmp_path, vault, **overrides) -> SandboxSession:
+    """A bare session, built without a manager — the unit under test in the bring-up
+    and teardown cases below."""
+    opts = dict(
+        workspace=tmp_path / "work",
+        sealed=tmp_path / "sealed.tar.enc.gz",
+        egress_dir=tmp_path / "egress",
+        backend=_pinned_backend(),
+        vault=vault,
+        excludes=(),
+    )
+    opts.update(overrides)
+    return SandboxSession("s1", **opts)
+
+
 # --- naming + exclusion ------------------------------------------------------
 def test_safe_key_is_container_safe():
-    key = _safe_key("conv/../weird id!")
+    key = safe_key("conv/../weird id!")
     assert key.startswith("s")
     assert all(c.isalnum() or c in "_.-" for c in key)
 
 
 def test_excluded_drops_envs_and_caches_only():
-    assert _excluded(".venv", _EXCLUDES)
-    assert _excluded("pkg/__pycache__/x.pyc", _EXCLUDES)
-    assert _excluded("node_modules", _EXCLUDES)
-    assert not _excluded("analysis.py", _EXCLUDES)
-    assert not _excluded("output/chart.png", _EXCLUDES)
+    assert excluded(".venv", _EXCLUDES)
+    assert excluded("pkg/__pycache__/x.pyc", _EXCLUDES)
+    assert excluded("node_modules", _EXCLUDES)
+    assert not excluded("analysis.py", _EXCLUDES)
+    assert not excluded("output/chart.png", _EXCLUDES)
 
 
 # --- write_file: staging a file into the workspace (no runtime needed) --------
@@ -109,9 +147,9 @@ async def test_seal_round_trip_keeps_files_drops_bloat(tmp_path):
     (work / "__pycache__").mkdir()
     (work / "__pycache__" / "m.pyc").write_bytes(b"junk")
 
-    sealed = _seal_workspace(work, _EXCLUDES, vault)
+    sealed = seal_workspace(work, _EXCLUDES, vault)
     restored = tmp_path / "restored"
-    _restore_workspace(sealed, restored, vault)
+    restore_workspace(sealed, restored, vault)
 
     assert (restored / "analysis.py").read_text() == "print('hi')"
     assert (restored / "sub" / "out.txt").read_text() == "result"
@@ -126,9 +164,9 @@ async def test_seal_drops_symlinks_so_one_bad_link_cant_brick_restore(tmp_path):
     (work / "real.txt").write_text("keep me")
     (work / "evil").symlink_to("/etc/passwd")  # an absolute link the agent could plant
 
-    sealed = _seal_workspace(work, _EXCLUDES, vault)
+    sealed = seal_workspace(work, _EXCLUDES, vault)
     restored = tmp_path / "restored"
-    _restore_workspace(sealed, restored, vault)  # must NOT raise on the bad link
+    restore_workspace(sealed, restored, vault)  # must NOT raise on the bad link
 
     assert (restored / "real.txt").read_text() == "keep me"  # the real file survives
     assert not (restored / "evil").exists()  # the symlink was never archived
@@ -166,7 +204,7 @@ async def test_run_wraps_an_unexpected_error_as_sandbox_error(tmp_path, monkeypa
 async def test_restoring_a_damaged_seal_raises_sandbox_error(tmp_path):
     vault = await _vault(tmp_path)
     with pytest.raises(SandboxError):
-        _restore_workspace(b"not a valid sealed archive", tmp_path / "out", vault)
+        restore_workspace(b"not a valid sealed archive", tmp_path / "out", vault)
 
 
 # --- lazy acquisition --------------------------------------------------------
@@ -187,36 +225,48 @@ def _pinned_backend() -> ContainerSandbox:
     return ContainerSandbox(runtime="docker")
 
 
+def _fake_bringup(monkeypatch, *, answer=None):
+    """Fake every runtime call a bring-up or teardown makes — the session's own and the
+    sidecar's — into one ordered log, with the sidecar's readiness poll short-circuited.
+
+    One log across both modules because the *order* is the containment: the network before
+    anything joins it, the sidecar answering before the box whose traffic it gates starts.
+    Removals are logged as ``["rm", name]`` so a teardown reads in the same list."""
+    calls: list[list[str]] = []
+
+    async def fake_run_subprocess(argv, **_kwargs):
+        calls.append(list(argv))
+        if answer is not None:
+            return (False, *answer(list(argv)))
+        if argv[1:3] == ["network", "inspect"]:
+            return False, 0, b"172.31.0.0/16\n", b""
+        return False, 0, b"", b""
+
+    async def fake_force_remove(_runtime, name, **_kwargs) -> None:
+        calls.append(["rm", name])
+
+    async def fake_ready(_runtime, _name, _marker, **_kwargs) -> bool:
+        return True
+
+    monkeypatch.setattr(session_mod, "run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(session_mod, "force_remove_container", fake_force_remove)
+    monkeypatch.setattr(sidecar_mod, "run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(sidecar_mod, "force_remove_container", fake_force_remove)
+    monkeypatch.setattr(sidecar_mod, "await_log_marker", fake_ready)
+    return calls
+
+
 async def test_ensure_up_waits_for_a_pending_image_warmup_before_creating(tmp_path, monkeypatch):
     vault = await _vault(tmp_path)
     warmup = ImageWarmup()
     warmup.start_pulling()  # simulate the background pull actually being in flight
-    session = SandboxSession(
-        "s1",
-        workspace=tmp_path / "work",
-        sealed=tmp_path / "sealed.tar.enc.gz",
-        backend=_pinned_backend(),
-        vault=vault,
-        excludes=(),
-        warmup=warmup,
-    )
-
-    created: list[list[str]] = []
-
-    async def fake_run_subprocess(argv, **_kwargs):
-        created.append(argv)
-        return False, 0, b"", b""
-
-    async def fake_kill_quietly(_runtime) -> None:
-        return None
-
-    monkeypatch.setattr(session_mod, "run_subprocess", fake_run_subprocess)
-    monkeypatch.setattr(session, "_kill_quietly", fake_kill_quietly)
+    session = _session(tmp_path, vault, warmup=warmup)
+    created = _fake_bringup(monkeypatch)
 
     task = asyncio.create_task(session._ensure_up())
     await asyncio.sleep(0.02)  # let it start and block on the still-pending pull
     assert not task.done()
-    assert not created  # no container-create attempted while the pull is in flight
+    assert not created  # nothing created at all while the pull is in flight
 
     warmup.mark_done(True)  # the background pull resolves
     await asyncio.wait_for(task, timeout=1.0)
@@ -228,27 +278,11 @@ async def test_ensure_up_needs_no_warmup_wire_up_at_all(tmp_path, monkeypatch):
     # A bare unit-constructed session (warmup=None, the default) skips the
     # coordination outright — existing callers that don't wire one keep working.
     vault = await _vault(tmp_path)
-    session = SandboxSession(
-        "s1",
-        workspace=tmp_path / "work",
-        sealed=tmp_path / "sealed.tar.enc.gz",
-        backend=_pinned_backend(),
-        vault=vault,
-        excludes=(),
-    )
-
-    async def fake_run_subprocess(argv, **_kwargs):
-        return False, 0, b"", b""
-
-    monkeypatch.setattr(session_mod, "run_subprocess", fake_run_subprocess)
-    monkeypatch.setattr(session, "_kill_quietly", lambda _r: _noop())
+    session = _session(tmp_path, vault)
+    _fake_bringup(monkeypatch)
 
     await asyncio.wait_for(session._ensure_up(), timeout=1.0)
     assert session.is_warm
-
-
-async def _noop() -> None:
-    return None
 
 
 async def test_ensure_up_gives_a_truthful_message_when_the_pull_never_resolves(
@@ -257,15 +291,7 @@ async def test_ensure_up_gives_a_truthful_message_when_the_pull_never_resolves(
     vault = await _vault(tmp_path)
     warmup = ImageWarmup()
     warmup.start_pulling()  # in flight, and never marked done — simulates a stuck pull
-    session = SandboxSession(
-        "s1",
-        workspace=tmp_path / "work",
-        sealed=tmp_path / "sealed.tar.enc.gz",
-        backend=_pinned_backend(),
-        vault=vault,
-        excludes=(),
-        warmup=warmup,
-    )
+    session = _session(tmp_path, vault, warmup=warmup)
     monkeypatch.setattr(session_mod, "IMAGE_PULL_TIMEOUT_S", 0.05)
 
     with pytest.raises(SandboxError, match="still downloading"):
@@ -279,65 +305,70 @@ async def test_ensure_up_proceeds_when_the_pull_resolved_but_failed(tmp_path, mo
     vault = await _vault(tmp_path)
     warmup = ImageWarmup()
     warmup.mark_done(False)
-    session = SandboxSession(
-        "s1",
-        workspace=tmp_path / "work",
-        sealed=tmp_path / "sealed.tar.enc.gz",
-        backend=_pinned_backend(),
-        vault=vault,
-        excludes=(),
-        warmup=warmup,
-    )
+    session = _session(tmp_path, vault, warmup=warmup)
 
-    async def fake_run_subprocess(argv, **_kwargs):
-        return False, 1, b"", b"no such image"
+    def answer(argv):
+        # Only the session container's create fails: the fence comes up fine, the image
+        # the *workspace* runs is the one that isn't there.
+        if "odysseus-sbx-s1" in argv:
+            return 1, b"", b"no such image"
+        if argv[1:3] == ["network", "inspect"]:
+            return 0, b"172.31.0.0/16\n", b""
+        return 0, b"", b""
 
-    monkeypatch.setattr(session_mod, "run_subprocess", fake_run_subprocess)
-    monkeypatch.setattr(session, "_kill_quietly", lambda _r: _noop())
+    _fake_bringup(monkeypatch, answer=answer)
 
     with pytest.raises(SandboxError, match="failed to start sandbox session"):
         await asyncio.wait_for(session._ensure_up(), timeout=1.0)
 
 
-async def test_run_in_waits_for_a_pending_image_warmup_before_the_network_call(
-    tmp_path, monkeypatch
-):
-    # The `spec.network=True` path bypasses `_ensure_up` entirely (it runs a
-    # throwaway bridge container via `run_in` instead of exec-ing into the warm
-    # session), so it needs its own wait-out-the-pull coordination — otherwise a
-    # cold-boot network call can race its own implicit pull against a much shorter
-    # exec timeout (sandbox-01, extended to the network branch).
+# --- the fence: an internal network and its proxy, raised before anything runs ---
+async def test_ensure_up_creates_network_sidecar_then_container_in_order(tmp_path, monkeypatch):
     vault = await _vault(tmp_path)
-    warmup = ImageWarmup()
-    warmup.start_pulling()  # simulate the background pull actually being in flight
-    session = SandboxSession(
-        "s1",
-        workspace=tmp_path / "work",
-        sealed=tmp_path / "sealed.tar.enc.gz",
-        backend=_pinned_backend(),
-        vault=vault,
-        excludes=(),
-        warmup=warmup,
-    )
+    allow_dir = tmp_path / "egress" / "s1"
+    session = _session(tmp_path, vault, egress_dir=allow_dir, proxy_image="python:alpine")
+    calls = _fake_bringup(monkeypatch)
 
-    called: list[SandboxSpec] = []
+    await asyncio.wait_for(session._ensure_up(), timeout=1.0)
 
-    async def fake_run_in(_workspace, spec):
-        called.append(spec)
-        return SandboxResult(exit_code=0, stdout="ok", stderr="")
+    runtime_calls = [c for c in calls if c[0] != "rm"]
+    assert [c[1:3] for c in runtime_calls] == [
+        ["network", "create"],  # the wall exists before anything joins it
+        ["network", "inspect"],  # its subnet is what the proxy refuses outsiders by
+        ["run", "--detach"],  # the sidecar
+        ["network", "connect"],  # ...and only then its leg on the open web
+        ["run", "--detach"],  # the workspace container, last
+    ]
+    create, connect, workspace = runtime_calls[2], runtime_calls[3], runtime_calls[4]
+    assert "odysseus-net-s1" in create and "odysseus-egress-s1" in create
+    assert f"{allow_dir}:/allow:ro" in create  # the allowlist, never writable from inside
+    assert "--env EGRESS_CLIENT_SUBNET=172.31.0.0/16" in " ".join(create)
+    assert "python:alpine" in create
+    assert connect[1:] == ["network", "connect", "bridge", "odysseus-egress-s1"]
+    joined = " ".join(workspace)
+    assert "--network odysseus-net-s1" in joined
+    assert "--env HTTPS_PROXY=http://odysseus-egress-s1:3128" in joined
+    assert "--env https_proxy=http://odysseus-egress-s1:3128" in joined  # curl reads this one
+    assert "--env NO_PROXY=localhost,127.0.0.1,odysseus-egress-s1" in joined
 
-    monkeypatch.setattr(session._backend, "run_in", fake_run_in)
 
-    spec = SandboxSpec(command=["true"], network=True)
-    task = asyncio.create_task(session.run(spec))
-    await asyncio.sleep(0.02)  # let it start and block on the still-pending pull
-    assert not task.done()
-    assert not called  # no network call attempted while the pull is in flight
+async def test_kill_removes_container_sidecar_and_network(tmp_path, monkeypatch):
+    # Innermost first: a network cannot be removed while anything is still attached to
+    # it, so the order here is not cosmetic — reversed, the network removal fails and the
+    # next boot inherits it.
+    vault = await _vault(tmp_path)
+    session = _session(tmp_path, vault)
+    calls = _fake_bringup(monkeypatch)
+    await asyncio.wait_for(session._ensure_up(), timeout=1.0)
+    calls.clear()
 
-    warmup.mark_done(True)  # the background pull resolves
-    result = await asyncio.wait_for(task, timeout=1.0)
-    assert result.exit_code == 0
-    assert called  # now proceeds to the (fast, image-cached) network call
+    await session._kill()
+
+    assert calls == [
+        ["rm", "odysseus-sbx-s1"],
+        ["rm", "odysseus-egress-s1"],
+        ["docker", "network", "rm", "odysseus-net-s1"],
+    ]
 
 
 # --- the idle reaper ---------------------------------------------------------
@@ -362,6 +393,8 @@ async def test_reaper_seals_then_drops_an_idle_session(tmp_path):
 
 async def test_start_stop_manages_the_reaper_task(tmp_path):
     vault = await _vault(tmp_path)
+    # `start()` reconciles first, and reconciliation removes containers by name — with
+    # the runtime-less default backend it has nothing to talk to, which is the point.
     manager = _manager(tmp_path, vault)
     await manager.start()
     assert manager._reaper is not None
@@ -399,8 +432,8 @@ async def test_a_new_session_displaces_the_least_recently_used_one_at_the_cap(tm
 
     third = await manager.acquire("conv-c")
 
-    assert set(manager._sessions) == {_safe_key("conv-a"), _safe_key("conv-c")}
-    assert third is manager._sessions[_safe_key("conv-c")]
+    assert set(manager._sessions) == {safe_key("conv-a"), safe_key("conv-c")}
+    assert third is manager._sessions[safe_key("conv-c")]
     # Displaced, not discarded: sealed exactly as an idle reap seals, and the files come
     # back the next time that conversation runs code.
     assert second.sealed.exists()
@@ -419,7 +452,7 @@ async def test_the_cap_never_displaces_a_session_with_a_call_in_flight(tmp_path)
         await manager.acquire("conv-b")
         # Over the cap rather than failing the tool call the operator is watching; the
         # idle sweep collects the overflow once the work finishes.
-        assert set(manager._sessions) == {_safe_key("conv-a"), _safe_key("conv-b")}
+        assert set(manager._sessions) == {safe_key("conv-a"), safe_key("conv-b")}
     finally:
         busy._lock.release()
 
@@ -437,7 +470,7 @@ async def test_the_cap_defers_while_the_vault_is_locked(tmp_path):
 
     # Reaping seals, sealing needs the key — a container too many beats stranding the
     # agent's plaintext files on disk.
-    assert set(manager._sessions) == {_safe_key("conv-a"), _safe_key("conv-b")}
+    assert set(manager._sessions) == {safe_key("conv-a"), safe_key("conv-b")}
     assert first.workspace.exists()
     assert not first.sealed.exists()
 
@@ -464,7 +497,7 @@ async def test_the_cap_never_displaces_a_session_a_live_run_is_working_in(tmp_pa
     await manager.acquire("conv-b")  # thinking, not executing: the lock is free
 
     assert not working.is_busy  # the old signal says "reap me"
-    assert set(manager._sessions) == {_safe_key("conv-a"), _safe_key("conv-b")}
+    assert set(manager._sessions) == {safe_key("conv-a"), safe_key("conv-b")}
     assert (working.workspace / "node_modules").exists()
 
 
@@ -483,7 +516,7 @@ async def test_the_claim_lasts_exactly_as_long_as_the_run_does(tmp_path):
 
     assert working.is_displaceable
     await manager.acquire("conv-c")
-    assert _safe_key("conv-a") not in manager._sessions
+    assert safe_key("conv-a") not in manager._sessions
     assert working.sealed.exists()
 
 
@@ -500,7 +533,7 @@ async def test_the_cap_never_displaces_a_conversation_serving_a_live_preview(tmp
 
     await manager.acquire("conv-b")
 
-    assert set(manager._sessions) == {_safe_key("conv-a"), _safe_key("conv-b")}
+    assert set(manager._sessions) == {safe_key("conv-a"), safe_key("conv-b")}
     assert manager.preview_status("tok-live") == "running"
 
 
@@ -538,7 +571,7 @@ async def test_a_cancelled_acquire_does_not_abort_another_conversations_seal(tmp
 
     assert displaced.sealed.exists()  # the seal finished on the manager's own task
     assert not displaced.workspace.exists()  # no plaintext left behind
-    assert set(manager._sessions) == {_safe_key("conv-b")}
+    assert set(manager._sessions) == {safe_key("conv-b")}
 
 
 async def test_a_failed_seal_leaves_the_session_live_for_the_sweeper(tmp_path):
@@ -556,7 +589,7 @@ async def test_a_failed_seal_leaves_the_session_live_for_the_sweeper(tmp_path):
 
     await manager.acquire("conv-b")
 
-    assert manager._sessions[_safe_key("conv-a")] is displaced
+    assert manager._sessions[safe_key("conv-a")] is displaced
     assert not manager._tearing_down  # and not wedged behind a tombstone either
     assert await manager.acquire("conv-a") is displaced
 
@@ -665,7 +698,7 @@ async def test_purge_deletes_a_cold_sealed_archive_with_no_live_session(tmp_path
     # A sealed-but-unloaded conversation: an archive on disk and no session object.
     vault = await _vault(tmp_path)
     manager = _manager(tmp_path, vault)
-    safe = _safe_key("conv-cold")
+    safe = safe_key("conv-cold")
     sealed = tmp_path / "sandbox" / "sealed" / f"{safe}.tar.enc.gz"
     sealed.parent.mkdir(parents=True, exist_ok=True)
     sealed.write_bytes(b"sealed-bytes")
@@ -765,238 +798,746 @@ async def test_stopped_tokens_are_pruned_after_their_ttl(tmp_path, monkeypatch):
     assert manager.preview_status("tok-2") == "stopped"  # freshly tombstoned
 
 
-# --- the pre-warmed spare pool (sandbox-06) -----------------------------------
-def _fake_container_create(monkeypatch, *, created: list[list[str]] | None = None):
-    """Fake every `docker run --detach ...` as an instant success — no real
-    runtime needed to exercise the spare pool's bookkeeping."""
-    log = created if created is not None else []
-
-    async def fake_run_subprocess(argv, **_kwargs):
-        log.append(argv)
-        return False, 0, b"", b""
-
-    monkeypatch.setattr(session_mod, "run_subprocess", fake_run_subprocess)
-    return log
+# --- forking a workspace for a delegated agent -------------------------------
+_CHILD = "conv-parent#d1"
 
 
-async def test_replenish_only_proceeds_once_the_image_warmup_resolves_ready(tmp_path, monkeypatch):
-    created = _fake_container_create(monkeypatch)
+async def _forked(tmp_path, vault, **overrides):
+    """A parent mid-session — files, and an environment that cost minutes — and the
+    fork taken out of it."""
+    manager = _manager(tmp_path, vault, **overrides)
+    parent = await manager.acquire("conv-parent")
+    parent.ensure_workspace()
+    (parent.workspace / "notes.txt").write_text("what the parent wrote")
+    (parent.workspace / "keep.txt").write_text("still wanted")
+    (parent.workspace / ".venv" / "lib").mkdir(parents=True)
+    (parent.workspace / ".venv" / "lib" / "big.so").write_bytes(b"x" * 1000)
+    child = await manager.fork("conv-parent", _CHILD)
+    return manager, parent, child
+
+
+async def test_fork_copies_the_parents_workspace_including_what_a_seal_drops(tmp_path):
     vault = await _vault(tmp_path)
-    manager = _manager(
-        tmp_path, vault, backend=_pinned_backend(), spare_enabled=True, spare_count=1
-    )
-    manager._image_warmup.start_pulling()  # simulate the boot pull actually in flight
+    manager, parent, child = await _forked(tmp_path, vault)
 
-    manager._kick_replenish()
-    await asyncio.sleep(0.02)
-    assert not manager._spares  # the pull hasn't resolved yet — no spare created
-    assert not created
-
-    manager._image_warmup.mark_done(True)
-    manager._kick_replenish()
-    await asyncio.wait_for(manager._replenish_task, timeout=1.0)
-
-    assert len(manager._spares) == 1
-    spare = manager._spares[0]
-    assert spare.workspace.exists()
-    # Same hardening as an ordinary session's container.
-    joined = " ".join(created[-1])
-    assert "--network none" in joined
-    assert "--cap-drop ALL" in joined
-    assert "--read-only" in joined
-    assert "--pids-limit" in joined
+    assert (child.workspace / "notes.txt").read_text() == "what the parent wrote"
+    # The seal drops a virtualenv because it is rebuildable; a fork keeps it because
+    # rebuilding it is the minutes the delegated agent would spend before its first
+    # useful command.
+    assert (child.workspace / ".venv" / "lib" / "big.so").read_bytes() == b"x" * 1000
+    assert child.workspace != parent.workspace
+    # A delegated agent may reach exactly what the conversation that delegated to it may.
+    assert child._egress_dir == manager._egress.allow_dir("conv-parent")
+    # And a domain approved during the delegated run is written to that same directory,
+    # not to one nothing has mounted — which would read as an approval that did nothing.
+    assert manager._egress.allow_dir(_CHILD) == child._egress_dir
+    # The record the merge decides against: the parent as it stood, minus the bloat the
+    # merge never walks.
+    assert child.fork_manifest.keys() == {"notes.txt", "keep.txt"}
 
 
-async def test_a_spare_is_containerised_exactly_like_a_session_not_merely_similarly(
-    tmp_path, monkeypatch
-):
-    # The hardening flags *are* the sandbox: no network, dropped capabilities, a read-only
-    # root, a pid cap, one bind mount. A spare that came up any softer than a session's own
-    # container would be a hole with nothing watching it, so the two argv must differ in
-    # nothing but the container name and the directory mounted — not merely agree on a
-    # handful of flags a test remembered to list.
+async def test_a_fork_holds_the_parent_still_for_the_whole_copy(tmp_path, monkeypatch):
+    # The copy reads the parent's directory for as long as a warm workspace takes. A seal
+    # landing in that window rmtree's the tree mid-read: either an error that kills the
+    # delegation, or a torn copy whose manifest records the tear as the fork point — and
+    # the merge back would then read the parent's surviving files as never having existed.
     vault = await _vault(tmp_path)
-    created = _fake_container_create(monkeypatch)
+    manager = _manager(tmp_path, vault)
+    parent = await manager.acquire("conv-parent")
+    parent.ensure_workspace()
+    real_clone = session_mod.clone_workspace
+    locked: list[bool] = []
 
-    manager = _manager(
-        tmp_path, vault, backend=_pinned_backend(), spare_enabled=True, spare_count=1
-    )
-    manager._image_warmup.mark_done(True)
-    manager._kick_replenish()
-    await asyncio.wait_for(manager._replenish_task, timeout=1.0)
-    spare = manager._spares[0]
-    spare_argv = created[-1]
+    def watched(source, dest):
+        locked.append(_held_elsewhere(parent._disk))
+        real_clone(source, dest)
 
-    session = SandboxSession(
-        "s1",
-        workspace=tmp_path / "work",
-        sealed=tmp_path / "sealed.tar.enc.gz",
-        backend=_pinned_backend(),
-        vault=vault,
-        excludes=(),
-        warmup=manager._image_warmup,
-    )
+    monkeypatch.setattr(session_mod, "clone_workspace", watched)
+    delegated = _Work()
+    await manager.fork("conv-parent", _CHILD, holder=delegated)
 
-    async def fake_kill_quietly(_runtime) -> None:
-        return None
-
-    monkeypatch.setattr(session, "_kill_quietly", fake_kill_quietly)
-    await session._ensure_up()
-    session_argv = created[-1]
-
-    def normalised(argv: list[str], name: str, workspace) -> list[str]:
-        return [arg.replace(name, "<name>").replace(str(workspace), "<workspace>") for arg in argv]
-
-    assert normalised(spare_argv, spare.container, spare.workspace) == normalised(
-        session_argv, session.container, session.workspace
-    )
+    assert locked == [True]  # the lock a seal takes is held across the copy
+    # And the cap cannot displace the parent out from under the copy either.
+    assert parent.is_claimed
 
 
-async def test_replenish_skips_silently_when_the_image_is_confirmed_unavailable(
-    tmp_path, monkeypatch
-):
-    created = _fake_container_create(monkeypatch)
+def _held_elsewhere(lock: threading.RLock) -> bool:
+    """Whether ``lock`` is taken — asked from another thread, because it is reentrant and
+    the thread holding it would happily take it a second time."""
+    answer: list[bool] = []
+
+    def ask() -> None:
+        taken = lock.acquire(blocking=False)
+        if taken:
+            lock.release()
+        answer.append(not taken)
+
+    probe = threading.Thread(target=ask)
+    probe.start()
+    probe.join()
+    return answer[0]
+
+
+async def test_a_fork_is_ephemeral_and_its_shutdown_leaves_no_archive(tmp_path):
+    # Its files are a copy of a workspace that already has an archive under the parent's
+    # key; a second one would be the same bytes at rest under a key nothing reopens.
     vault = await _vault(tmp_path)
-    manager = _manager(tmp_path, vault, backend=_pinned_backend(), spare_enabled=True)
-    manager._image_warmup.mark_done(False)  # pull failed, nothing cached either
+    _manager_, _parent, child = await _forked(tmp_path, vault)
+    assert child.ephemeral
 
-    manager._kick_replenish()
-    await asyncio.wait_for(manager._replenish_task, timeout=1.0)
+    await child.shutdown()
 
-    assert not manager._spares
-    assert not created  # never even attempted a create against a known-bad image
+    assert not child.sealed.exists()
+    assert not child.workspace.exists()
+    assert not fork_marker(child.workspace).exists()
 
 
-async def test_a_cold_acquire_claims_a_spare_and_kicks_a_background_replenish(
-    tmp_path, monkeypatch
-):
-    _fake_container_create(monkeypatch)
+async def test_merge_back_lands_the_childs_work_and_purges_the_fork(tmp_path):
     vault = await _vault(tmp_path)
-    manager = _manager(
-        tmp_path, vault, backend=_pinned_backend(), spare_enabled=True, spare_count=1
-    )
-    manager._image_warmup.mark_done(True)
-    manager._kick_replenish()
-    await asyncio.wait_for(manager._replenish_task, timeout=1.0)
-    spare = manager._spares[0]
+    manager, parent, child = await _forked(tmp_path, vault)
+    child.write_file("notes.txt", b"what the delegated agent changed")
+    child.write_file("report/out.md", b"and something new")
 
-    session = await manager.acquire("conv-claim")
+    report = await manager.merge_back(_CHILD, "conv-parent")
 
-    assert session.is_warm  # adopted the spare's already-running container — no cold start
-    assert session.container == spare.container
-    # Adopted in place: the session keeps the spare's own dir — the path the
-    # container's bind mount was established on. Renaming it under the live mount
-    # breaks the mount on VM-backed runtimes (Docker Desktop on macOS).
-    assert session.workspace == spare.workspace
-    assert session.workspace.exists()
-    assert not manager._spares  # claimed, not left dangling in the pool
-
-    # Claiming kicks a background top-up so the pool returns to `spare_count`.
-    await asyncio.wait_for(manager._replenish_task, timeout=1.0)
-    assert len(manager._spares) == 1
-    assert manager._spares[0] is not spare
+    assert report.merged
+    assert report.files == ["notes.txt", "report/out.md"]
+    assert (parent.workspace / "notes.txt").read_bytes() == b"what the delegated agent changed"
+    assert (parent.workspace / "report" / "out.md").read_bytes() == b"and something new"
+    # The fork is gone with it — a second copy of the parent's files kept "just in case"
+    # is how a disk fills up, and what was refused is in the report.
+    assert safe_key(_CHILD) not in manager._sessions
+    assert not child.workspace.exists()
+    assert not child.sealed.exists()
 
 
-async def test_a_stale_unclaimed_spare_is_reaped_by_the_idle_sweep_and_replenished(
-    tmp_path, monkeypatch
-):
+async def test_merge_back_drops_the_childs_boxes_before_it_walks(tmp_path, monkeypatch):
+    # They have the fork bind-mounted at /work, and the delegated agent is free to leave a
+    # process running in there. Walking under a live mount copies whatever that process is
+    # halfway through writing — and gives it the window to swing a path the host-side walk
+    # has already judged onto a host file the box itself cannot see.
+    removed_at_walk: list[list[str]] = []
     removed: list[str] = []
 
-    async def fake_force_remove(_runtime, name: str) -> None:
+    async def fake_force_remove(_runtime, name: str, **_kwargs) -> None:
         removed.append(name)
 
-    _fake_container_create(monkeypatch)
+    _fake_runtime_calls(monkeypatch)
     monkeypatch.setattr(session_mod, "force_remove_container", fake_force_remove)
     vault = await _vault(tmp_path)
-    manager = _manager(tmp_path, vault, backend=_pinned_backend(), idle_ttl_s=0.0, spare_count=1)
-    manager._image_warmup.mark_done(True)
-    manager._kick_replenish()
-    await asyncio.wait_for(manager._replenish_task, timeout=1.0)
-    stale_workspace = manager._spares[0].workspace
-    stale_container = manager._spares[0].container
+    manager, parent, child = await _forked(tmp_path, vault, backend=_pinned_backend())
+    child.write_file("notes.txt", b"what the delegated agent changed")
+    real_merge = parent.merge_fork
 
-    await manager._sweep()  # idle_ttl_s=0.0 ⇒ immediately stale, never claimed
+    def watched(*args):
+        removed_at_walk.append(list(removed))
+        return real_merge(*args)
 
-    assert stale_container in removed  # its container was torn down
-    assert not stale_workspace.exists()  # and its neutral workspace deleted
-    await asyncio.wait_for(manager._replenish_task, timeout=1.0)
-    assert len(manager._spares) == 1  # the pool topped itself back up
-    assert manager._spares[0].workspace != stale_workspace
+    monkeypatch.setattr(parent, "merge_fork", watched)
+    await manager.merge_back(_CHILD, "conv-parent")
+
+    assert child.container in removed_at_walk[0]
+    assert child._preview_container in removed_at_walk[0]
 
 
-async def test_spare_disabled_never_creates_one(tmp_path, monkeypatch):
-    created = _fake_container_create(monkeypatch)
+async def test_merge_back_refuses_to_overwrite_what_the_parent_changed_meanwhile(tmp_path):
     vault = await _vault(tmp_path)
-    manager = _manager(tmp_path, vault, backend=_pinned_backend(), spare_enabled=False)
-    manager._image_warmup.mark_done(True)
+    manager, parent, child = await _forked(tmp_path, vault)
+    parent.write_file("notes.txt", b"what the parent did while it waited")
+    child.write_file("notes.txt", b"what the child did")
+    child.write_file("fresh.txt", b"only the child touched this")
+    (child.workspace / "keep.txt").unlink()
 
-    manager._kick_replenish()  # a no-op — spares are disabled
-    assert manager._replenish_task is None
+    report = await manager.merge_back(_CHILD, "conv-parent")
 
-    session = await manager.acquire("conv-x")  # falls back to the ordinary lazy path
-    assert not session.is_warm
-    assert not created
+    assert not report.merged
+    assert report.conflicts == ["notes.txt"]
+    assert (parent.workspace / "notes.txt").read_bytes() == b"what the parent did while it waited"
+    # A conflict on one path does not hold the rest of the work hostage.
+    assert report.files == ["fresh.txt"]
+    assert (parent.workspace / "fresh.txt").exists()
+    # A deletion is reported and never applied: the child dropping a file is not
+    # evidence the parent wanted it gone.
+    assert report.deleted == ["keep.txt"]
+    assert (parent.workspace / "keep.txt").read_text() == "still wanted"
 
 
-async def _pooled_manager(tmp_path, monkeypatch, **overrides) -> SandboxSessionManager:
-    """A manager with one ready spare in the pool, no real runtime touched."""
-    _fake_container_create(monkeypatch)
+async def test_a_merge_refuses_to_write_through_a_symlink_out_of_the_workspace(tmp_path):
+    # The agent in the box can point a symlink anywhere, and the merge is the one writer
+    # in this path that runs on the host — outside every fence, and past the gate a merge
+    # is supposed to be.
     vault = await _vault(tmp_path)
-    manager = _manager(tmp_path, vault, backend=_pinned_backend(), spare_count=1, **overrides)
-    manager._image_warmup.mark_done(True)
-    manager._kick_replenish()
-    await asyncio.wait_for(manager._replenish_task, timeout=1.0)
-    return manager
+    manager, parent, child = await _forked(tmp_path, vault)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (parent.workspace / "docs").symlink_to(outside)
+    child.write_file("docs/stolen.txt", b"this must never leave the workspace")
+
+    report = await manager.merge_back(_CHILD, "conv-parent")
+
+    assert report.conflicts == ["docs/stolen.txt"]
+    assert not (outside / "stolen.txt").exists()
 
 
-async def test_a_spare_is_not_adopted_over_a_sealed_archive(tmp_path, monkeypatch):
-    # An adopted spare keeps its own empty workspace, which would skip the sealed
-    # restore — and the next reap would then seal that empty dir over the real
-    # archive. A conversation with prior state must take the ordinary cold path.
-    manager = await _pooled_manager(tmp_path, monkeypatch)
-    safe = _safe_key("conv-history")
-    sealed = tmp_path / "sandbox" / "sealed" / f"{safe}.tar.enc.gz"
+async def test_a_merge_that_never_reported_keeps_the_fork(tmp_path, monkeypatch):
+    # A fork has no archive, so deleting it on a merge that produced no report — the
+    # vault re-locked while the delegated agent worked, the operator pressing Stop
+    # mid-walk — would lose every file that agent wrote, with nothing said about what
+    # landed and no second copy to retry from.
+    vault = await _vault(tmp_path)
+    manager, parent, child = await _forked(tmp_path, vault)
+    child.write_file("notes.txt", b"what the delegated agent changed")
+
+    def boom(*_args):
+        raise SandboxError("cannot restore the sandbox workspace: vault is locked")
+
+    monkeypatch.setattr(parent, "merge_fork", boom)
+    with pytest.raises(SandboxError):
+        await manager.merge_back(_CHILD, "conv-parent")
+
+    assert (child.workspace / "notes.txt").read_bytes() == b"what the delegated agent changed"
+    # Back in the map with its tombstone released, so the merge can simply be asked for
+    # again rather than the fork being stranded behind an event nothing will set.
+    assert manager._sessions[safe_key(_CHILD)] is child
+    assert not manager._tearing_down
+    monkeypatch.undo()
+    assert (await asyncio.wait_for(manager.merge_back(_CHILD, "conv-parent"), 2.0)).merged
+
+
+async def test_a_fork_whose_copy_fails_releases_the_sessions_it_displaced(tmp_path, monkeypatch):
+    # Those sessions are already out of the live map with a teardown tombstone each.
+    # Abandoned there, every later acquire for them waits on an event nothing will set,
+    # and their containers and plaintext workspaces are in no map a sweep can reach.
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault, max_sessions=2)
+    parent = await manager.acquire("conv-parent")
+    parent.ensure_workspace()
+    await manager.acquire("conv-other")
+
+    def boom(*_args):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(session_mod, "clone_workspace", boom)
+    with pytest.raises(OSError):
+        await manager.fork("conv-parent", _CHILD)
+
+    assert not manager._tearing_down
+    assert safe_key(_CHILD) not in manager._sessions
+    # The displaced conversation comes back rather than waiting forever on its own
+    # teardown.
+    await asyncio.wait_for(manager.acquire("conv-other"), 2.0)
+
+
+async def test_a_fork_stopped_mid_copy_leaves_no_session_over_a_half_copy(tmp_path, monkeypatch):
+    # The copy is the longest await a fork has, so an operator's Stop lands there far more
+    # often than any error does — and a cancellation is not an `Exception`. Left in the
+    # map, the entry counts against the cap and its half-copied *plaintext* fork sits in
+    # the clear until the parent's run goes terminal and a sweep passes.
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault)
+    parent = await manager.acquire("conv-parent")
+    parent.ensure_workspace()
+
+    def stopped(*_args):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(session_mod, "clone_workspace", stopped)
+    with pytest.raises(asyncio.CancelledError):
+        await manager.fork("conv-parent", _CHILD)
+
+    assert safe_key(_CHILD) not in manager._sessions
+    assert not (tmp_path / "sandbox" / "work" / safe_key(_CHILD)).exists()
+
+
+async def test_purging_a_fork_drops_the_allowlist_alias_it_borrowed(tmp_path):
+    # A fork is fenced by its parent's allowlist, and that alias is remembered in memory.
+    # Nothing ever names the child key again — the delegation id lives only in the call
+    # that took it — so an alias kept past the purge is one more dead pair of strings per
+    # delegation for the life of the process.
+    vault = await _vault(tmp_path)
+    manager, _parent, _child = await _forked(tmp_path, vault)
+    policy = manager._egress
+    await policy.allow("conv-parent", ["example.com"])
+    assert "example.com" in await policy.allowed_for(_CHILD)
+
+    await manager.purge(_CHILD)
+
+    assert "example.com" not in await policy.allowed_for(_CHILD)
+
+
+async def test_forking_the_same_key_twice_is_refused(tmp_path):
+    vault = await _vault(tmp_path)
+    manager, _parent, _child = await _forked(tmp_path, vault)
+    # One key names one delegation; minting a second session onto the same directory
+    # would give two agents one workspace and no way to tell their work apart.
+    with pytest.raises(SandboxError):
+        await manager.fork("conv-parent", _CHILD)
+
+
+async def test_a_refused_fork_leaves_no_allowlist_alias(tmp_path):
+    # A fork refused before it has a session goes through no purge, and the purge is
+    # what drops the alias — so it must not have been written yet. One dead pair of
+    # strings per refused delegation for the life of the process is the leak otherwise.
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault)
+    parent = await manager.acquire("conv-parent")
+    parent.ensure_workspace()
+    manager._tearing_down[safe_key(_CHILD)] = asyncio.Event()
+
+    with pytest.raises(SandboxError):
+        await manager.fork("conv-parent", _CHILD)
+
+    assert manager._egress._fenced_by(_CHILD) == _CHILD
+
+
+async def test_a_fork_is_not_displaced_by_the_cap_while_its_run_is_live(tmp_path):
+    # Displacing a fork discards it — nothing here is ever sealed — so an unclaimed one
+    # is work the operator would simply lose.
+    vault = await _vault(tmp_path)
+    manager, _parent, child = await _forked(tmp_path, vault, max_sessions=1)
+    delegated = _Work()
+    child.hold(delegated)
+
+    await manager.acquire("conv-other")
+
+    assert safe_key(_CHILD) in manager._sessions
+    assert (child.workspace / "notes.txt").exists()
+
+
+async def test_taking_a_fork_does_not_displace_the_parent_it_was_forked_from(tmp_path):
+    # The conversation that just delegated is the one demonstrably mid-work. Sealing it
+    # to make room for its own child would hand it back, on the very turn it is waiting
+    # on that child, a workspace missing everything the seal drops.
+    vault = await _vault(tmp_path)
+    manager, parent, _child = await _forked(tmp_path, vault, max_sessions=1)
+
+    assert parent.key in manager._sessions
+    assert (parent.workspace / "notes.txt").exists()
+
+
+async def test_the_sweep_leaves_a_fork_whose_run_is_still_live_alone(tmp_path):
+    # Reaping an ordinary session is lossless — it seals, and the next run restores — so
+    # the sweep collects a run parked on an unanswered approval. A fork has no archive to
+    # come back through, and the merge that followed would report an empty workspace as
+    # having landed.
+    vault = await _vault(tmp_path)
+    manager, _parent, child = await _forked(tmp_path, vault, idle_ttl_s=0.0)
+    child.hold(_Work())
+
+    await manager._sweep()
+
+    assert safe_key(_CHILD) in manager._sessions
+    assert (child.workspace / "notes.txt").exists()
+
+
+async def test_the_sweep_discards_a_stranded_fork_instead_of_sealing_it(tmp_path):
+    # What a crash leaves of a delegation: a plaintext copy of a parent workspace that
+    # is already archived under its own key. Sealing it would file that duplicate at
+    # rest forever, under a key no conversation will ever open again.
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault)
+    safe = safe_key("conv-parent#d9")
+    stranded = manager._work_root / safe
+    stranded.mkdir(parents=True)
+    (stranded / "notes.txt").write_text("a delegated agent's leftovers")
+    fork_marker(stranded).touch()
+
+    await manager._sweep()
+
+    assert not (manager._sealed_root / f"{safe}.tar.enc.gz").exists()
+    assert not stranded.exists()
+    assert not fork_marker(stranded).exists()
+    assert not manager._tearing_down
+
+
+# --- boot reconciliation + sealing what an unclean shutdown left --------------
+def _fake_runtime_calls(monkeypatch, replies: dict[str, tuple[int, bytes]] | None = None):
+    """Record every runtime argv and answer canned output per subcommand — the
+    listings reconciliation reads, with no real runtime anywhere near it."""
+    calls: list[list[str]] = []
+    answers = replies or {}
+
+    async def fake_run_subprocess(argv, **_kwargs):
+        calls.append(list(argv))
+        code, out = answers.get(" ".join(argv[1:3]), (0, b""))
+        return False, code, out, b""
+
+    monkeypatch.setattr(reconcile_mod, "run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(session_mod, "run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(sidecar_mod, "run_subprocess", fake_run_subprocess)
+    return calls
+
+
+async def test_reconcile_removes_stale_named_containers_and_networks(tmp_path, monkeypatch):
+    # What a crash leaves behind is invisible to every map the manager keeps: a
+    # container nothing will exec into, a network nothing joins, and the scratch dirs
+    # of a pool this build no longer runs. Boot is the one moment clearing them
+    # wholesale is safe, so this is where it has to happen.
+    removed: list[str] = []
+
+    async def fake_force_remove(_runtime, name: str, **_kwargs) -> None:
+        removed.append(name)
+
+    calls = _fake_runtime_calls(
+        monkeypatch,
+        {
+            "ps -a": (0, b"odysseus-sbx-sconv-a\nodysseus-pre-sconv-a\nodysseus-egress-sconv-b\n"),
+            "network ls": (0, b"odysseus-net-sconv-a\n"),
+        },
+    )
+    monkeypatch.setattr(reconcile_mod, "force_remove_container", fake_force_remove)
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault, backend=_pinned_backend())
+    leftover_pool_dir = manager._work_root / "_spare-1-abcd"
+    leftover_pool_dir.mkdir(parents=True)
+    kept = manager._work_root / safe_key("conv-real")
+    kept.mkdir(parents=True)
+
+    await manager.reconcile()
+
+    # The listings are anchored to our own names — an unanchored filter would sweep
+    # up a container the operator merely named after the project.
+    listing = [c for c in calls if c[1] in ("ps", "network")]
+    assert listing[0] == [
+        "docker", "ps", "-a", "--filter", "name=^odysseus-(sbx|pre|egress)-",
+        "--format", "{{.Names}}",
+    ]
+    assert listing[1] == [
+        "docker", "network", "ls", "--filter", "name=^odysseus-net-", "--format", "{{.Name}}",
+    ]
+    assert removed == [
+        "odysseus-sbx-sconv-a",
+        "odysseus-pre-sconv-a",
+        "odysseus-egress-sconv-b",
+    ]
+    assert ["docker", "network", "rm", "odysseus-net-sconv-a"] in calls
+    assert not leftover_pool_dir.exists()
+    assert kept.exists()  # a conversation's own workspace is not pool scratch
+
+
+async def test_reconcile_survives_a_runtime_that_cannot_answer(tmp_path, monkeypatch):
+    # A daemon that is down at boot is a reason to skip reconciliation, never to
+    # stop the app from starting.
+    _fake_runtime_calls(monkeypatch, {"ps -a": (1, b""), "network ls": (1, b"")})
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault, backend=_pinned_backend())
+
+    await manager.reconcile()  # must not raise
+
+
+async def test_sweep_seals_a_plaintext_workspace_with_no_session(tmp_path):
+    # The residue of a process that died before its seal ran: files in the clear that
+    # no session owns. Left alone they quietly break the vault's at-rest promise, so
+    # the sweep adopts and seals them.
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault)
+    safe = safe_key("conv-orphan")
+    orphan = manager._work_root / safe
+    orphan.mkdir(parents=True)
+    (orphan / "notes.txt").write_text("plaintext the last process never sealed")
+
+    await manager._sweep()
+
+    sealed = manager._sealed_root / f"{safe}.tar.enc.gz"
+    assert sealed.exists()  # archived under the vault
+    assert not orphan.exists()  # and the plaintext is gone
+    assert not manager._sessions  # sealing an orphan does not revive it as a session
+    assert not manager._tearing_down  # the tombstone it went through is released
+
+
+async def test_sweep_leaves_an_orphan_workspace_alone_while_the_vault_is_locked(tmp_path):
+    # Without the key there is nothing to seal *into*, and deleting the plaintext
+    # would destroy the agent's files. Waiting is the only honest answer.
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault)
+    orphan = manager._work_root / safe_key("conv-orphan")
+    orphan.mkdir(parents=True)
+    (orphan / "notes.txt").write_text("data")
+    vault.lock()
+
+    await manager._sweep()
+
+    assert (orphan / "notes.txt").exists()
+
+
+async def test_sweep_adopts_stranded_workspaces_a_slice_at_a_time(tmp_path):
+    # Every key in a batch is tombstoned for the whole batch, and an `acquire()` that
+    # lands on a tombstone waits with nothing to show the operator. A crash with a
+    # hundred live conversations must not turn into a hundred-seal wait for whoever
+    # opens the last one, so a sweep takes a slice and the next sweep takes the rest.
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault)
+    keys = [safe_key(f"conv-{i}") for i in range(manager_mod._ORPHAN_SEALS_PER_SWEEP + 2)]
+    for safe in keys:
+        (manager._work_root / safe).mkdir(parents=True)
+        (manager._work_root / safe / "notes.txt").write_text("plaintext")
+
+    await manager._sweep()
+    sealed_first = [k for k in keys if (manager._sealed_root / f"{k}.tar.enc.gz").exists()]
+    assert len(sealed_first) == manager_mod._ORPHAN_SEALS_PER_SWEEP
+    assert not manager._tearing_down  # and every tombstone in the slice is released
+
+    await manager._sweep()
+
+    assert all((manager._sealed_root / f"{k}.tar.enc.gz").exists() for k in keys)
+    assert not any((manager._work_root / k).exists() for k in keys)
+
+
+async def test_sealing_a_stranded_workspace_first_drops_the_containers_holding_it(
+    tmp_path, monkeypatch
+):
+    # The dead process's containers can still be alive with this very directory mounted
+    # at /work — boot reconciliation is skipped whenever the runtime was not up yet.
+    # Sealing under a live mount archives a torn state and sends its later writes to a
+    # deleted inode, so every mount comes off before the archive goes on — the egress
+    # box included, which is the one a cancelled network call leaves behind.
+    removed: list[tuple[str, bool]] = []
+    safe = safe_key("conv-orphan")
+
+    async def fake_force_remove(_runtime, name: str, **_kwargs) -> None:
+        removed.append((name, sealed.exists()))
+
+    _fake_runtime_calls(monkeypatch)
+    monkeypatch.setattr(session_mod, "force_remove_container", fake_force_remove)
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault, backend=_pinned_backend())
+    sealed = manager._sealed_root / f"{safe}.tar.enc.gz"
+    orphan = manager._work_root / safe
+    orphan.mkdir(parents=True)
+    (orphan / "notes.txt").write_text("plaintext the last process never sealed")
+
+    await manager._sweep()
+
+    assert removed == [
+        (f"odysseus-sbx-{safe}", False),
+        (f"odysseus-pre-{safe}", False),
+        (f"odysseus-egress-{safe}", False),
+    ]
+    assert sealed.exists()
+
+
+async def test_dropping_the_mounts_is_bounded_so_the_seal_still_happens(tmp_path, monkeypatch):
+    # A whole batch of orphans is tombstoned while their mounts come off, and every
+    # `acquire()` for those conversations waits behind it with nothing to show the
+    # operator. So a daemon that has stopped answering costs a bounded pause and then
+    # the seal goes ahead — the removals it did not manage are the next boot's problem.
+    removed: list[str] = []
+
+    async def fake_force_remove(_runtime, name: str, **_kwargs) -> None:
+        removed.append(name)
+
+    _fake_runtime_calls(monkeypatch)
+    monkeypatch.setattr(session_mod, "force_remove_container", fake_force_remove)
+    monkeypatch.setattr(session_mod, "_MOUNT_RELEASE_BUDGET_S", 0.0)
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault, backend=_pinned_backend())
+    safe = safe_key("conv-orphan")
+    orphan = manager._work_root / safe
+    orphan.mkdir(parents=True)
+    (orphan / "notes.txt").write_text("plaintext the last process never sealed")
+
+    await manager._sweep()
+
+    assert removed == []  # not even one call is worth making with no budget left
+    assert (manager._sealed_root / f"{safe}.tar.enc.gz").exists()
+    assert not manager._tearing_down
+
+
+async def test_a_stranded_workspace_releases_its_tombstone_even_if_the_mounts_will_not_drop(
+    tmp_path, monkeypatch
+):
+    # The tombstones for a whole batch of orphans go down before any of them is sealed,
+    # and only the teardown releases them. A removal that raises — or a reaper cancelled
+    # mid-eviction — must not leave one set forever: `acquire()` for that conversation
+    # waits on it with no timeout and nothing to show the operator.
+    async def fake_force_remove(_runtime, _name: str, **_kwargs) -> None:
+        raise RuntimeError("the daemon is having a bad day")
+
+    _fake_runtime_calls(monkeypatch)
+    monkeypatch.setattr(session_mod, "force_remove_container", fake_force_remove)
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault, backend=_pinned_backend())
+    safe = safe_key("conv-orphan")
+    orphan = manager._work_root / safe
+    orphan.mkdir(parents=True)
+    (orphan / "notes.txt").write_text("plaintext the last process never sealed")
+
+    await manager._sweep()
+
+    assert not manager._tearing_down  # released, so the next acquire is not stuck
+    assert await asyncio.wait_for(manager.acquire("conv-orphan"), timeout=1.0)
+
+
+async def test_reconcile_stops_when_its_boot_budget_is_spent(tmp_path, monkeypatch):
+    # Boot waits on this pass, and a daemon that accepts the connection without ever
+    # answering would otherwise park startup there — per-container timeouts alone still
+    # let a hundred leftovers add up. What the budget cuts short the next boot finishes.
+    removed: list[str] = []
+
+    async def fake_force_remove(_runtime, name: str, **_kwargs) -> None:
+        removed.append(name)
+
+    calls = _fake_runtime_calls(
+        monkeypatch,
+        {"ps -a": (0, b"odysseus-sbx-sconv-a\n"), "network ls": (0, b"odysseus-net-sconv-a\n")},
+    )
+    monkeypatch.setattr(reconcile_mod, "force_remove_container", fake_force_remove)
+    monkeypatch.setattr(reconcile_mod, "_BUDGET_S", 0.0)
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault, backend=_pinned_backend())
+
+    await manager.reconcile()
+
+    assert calls == []  # not even the listing is worth a call with no budget left
+    assert removed == []
+
+
+def _archive_of(manager, vault, safe: str, files: dict[str, str]):
+    """Seal ``files`` as ``safe``'s archive and return its path — the complete copy a
+    half-finished workspace must never be allowed to overwrite."""
+    source = manager._work_root / f"_source-{safe}"
+    source.mkdir(parents=True)
+    for name, text in files.items():
+        (source / name).write_text(text)
+    sealed = manager._sealed_root / f"{safe}.tar.enc.gz"
     sealed.parent.mkdir(parents=True, exist_ok=True)
-    sealed.write_bytes(b"sealed-bytes")
-
-    session = await manager.acquire("conv-history")
-
-    assert not session.is_warm  # ordinary lazy path — the restore stays in play
-    assert session.workspace == manager._work_root / safe
-    assert len(manager._spares) == 1  # the spare stays pooled for a cold key
+    sealed.write_bytes(seal_workspace(source, _EXCLUDES, vault))
+    shutil.rmtree(source)
+    return sealed
 
 
-async def test_a_spare_is_not_adopted_over_a_plaintext_workspace(tmp_path, monkeypatch):
-    manager = await _pooled_manager(tmp_path, monkeypatch)
-    safe = _safe_key("conv-files")
-    work = tmp_path / "sandbox" / "work" / safe
-    work.mkdir(parents=True, exist_ok=True)
-    (work / "kept.txt").write_text("data")
-
-    session = await manager.acquire("conv-files")
-
-    assert not session.is_warm
-    assert session.workspace == work
-    assert (work / "kept.txt").exists()
-    assert len(manager._spares) == 1
+def _restored(sealed, vault, dest) -> set[str]:
+    restore_workspace(sealed.read_bytes(), dest, vault)
+    return {p.name for p in dest.iterdir()}
 
 
-async def test_purge_deletes_an_adopted_spare_workspace(tmp_path, monkeypatch):
-    # An adopted session's workspace is the spare's own dir, not the canonical
-    # path — purge must delete the dir the session actually lives in.
-    async def fake_force_remove(_runtime, name: str) -> None:
-        return None
+async def test_a_fragment_of_a_restore_never_overwrites_the_archive_it_came_from(tmp_path):
+    # Killed mid-extract, the workspace holds part of what the archive holds. To the
+    # sweep it looks exactly like an unsealed orphan, and sealing it back would drop
+    # every file the extract had not reached yet — irrecoverably. The marker is what
+    # tells the two apart.
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault)
+    safe = safe_key("conv-frag")
+    sealed = _archive_of(manager, vault, safe, {"a.txt": "first", "b.txt": "second"})
+    workspace = manager._work_root / safe
+    workspace.mkdir(parents=True)
+    (workspace / "a.txt").write_text("first")
+    partial_marker(workspace).touch()
 
-    monkeypatch.setattr(session_mod, "force_remove_container", fake_force_remove)
-    manager = await _pooled_manager(tmp_path, monkeypatch)
-    session = await manager.acquire("conv-adopted")
-    assert session.is_warm
-    (session.workspace / "made.txt").write_text("x")
+    await manager._sweep()
 
-    await manager.purge("conv-adopted")
+    assert _restored(sealed, vault, tmp_path / "check") == {"a.txt", "b.txt"}
+    assert not workspace.exists()  # the fragment is still cleared from disk
+    assert not partial_marker(workspace).exists()
 
-    assert not manager._sessions
-    assert not session.workspace.exists()
+
+async def test_a_workspace_the_agent_emptied_seals_as_empty(tmp_path):
+    # The mirror of the case above, and the reason "looks empty" can never be the test
+    # for a fragment: the operator asked for the file to go, so all that is left is the
+    # scratch dirs the seal drops anyway. Keeping the old archive here would hand the
+    # deleted file straight back on the next restore.
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault)
+    safe = safe_key("conv-emptied")
+    sealed = _archive_of(manager, vault, safe, {"report.md": "delete me"})
+    workspace = manager._work_root / safe
+    (workspace / ".home").mkdir(parents=True)
+    (workspace / ".tmp").mkdir()
+
+    await manager._sweep()
+
+    assert _restored(sealed, vault, tmp_path / "check") == set()  # the deletion stuck
+    assert not workspace.exists()
+
+
+async def test_a_marked_fragment_is_thrown_away_and_restored_from_the_archive(tmp_path):
+    # The same fragment reached from the other direction: the conversation comes back
+    # before the sweep does. It must get its whole workspace, not the half on disk.
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault)
+    safe = safe_key("conv-frag")
+    _archive_of(manager, vault, safe, {"a.txt": "first", "b.txt": "second"})
+    workspace = manager._work_root / safe
+    workspace.mkdir(parents=True)
+    (workspace / "a.txt").write_text("half-written")
+    partial_marker(workspace).touch()
+
+    session = await manager.acquire("conv-frag")
+
+    assert session.read_file("a.txt") == b"first"
+    assert session.read_file("b.txt") == b"second"
+    assert not partial_marker(workspace).exists()
+
+
+async def test_a_restore_marks_the_fragment_before_it_creates_anything(tmp_path, monkeypatch):
+    # Restoring is several steps and the process can die between any two of them. Dying
+    # with the directory created and the marker not yet written leaves an empty, unmarked
+    # workspace beside a complete archive — the one shape the orphan sweep adopts and
+    # seals straight back over that archive. So the marker goes down first.
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault)
+    safe = safe_key("conv-crash")
+    sealed = _archive_of(manager, vault, safe, {"a.txt": "first"})
+    workspace = manager._work_root / safe
+    real_mkdir = Path.mkdir
+
+    def die_creating_the_workspace(self, *args, **kwargs):
+        if self == workspace:
+            raise OSError("the process died right here")
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", die_creating_the_workspace)
+
+    with pytest.raises(SandboxError):
+        restore_workspace(sealed.read_bytes(), workspace, vault)
+
+    assert partial_marker(workspace).exists()
+
+
+async def test_a_file_write_racing_a_seal_waits_it_out_instead_of_tearing_the_workspace(
+    tmp_path, monkeypatch
+):
+    # The file tools take no session lock — that is what keeps browsing and editing off
+    # the container's critical path — so a run parked on an approval can be reaped and
+    # sealed while it still holds this very session object, and its next write arrives
+    # mid-archive. Interleaved, the two leave a torn directory with no marker on it,
+    # which the orphan sweep then seals over the good archive.
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault)
+    session = await manager.acquire("conv-race")
+    session.ensure_workspace()
+    (session.workspace / "notes.txt").write_text("what the seal captures")
+    real_seal = session_mod.seal_workspace
+
+    def slow_seal(workspace, excludes, vault):
+        time.sleep(0.2)  # a real tar+gzip+AEAD is seconds; this is the same window
+        return real_seal(workspace, excludes, vault)
+
+    monkeypatch.setattr(session_mod, "seal_workspace", slow_seal)
+
+    sealing = asyncio.create_task(session.shutdown())
+    await asyncio.sleep(0.05)  # let the seal thread get well inside the archive
+    await asyncio.gather(sealing, asyncio.to_thread(session.write_file, "late.txt", b"x"))
+
+    # The write landed on a workspace restored from the finished archive, so both files
+    # are there and nothing is half-removed.
+    assert (session.workspace / "notes.txt").read_text() == "what the seal captures"
+    assert (session.workspace / "late.txt").read_bytes() == b"x"
+    assert not partial_marker(session.workspace).exists()
+
+
+async def test_sweep_does_not_touch_a_workspace_its_own_session_still_holds(tmp_path):
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault, idle_ttl_s=3600.0)
+    session = await manager.acquire("conv-live")
+    session.ensure_workspace()
+    (session.workspace / "wip.txt").write_text("still working")
+
+    await manager._sweep()
+
+    assert (session.workspace / "wip.txt").exists()
+    assert manager.existing("conv-live") is session
 
 
 # --- exec runtime faults heal by container rebuild, not model flailing --------
@@ -1018,15 +1559,23 @@ async def _healing_session(tmp_path, monkeypatch, exec_results):
         if argv[1] == "exec":
             code, out = exec_results.pop(0)
             return False, code, out, b""
+        if argv[1:3] == ["network", "inspect"]:
+            return False, 0, b"172.31.0.0/16\n", b""
         return False, 0, b"", b""
 
-    async def fake_force_remove(_runtime, name: str) -> None:
+    async def fake_force_remove(_runtime, name: str, **_kwargs) -> None:
         removed.append(name)
+
+    async def fake_ready(_runtime, _name, _marker, **_kwargs) -> bool:
+        return True
 
     monkeypatch.setattr(session_mod, "run_subprocess", fake_run_subprocess)
     monkeypatch.setattr(session_mod, "force_remove_container", fake_force_remove)
+    monkeypatch.setattr(sidecar_mod, "run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(sidecar_mod, "force_remove_container", fake_force_remove)
+    monkeypatch.setattr(sidecar_mod, "await_log_marker", fake_ready)
     vault = await _vault(tmp_path)
-    manager = _manager(tmp_path, vault, backend=_pinned_backend(), spare_enabled=False)
+    manager = _manager(tmp_path, vault, backend=_pinned_backend())
     session = await manager.acquire("conv-heal")
     return session, calls, removed
 
@@ -1046,7 +1595,8 @@ async def test_exec_runtime_fault_rebuilds_the_container_and_retries(tmp_path, m
     # _ensure_up pre-clears the name once per create; the middle removal is the
     # heal tearing the broken container down.
     assert removed.count(session.container) == 3
-    assert len([a for a in calls if a[1] == "run"]) == 2  # create + rebuild
+    creates = [a for a in calls if a[1] == "run" and session.container in a]
+    assert len(creates) == 2  # create + rebuild
     assert len([a for a in calls if a[1] == "exec"]) == 2  # fault + retry
 
 
@@ -1068,18 +1618,21 @@ async def test_ordinary_code_failure_is_not_mistaken_for_a_runtime_fault(tmp_pat
 
     assert not result.ok
     assert result.exit_code == 1
-    # Only _ensure_up's one pre-create clear — no heal teardown, no rebuild: the
-    # failure goes back to the model to fix.
-    assert len(removed) == 1
-    assert len([a for a in calls if a[1] == "run"]) == 1
+    # Only the bring-up's own pre-create clears (the container's, then the sidecar's) —
+    # no heal teardown, no rebuild: the failure goes back to the model to fix.
+    assert removed == [session.container, session._egress]
+    assert len([a for a in calls if a[1] == "run" and session.container in a]) == 1
     assert len([a for a in calls if a[1] == "exec"]) == 1
 
 
 # --- live container (only when a real runtime is present) --------------------
+@pytest.mark.container
 @pytest.mark.skipif(not _runtime_ready(), reason="no usable container runtime")
 async def test_live_session_persists_files_across_calls(tmp_path):
     vault = await _vault(tmp_path)
-    manager = _manager(tmp_path, vault)
+    # The one test here that wants the developer's actual runtime rather than the
+    # runtime-less default.
+    manager = _manager(tmp_path, vault, backend=ContainerSandbox())
     try:
         session = await manager.acquire("conv-a")
         wrote = await session.run(
@@ -1089,5 +1642,94 @@ async def test_live_session_persists_files_across_calls(tmp_path):
         # A later call in the same session sees the file the earlier one wrote.
         read = await session.run(SandboxSpec(command=["bash", "-c", "cat note.txt"], timeout_s=60))
         assert "persisted" in read.stdout
+    finally:
+        await manager.stop()
+
+
+# The fence, exercised the way the agent meets it: not a flag, but a real proxy the
+# workspace's traffic actually goes through. `curl` is not in the sandbox image (and
+# `apt` can never work in a capability-dropped non-root box), so the probes are Python.
+_FETCH = (
+    "import sys, urllib.request, urllib.error\n"
+    "try:\n"
+    "    print(urllib.request.urlopen(sys.argv[1], timeout=30).status)\n"
+    "except urllib.error.HTTPError as exc:\n"
+    "    print(exc.code); print(exc.read().decode('utf-8', 'replace'))\n"
+)
+
+
+@pytest.mark.container
+@pytest.mark.skipif(not _runtime_ready(), reason="no usable container runtime")
+async def test_pip_install_through_the_egress_proxy(tmp_path):
+    # The whole point of the shape: a package index is on the installation-wide list, so
+    # installing is ordinary work that costs no approval — through a proxy, on a network
+    # with no route of its own.
+    vault = await _vault(tmp_path)
+    manager = _manager(
+        tmp_path,
+        vault,
+        backend=ContainerSandbox(),
+        egress=egress_policy(tmp_path, ("pypi.org", "files.pythonhosted.org")),
+    )
+    try:
+        session = await manager.acquire("conv-egress")
+        install = await session.run(
+            SandboxSpec(command=["pip", "install", "--no-cache-dir", "six"], timeout_s=300)
+        )
+        assert install.ok, install.stderr
+        imported = await session.run(
+            SandboxSpec(command=["python", "-c", "import six; print(six.__name__)"], timeout_s=60)
+        )
+        assert imported.ok
+        assert "six" in imported.stdout
+    finally:
+        await manager.stop()
+
+
+@pytest.mark.container
+@pytest.mark.skipif(not _runtime_ready(), reason="no usable container runtime")
+async def test_unlisted_host_is_denied_with_marker(tmp_path):
+    # A refusal has to say which fence refused and which host, in the body the agent
+    # actually reads — an anonymous 403 is something it would only try to route around.
+    vault = await _vault(tmp_path)
+    manager = _manager(
+        tmp_path, vault, backend=ContainerSandbox(), egress=egress_policy(tmp_path, ("pypi.org",))
+    )
+    try:
+        session = await manager.acquire("conv-denied")
+        result = await session.run(
+            SandboxSpec(
+                command=["python", "-c", _FETCH, "http://example.com/"], timeout_s=60
+            )
+        )
+        assert "403" in result.stdout
+        assert "odysseus-egress: denied example.com" in result.stdout
+        # And the tunnelled form is refused too — CONNECT is checked before it is opened.
+        tunnelled = await session.run(
+            SandboxSpec(
+                command=["python", "-c", _FETCH, "https://example.com/"], timeout_s=60
+            )
+        )
+        assert "200" not in tunnelled.stdout
+    finally:
+        await manager.stop()
+
+
+@pytest.mark.container
+@pytest.mark.skipif(not _runtime_ready(), reason="no usable container runtime")
+async def test_a_preview_is_published_by_the_sidecar_and_answers(tmp_path):
+    # The preview container publishes nothing (it cannot, on an internal network): the
+    # sidecar owns the loopback port and relays inward.
+    vault = await _vault(tmp_path)
+    manager = _manager(
+        tmp_path, vault, backend=ContainerSandbox(), preview_startup_timeout_s=60.0
+    )
+    try:
+        handle = await manager.start_preview(
+            "conv-preview", ["python", "-m", "http.server", "8000"], 8000
+        )
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"http://127.0.0.1:{handle.host_port}/", timeout=30.0)
+        assert resp.status_code == 200
     finally:
         await manager.stop()

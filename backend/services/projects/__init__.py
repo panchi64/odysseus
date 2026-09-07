@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from services.projects.repo import (
+    BRANCH_PREFIX,
+    WorktreeError,
+    WorktreeState,
+    branch_for,
+)
 from services.projects.store import (
     ProjectStore,
     ProjectView,
@@ -12,13 +18,11 @@ from services.projects.store import (
 from services.projects.worktree import (
     Diff,
     WorktreeBusyError,
-    WorktreeError,
     WorktreeManager,
-    WorktreeState,
-    branch_for,
 )
 
 __all__ = [
+    "BRANCH_PREFIX",
     "Diff",
     "ProjectStore",
     "ProjectView",

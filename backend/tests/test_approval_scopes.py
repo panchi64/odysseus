@@ -38,6 +38,29 @@ async def test_statically_marked_tools_are_scopes():
     } <= names
 
 
+async def test_once_only_tools_are_not_scopes():
+    """The egress request pauses a run, but a grant on its name would cover every domain
+    the agent goes on to ask for, so the engine never records one. Listing it would put a
+    checkbox on the task form that stores a scope the fire silently drops — so it is
+    absent from the vocabulary and refused on write, the same way a typo is."""
+    async with client_app() as (client, _app):
+        names = _names((await client.get("/tools/approval-scopes")).json())
+        assert "code_request_egress" not in names
+        resp = await client.post(
+            "/tasks",
+            json={
+                "kind": "agent",
+                "title": "t",
+                "prompt": "p",
+                "schedule": {"type": "once", "runAt": "2999-01-01T00:00:00Z"},
+                "output": "chat",
+                "preAuthorized": ["code_request_egress"],
+            },
+        )
+    assert resp.status_code == 422
+    assert "code_request_egress" in resp.json()["detail"]
+
+
 async def test_conditionally_gated_tools_are_scopes():
     """The gates that fire from inside the call can't be discovered by inspection, so
     they're listed explicitly — but every name must still resolve to a real tool."""

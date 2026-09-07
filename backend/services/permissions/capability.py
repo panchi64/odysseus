@@ -29,7 +29,7 @@ there is nothing in them left to find.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -112,6 +112,13 @@ _COMMAND_ARG: dict[str, str] = {
     "code_execute": "code",
 }
 
+#: The one tool whose entire security content is an argument *value*. Everything else here
+#: is described by its argument keys (see :func:`_arg_shape`), because a value may be a
+#: password or a page of untrusted text — but a request to widen the egress allowlist that
+#: does not say *which host* describes nothing at all, and a reviewer handed it would be
+#: clearing the fence's only exit blind.
+_EGRESS_TOOL = "code_request_egress"
+
 #: File tools, by the argument naming the target. Their worst case is one path, which is
 #: the whole of what there is to say about them.
 _PATH_ARG: dict[str, str] = {
@@ -183,6 +190,17 @@ def capability_of(tool: str, args: dict[str, Any], *, root: Path | None = None) 
             summary=f"Reads with {tool}, using {_arg_shape(args)}",
         )
 
+    if tool == _EGRESS_TOOL:
+        return Capability(
+            tool=tool,
+            kind=ActionKind.OPAQUE,
+            summary=f"Opens this workspace's network to {_domain_shape(args)}",
+            network=True,
+            # Which hosts is the whole of what the request says; what they would then be
+            # used for is not written anywhere in it, and that is the part worth a human.
+            unbounded=("what an opened host carries is not written in the request",),
+        )
+
     return Capability(
         tool=tool,
         kind=ActionKind.OPAQUE,
@@ -211,17 +229,13 @@ def _command_capability(
             tool=tool,
             kind=ActionKind.OPAQUE,
             summary="Runs a program in the conversation's sandbox container",
-            network=bool(args.get("network")),
             unbounded=("an interpreter's program is not bounded by its arguments",),
         )
-    capability = shell_capability(tool, command, root=root)
-    if args.get("network") and not capability.network:
-        # The sandbox's egress is off unless this call asked for it, and that ask is an
-        # argument of the *tool*, not a word in the command — so the grammar walk cannot
-        # see it and the capability would otherwise claim a reach smaller than the real
-        # one. Every other field of the walk stands.
-        return replace(capability, network=True)
-    return capability
+    # `network` here is the grammar walk's own — a URL named in the command. Egress is no
+    # longer a flag on the run, so there is no tool argument left to widen it with: the
+    # workspace reaches what its allowlist names, and adding to that list is its own
+    # approval-gated call.
+    return shell_capability(tool, command, root=root)
 
 
 def _file_capability(
@@ -247,6 +261,14 @@ def _file_capability(
 def _text_arg(args: dict[str, Any], name: str) -> str | None:
     value = args.get(name)
     return value if isinstance(value, str) else None
+
+
+def _domain_shape(args: dict[str, Any]) -> str:
+    """The hosts an egress request names, in the order it named them. The exception to
+    :func:`_arg_shape`'s rule, argued for at :data:`_EGRESS_TOOL`."""
+    value = args.get("domains")
+    names = [str(d) for d in value if str(d).strip()] if isinstance(value, list) else []
+    return ", ".join(names) if names else "no host it named"
 
 
 def _arg_shape(args: dict[str, Any]) -> str:

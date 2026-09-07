@@ -32,7 +32,7 @@ delegating the call alone would still act on the template. That is the whole tri
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -52,7 +52,9 @@ _MAX_BOUND = 64
 
 #: A `call_tool` guard: raise (or return a string, by raising nothing and letting the
 #: caller proceed) before the bound toolset acts. Used for the approval gate on `shell`.
-type Guard = Callable[[str, RunContext[RunDeps], RunWorkspace], str | None]
+#: Async because the same guard settles that category's OS fence, which resolves once per
+#: process behind a lock.
+type Guard = Callable[[str, RunContext[RunDeps], RunWorkspace], Awaitable[str | None]]
 
 
 class ReboundToolset(AbstractToolset[RunDeps]):
@@ -153,7 +155,7 @@ class WorkspaceToolset(ReboundToolset):
         if workspace is None:
             return unavailable(ctx.deps)
         if self._guard is not None:
-            refusal = self._guard(name, ctx, workspace)
+            refusal = await self._guard(name, ctx, workspace)
             if refusal is not None:
                 return refusal
         return self.cached(str(workspace.root), lambda: self._build(workspace.root))

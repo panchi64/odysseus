@@ -1,12 +1,19 @@
 """The execution-sandbox capability — interface, value types, and errors.
 
-Every bit of agent-invoked code or shell execution runs *through* this interface,
-isolated from the host. The invariant the interface promises: the executed code
-sees only **copies** of the files explicitly handed to it (``SandboxSpec.files``),
-cannot read or modify the host filesystem / processes / environment, and has
-**network egress off by default** (``SandboxSpec.network``). Outputs return
-explicitly (stdout/stderr + copied-out files); nothing escapes the box as a side
-effect.
+Container-backed execution runs *through* this interface, isolated from the host.
+The invariant it promises: the executed code sees only **copies** of the files
+explicitly handed to it (``SandboxSpec.files``), cannot read or modify the host
+filesystem / processes / environment, and reaches the network only through the
+allowlisting proxy its workspace is fenced by (see
+:mod:`services.sandbox.sidecar`) — never directly, and never at all on this
+interface's own one-shot path. Outputs return explicitly (stdout/stderr +
+copied-out files); nothing escapes the box as a side effect.
+
+Not everything the agent runs arrives here, and saying otherwise would overstate
+the invariant: a coding thread's shell and the approved host command execute on
+the operator's own machine under OS-level confinement
+(:mod:`services.sandbox.host`), which fences the same domains and hides the
+credential paths, but is a different boundary from this one.
 
 Pluggable by design: :class:`Sandbox` is the seam, the default backend is a
 container runtime (``container.ContainerSandbox``), and a fake is injected in
@@ -16,12 +23,26 @@ the capability is *absent* (``None``), never a silent host fallback.
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from core.exceptions import OdysseusError
+
+_SAFE = re.compile(r"[^A-Za-z0-9_.-]")
+
+
+def safe_key(key: str) -> str:
+    """A container/dir-safe token for a workspace key (leading char guaranteed).
+
+    Here rather than beside the session manager because the key names more than a
+    container: the egress policy derives the allowlist directory a fence bind-mounts from
+    the same key, and a second spelling of "safe" would file a workspace's allowlist
+    under a different name from the workspace.
+    """
+    return "s" + _SAFE.sub("-", key)
 
 
 class SandboxError(OdysseusError):
@@ -75,7 +96,6 @@ class SandboxSpec:
     stdin: str | None = None
     env: Mapping[str, str] = field(default_factory=dict)
     timeout_s: float = 30.0
-    network: bool = False  # egress off by default so copied data can't leak
 
 
 @dataclass(frozen=True)

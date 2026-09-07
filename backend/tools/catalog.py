@@ -26,6 +26,7 @@ from dataclasses import dataclass
 
 from pydantic_ai import AbstractToolset
 
+from services.approval_grants import ONCE_ONLY_TOOLS
 from services.external_tools import ExternalTools
 
 from .deps import RunDeps
@@ -138,6 +139,12 @@ async def approval_scopes(
     # grants nothing. The set is small and pinned by a test, so this is a guard, not a
     # filter.
     scopes = [t for t in scopes if t.name in static]
+    # A tool whose approval is never standing is not a scope either. It pauses a run,
+    # but a grant on its *name* would not mean "this again" — for the egress request it
+    # would mean every domain the agent goes on to name — so the engine drops such a
+    # grant wherever one is written. Listed here, it would still be a checkbox on a
+    # scheduled task's form that stores a scope the fire silently ignores.
+    scopes = [t for t in scopes if t.name not in ONCE_ONLY_TOOLS]
     if external is not None:
         scopes.extend(await _external_scopes(external, owner_id))
     return sorted(scopes, key=lambda t: (t.category, t.name))

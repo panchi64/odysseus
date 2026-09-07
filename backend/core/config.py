@@ -113,12 +113,17 @@ class Settings(BaseSettings):
     sandbox_enabled: bool = True
     sandbox_runtime: str | None = None
     sandbox_image: str = "python:3.12-slim"
-    sandbox_memory: str = "512m"
-    sandbox_cpus: str = "1.0"
+    # What a box may consume. These are here to protect the *host* — one runaway
+    # container must not take the operator's machine with it — not to keep the agent
+    # small. Set generously enough that ordinary work (a build, a dataframe, a test
+    # suite) never notices them, so a failure that does hit one is genuinely
+    # pathological and worth reporting as such.
+    sandbox_memory: str = "4g"
+    sandbox_cpus: str = "2.0"
     # Max processes/threads a single execution may spawn — a crude fork-bomb guard.
     # Reported to the model alongside memory/cpus (`tools/code.py`) so a fork/thread
     # failure can be attributed to this cap instead of only "possibly OOM".
-    sandbox_pids_limit: int = 256
+    sandbox_pids_limit: int = 1024
     # How much of a file one `files_read_file` call returns. Paging exists (the tool takes
     # an offset), so this bounds a single call rather than what the agent can ultimately
     # read — set to keep one oversized file from crowding out the rest of the turn.
@@ -137,13 +142,6 @@ class Settings(BaseSettings):
     # sealed to make room — the same reap the TTL performs, triggered by pressure instead
     # of by the clock, and just as invisible to the conversation it hits.
     sandbox_max_sessions: int = 8
-    # A small pool of idle, conversation-unattached containers pre-created off
-    # the critical path (after boot image warm-up) so a conversation's first
-    # code_execute claims one instead of paying the container-create round
-    # trip. Reaped by the same idle sweep if a spare is never claimed; disable
-    # for a host that would rather not keep any container running at rest.
-    sandbox_spare_enabled: bool = True
-    sandbox_spare_count: int = 1
     # Live preview: the agent runs a dev server in the sandbox and the backend
     # reverse-proxies it to the frontend. How long to wait for that server to start
     # listening before reporting the start as failed (back to the agent).
@@ -157,6 +155,29 @@ class Settings(BaseSettings):
         ".cache", "dist", "build", "*.pyc", "*.pyo", "*.egg-info",
     )
 
+    # The one network allowlist, and the only one. Both fences read it: the proxy sidecar
+    # that is a container workspace's only route off its internal network, and the OS-level
+    # confinement the code-mode shell and the approved host command run under. Two lists
+    # would mean a hole in whichever one nobody remembered to widen. An entry matches that
+    # host exactly — `github.com` is not `gist.github.com`; the subdomain form is spelled
+    # `*.github.com`, which is why the seeds below name each host they need.
+    #
+    # Seeded with the package registries and source hosts, because the fence is tuned for
+    # exfiltration and not for compute: installing a dependency and cloning a repository
+    # are what a workspace is *for*, and an allowlist that made them feel dangerous would
+    # only teach the operator to switch it off. Anything else is asked for per call and
+    # approved per call (`services/egress.py`).
+    egress_allowed_domains: tuple[str, ...] = (
+        "pypi.org", "files.pythonhosted.org",
+        "registry.npmjs.org", "registry.yarnpkg.com",
+        "github.com", "api.github.com", "codeload.github.com",
+        "objects.githubusercontent.com", "raw.githubusercontent.com",
+        "deb.debian.org", "security.debian.org",
+        "crates.io", "static.crates.io", "index.crates.io",
+        "proxy.golang.org", "sum.golang.org",
+        "huggingface.co", "cdn-lfs.huggingface.co",
+    )
+
     # The approved host-command escape hatch, confined. Approval is consent to the
     # command the operator read, not to whatever it might reach afterwards, so the
     # process is additionally fenced at the OS level (seatbelt on macOS, bubblewrap on
@@ -164,9 +185,6 @@ class Settings(BaseSettings):
     # operator explicitly approved *this* command, and refusing to run it because a
     # platform primitive is missing would break the one case the tool exists for.
     host_command_sandbox_enabled: bool = True
-    # Egress allowlist for those commands. Empty means no network at all — widen it
-    # deliberately, per domain, rather than reaching for the disable switch above.
-    host_command_allowed_domains: tuple[str, ...] = ()
     # Read-denied even under approval. The data directory is added to this at runtime
     # because it holds the vault, the sealed workspaces and the database: the agent must
     # never read its own encrypted store from the host, whatever it was approved to do.

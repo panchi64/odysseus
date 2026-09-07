@@ -10,7 +10,7 @@ from sqlmodel import select
 
 from core.db import in_session
 from models.task import ScheduledTask, TaskRun
-from services.scheduler import TaskRunResult
+from services.scheduler import ScheduledTaskView, TaskRunResult
 
 from ._helpers import (
     client_app,
@@ -197,6 +197,28 @@ async def test_run_now_creates_conversation_run_and_seeds_grants(monkeypatch):
         # The task's own bookkeeping reflects the fire too.
         refreshed = (await client.get("/tasks")).json()["items"][0]
         assert refreshed["lastRunAt"] is not None
+
+
+async def test_a_fire_drops_a_once_only_pre_authorization(monkeypatch):
+    # The route refuses to store such a scope, but a row written before that rule — or by
+    # anything else with the table — still reaches the fire. This is the second writer of
+    # conversation grants, and the unattended run is exactly where a standing grant on a
+    # per-call gate would do its damage: nobody is reading what it covers.
+    patch_model_resolution(monkeypatch, output_text="All set, nothing else to do.")
+    async with client_app() as (_client, app):
+        view = ScheduledTaskView(
+            id="task-1",
+            owner_id="operator",
+            kind="agent",
+            title="t",
+            prompt="p",
+            output="chat",
+            pre_authorized=["code_request_egress", "conversations_search"],
+        )
+        result = await app.state.scheduler._executor(view)
+        assert result.outcome == "ok"
+        granted = await app.state.approval_grants.active("operator", result.conversation_id)
+        assert granted == {"conversations_search"}
 
 
 async def test_run_now_skips_when_previous_execution_still_live():
