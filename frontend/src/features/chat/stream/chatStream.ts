@@ -101,11 +101,6 @@ export function createChatStream(
   // live (which fold onto message blocks), snapshots are conversation-scoped, so
   // they live here beside the messages rather than in the transcript.
   const [snapshots, setSnapshots] = createSignal<ViewSnapshotRef[]>([]);
-  // The thread's live agent browser, as a stream path — conversation-scoped like the
-  // snapshots, and for a stronger reason: the browser session outlives the run that
-  // opened it, so a message block (which replays with the transcript) would resurrect a
-  // browser that has since been reaped.
-  const [browserStream, setBrowserStream] = createSignal<string | null>(null);
   const [sending, setSending] = createSignal(false);
   // True when this room's last run ended in `run.error`; cleared when the next run
   // starts (in the drive). The main room mirrors it to the global `runErrored` echo
@@ -164,7 +159,6 @@ export function createChatStream(
     patchById,
     setMessages,
     setSnapshots,
-    setBrowserStream,
     setPlan,
     setUsage,
     setStats,
@@ -254,8 +248,6 @@ export function createChatStream(
     setUsage,
     setStats,
     setSnapshots,
-    setBrowserStream,
-    browserStream,
     setPlan,
     initialContext: options.initialContext,
     initialStats: options.initialStats,
@@ -493,11 +485,6 @@ export function createChatStream(
     messages,
     /** The conversation's workspace snapshots (git-style history), newest last. */
     snapshots,
-    /** The stream path of this thread's live agent browser, or null when it has none. */
-    browserStream,
-    /** Drop the live browser — the panel calls this when its socket reports the session
-     *  is gone, which is the only signal a reap between turns can produce. */
-    clearBrowserStream: () => setBrowserStream(null),
     toggleSnapshotKeeper: branching.toggleSnapshotKeeper,
     sending,
     errored,

@@ -282,8 +282,9 @@ async def test_delete_unknown_conversation_404():
         assert resp.status_code == 404
 
 
-class _RecordingSandbox:
-    """A stand-in for the sandbox manager that records purge calls (optionally failing)."""
+class _RecordingPurger:
+    """A stand-in for a manager that owns per-conversation state (the sandbox, the
+    browser): records purge calls, and optionally fails them."""
 
     def __init__(self, *, fail: bool = False) -> None:
         self.purged: list[str] = []
@@ -292,30 +293,45 @@ class _RecordingSandbox:
     async def purge(self, key: str) -> None:
         self.purged.append(key)
         if self._fail:
-            raise RuntimeError("sandbox teardown blew up")
+            raise RuntimeError("teardown blew up")
 
 
 async def test_delete_conversation_purges_its_sandbox(monkeypatch):
     patch_model_resolution(monkeypatch, output_text="hi")
     async with client_app() as (client, app):
         conversation_id = await _start_conversation(client)
-        app.state.sandbox = _RecordingSandbox()
+        app.state.sandbox = _RecordingPurger()
 
         resp = await client.delete(f"/conversations/{conversation_id}")
         assert resp.status_code == 204
         assert app.state.sandbox.purged == [conversation_id]
 
 
-async def test_delete_conversation_survives_a_failing_sandbox_purge(monkeypatch):
+async def test_delete_conversation_purges_its_browser(monkeypatch):
+    # The saved login is the point: it holds the cookies for every site the thread signed
+    # into, and it would otherwise outlive the thread the operator deliberately destroyed.
     patch_model_resolution(monkeypatch, output_text="hi")
     async with client_app() as (client, app):
         conversation_id = await _start_conversation(client)
-        app.state.sandbox = _RecordingSandbox(fail=True)
+        app.state.browser_sessions = _RecordingPurger()
+
+        resp = await client.delete(f"/conversations/{conversation_id}")
+        assert resp.status_code == 204
+        assert app.state.browser_sessions.purged == [conversation_id]
+
+
+async def test_delete_conversation_survives_a_failing_purge(monkeypatch):
+    patch_model_resolution(monkeypatch, output_text="hi")
+    async with client_app() as (client, app):
+        conversation_id = await _start_conversation(client)
+        app.state.sandbox = _RecordingPurger(fail=True)
+        app.state.browser_sessions = _RecordingPurger(fail=True)
 
         # The DB delete is authoritative; a best-effort purge failure must not fail it.
         resp = await client.delete(f"/conversations/{conversation_id}")
         assert resp.status_code == 204
         assert (await client.get(f"/conversations/{conversation_id}")).status_code == 404
+        assert app.state.browser_sessions.purged == [conversation_id]
 
 
 def _snapshot_view(snapshot_id: str) -> SnapshotView:

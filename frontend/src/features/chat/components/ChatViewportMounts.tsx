@@ -1,16 +1,11 @@
-import { Show, type JSX } from "solid-js";
+import { type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { Button, ConstructionReveal, ResizeHandle, Reveal, Text } from "~/ui";
 import type { ChatViewport } from "../useChatViewport";
-import { BrowserPanel } from "./BrowserPanel";
 import { ViewportPanel } from "./ViewportPanel";
 
 export interface ChatViewportMountsProps {
   viewport: ChatViewport;
-  /** The stream path of the thread's live agent browser, or null. */
-  browserStream: () => string | null;
-  /** The socket says the session is gone — the only signal a reap can produce. */
-  onBrowserEnded: () => void;
 }
 
 /**
@@ -24,11 +19,6 @@ export interface ChatViewportMountsProps {
  * `onClose` is passed per mount site: the aside's own Collapse just toggles the panel, but
  * the sheet's (routed through the same `ViewActionRow`) must also reset `fullscreen` and
  * return focus to the trigger — `closeSheet` does both, `toggle` does neither.
- *
- * **A live browser takes the slot.** A browser is a place the agent *is*, not an artifact
- * it produced, so it gets none of the View's version chrome — and it is transient, so the
- * versioned View comes straight back when the session ends rather than the operator having
- * to switch back to it.
  *
  * **Resolve and dissolve at full width — an *animation*, not a transition.** The
  * difference is mechanism rather than taste: a transition needs a previous computed value,
@@ -44,7 +34,7 @@ export function ChatViewportMounts(
   const toggleFullscreen = () =>
     props.viewport.patch({ fullscreen: !props.viewport.state().fullscreen });
 
-  const renderViewportPanel = (onClose: () => void) => (
+  const renderPanel = (onClose: () => void) => (
     <ViewportPanel
       items={props.viewport.items()}
       selectedKey={props.viewport.state().pinnedKey}
@@ -63,21 +53,6 @@ export function ChatViewportMounts(
       onKeeper={props.viewport.toggleKeeper}
       panelRef={props.viewport.panelRef}
     />
-  );
-
-  const renderPanel = (onClose: () => void) => (
-    <Show when={props.browserStream()} fallback={renderViewportPanel(onClose)}>
-      {(path) => (
-        <BrowserPanel
-          streamPath={path()}
-          onEnded={props.onBrowserEnded}
-          fullscreen={props.viewport.state().fullscreen}
-          onToggleFullscreen={toggleFullscreen}
-          onClose={onClose}
-          panelRef={props.viewport.panelRef}
-        />
-      )}
-    </Show>
   );
 
   return (

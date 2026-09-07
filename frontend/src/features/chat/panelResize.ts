@@ -8,15 +8,9 @@
  * here, in memory, so a drag never writes localStorage on every move; the persisting setter
  * is called once, when the drag settles. Holding it as an *override* (rather than seeding a
  * local copy from the stored value) is what lets the slot go back to following the stored
- * width the instant the drag ends — including when the panel swaps under it, so a browser
- * session opening mid-thread re-reads the browser's own width instead of inheriting the
- * width the View was dragged to.
- *
- * **The drag remembers which panel it started on.** Null means no drag happened, so a bare
- * click on the splitter cannot persist a window-clamped reading over a wider stored
- * preference. And a browser session ending mid-drag must not land the browser's width on
- * the View's key: where the width goes is decided when the drag starts, not when the
- * pointer happens to come up.
+ * width the instant the drag ends, and what makes "no drag in flight" expressible at all:
+ * null means nothing was dragged, so a bare click on the splitter cannot persist a
+ * row-clamped reading over a wider stored preference.
  *
  * **The available width is measured off the row, not the window.** The nav rail and the
  * shell's padding are already spent by the time the layout reaches here, so clamping
@@ -31,12 +25,11 @@ import {
   panelWidth,
   setAvailableWidth,
   setPanelWidth,
-  type PanelKind,
 } from "./viewerPersistence";
 
 export interface PanelResize {
   /** The width to lay the slot out at: the live drag if one is in flight, else the
-   *  stored preference for whichever panel is currently in the slot. */
+   *  stored preference. */
   liveWidth: () => number;
   /** `onResize` for the splitter — `dx` is the pointer's delta, and the panel sits on
    *  the right, so a rightward drag narrows it. */
@@ -45,25 +38,18 @@ export interface PanelResize {
   onResizeEnd: () => void;
 }
 
-/** The drag controller for the viewport slot. `panelKind` reports which panel is in the
- *  slot *now* — it is what the width is stored against. */
-export function createPanelResize(panelKind: () => PanelKind): PanelResize {
-  const [drag, setDrag] = createSignal<{
-    kind: PanelKind;
-    width: number;
-  } | null>(null);
+/** The drag controller for the viewport slot. */
+export function createPanelResize(): PanelResize {
+  const [drag, setDrag] = createSignal<number | null>(null);
 
   return {
-    liveWidth: () => drag()?.width ?? panelWidth(panelKind()),
+    liveWidth: () => drag() ?? panelWidth(),
     onResize: (dx: number) => {
-      const started = drag();
-      const kind = started?.kind ?? panelKind();
-      const from = started?.width ?? panelWidth(kind);
-      setDrag({ kind, width: clampWidth(from - dx, kind) });
+      setDrag(clampWidth((drag() ?? panelWidth()) - dx));
     },
     onResizeEnd: () => {
       const settled = drag();
-      if (settled) setPanelWidth(settled.kind, settled.width);
+      if (settled !== null) setPanelWidth(settled);
       setDrag(null);
     },
   };

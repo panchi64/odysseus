@@ -141,7 +141,6 @@ describe("folding question.asked", () => {
       patchById: (_id, mutate) => mutate(message),
       setMessages: (() => {}) as never,
       setSnapshots: () => {},
-      setBrowserStream: () => {},
       setPlan: () => {},
       setUsage: () => {},
       setStats: () => {},

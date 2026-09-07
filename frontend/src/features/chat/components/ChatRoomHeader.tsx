@@ -12,14 +12,15 @@ import { REVEAL_SPEED_MS } from "../data";
 import type { ChatViewport } from "../useChatViewport";
 import { BranchChip } from "./BranchChip";
 
-/** The session menu's five entries — everything that acts on the thread rather than
- *  on a turn in it. Handed in as one object because they arrive as one: they are the
- *  session-actions menu, and splitting them into five props only spread the same
- *  wiring across five lines. */
+/** The session menu's entries — everything that acts on the thread rather than on a
+ *  turn in it. Handed in as one object because they arrive as one: they are the
+ *  session-actions menu, and splitting them into separate props only spread the same
+ *  wiring across as many lines. */
 export interface ChatRoomHeaderActions {
   rename: () => void;
   retitle: () => void;
   compact: () => void;
+  openBrowser: () => void;
   copy: () => void;
   remove: () => void;
 }
@@ -132,6 +133,15 @@ export function ChatRoomHeader(props: ChatRoomHeaderProps): JSX.Element {
                 // refuses those anyway, this just doesn't offer the action.
                 disabled: !props.conversationId() || props.messageCount() < 3,
                 onSelect: props.actions.compact,
+              },
+              {
+                label: "Open browser",
+                icon: "link",
+                // The window belongs to the thread — its cookies and its logins are
+                // this conversation's — so there is nothing to open until there is a
+                // thread to open it for.
+                disabled: !props.conversationId(),
+                onSelect: props.actions.openBrowser,
               },
               {
                 label: "Copy conversation",

@@ -21,10 +21,10 @@
  * backend persists a steered turn as segments around the injected user message, so the
  * live transcript and a reload agree about the shape of the turn.
  *
- * *Conversation-scoped things are not message blocks.* A live browser session, the plan,
- * the snapshot list and the window meter outlive the run that announced them; folding them
- * onto a message would resurrect a long-reaped browser, or strand a plan on the turn that
- * happened to create it, the next time the transcript replays.
+ * *Conversation-scoped things are not message blocks.* The plan, the snapshot list and the
+ * window meter outlive the run that announced them; folding them onto a message would
+ * strand a plan on the turn that happened to create it, the next time the transcript
+ * replays.
  */
 
 import type { SetStoreFunction } from "solid-js/store";
@@ -85,7 +85,6 @@ export interface FoldDeps {
   patchById: PatchById;
   setMessages: SetStoreFunction<ChatMessage[]>;
   setSnapshots: (fn: (prev: ViewSnapshotRef[]) => ViewSnapshotRef[]) => void;
-  setBrowserStream: (url: string | null) => void;
   setPlan: (items: PlanItem[]) => void;
   setUsage: (context: ContextWindow | null) => void;
   setStats: (stats: ConversationStats | null) => void;
@@ -368,14 +367,6 @@ export function createFolder(
                 m.blocks = m.blocks.filter((b) => b.kind !== "view_live");
           }),
         );
-        break;
-      case "browser.live":
-        // Conversation-scoped, not a message block: the session outlives this run, and a
-        // block would replay a long-reaped browser on the next cold load. There is no
-        // stopped counterpart — the panel's own socket carries the end (see
-        // `browserLive.ts`), because a reap happens between turns with no stream to
-        // carry an event.
-        deps.setBrowserStream(ev.url);
         break;
       case "view.snapshot": {
         // A version minted by `show`: append to the conversation-scoped version list

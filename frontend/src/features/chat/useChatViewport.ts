@@ -1,8 +1,8 @@
 /**
  * The viewport pane, as one thing.
  *
- * The collapsible, resizable region beside the conversation — where documents, live
- * previews and the agent's browser mount — is a single concern with a lot of surface:
+ * The collapsible, resizable region beside the conversation — where documents and live
+ * previews mount — is a single concern with a lot of surface:
  * what it holds, whether it is open, how wide it is, which version is pinned, how many
  * items have arrived unseen, whether it renders as an aside or as a full-screen sheet,
  * and where focus goes when it closes. All of that was inline in the chat screen, where
@@ -33,7 +33,6 @@ import {
   activeDownload,
   downloadBlob,
   useViewerPersistence,
-  type PanelKind,
   type ViewerPersistedState,
 } from "./viewerPersistence";
 import { claimAutoOpen, collectViewItems, type ViewItem } from "./viewport";
@@ -43,7 +42,6 @@ import { claimAutoOpen, collectViewItems, type ViewItem } from "./viewport";
 export interface ViewportSource {
   messages: ChatMessage[];
   snapshots: Accessor<ViewSnapshotRef[]>;
-  browserStream: Accessor<string | null>;
   toggleSnapshotKeeper: (snapshotId: string, keeper: boolean) => Promise<void>;
 }
 
@@ -98,25 +96,17 @@ export function useChatViewport(
   );
   // The pane only makes sense with something to show. Gating the effective open state
   // on having items keeps a persisted-open thread that has since lost them (or a fresh
-  // chat that never had any) from showing an empty panel. The browser is not a View
-  // item — no version, no code, no history — so it has to be counted here or the slot
-  // would stay shut through a whole browsing session.
-  const hasContent = () =>
-    items().length > 0 || source.browserStream() !== null;
+  // chat that never had any) from showing an empty panel.
+  const hasContent = () => items().length > 0;
   const shown = () => state().open && hasContent();
-  // Which panel is in the slot — the browser takes it whenever there is a live one. It
-  // is what the slot is *sized* by, so it is derived here rather than read off render.
-  const panelKind = (): PanelKind =>
-    source.browserStream() !== null ? "browser" : "view";
   const toggle = () => patch({ open: !state().open });
   const open = () => {
     if (!state().open) patch({ open: true });
   };
 
   // The aside's width, and the drag that changes it (see `panelResize.ts` for why the
-  // live width is an override rather than a seeded copy, and why the drag remembers
-  // which panel it started on).
-  const { liveWidth, onResize, onResizeEnd } = createPanelResize(panelKind);
+  // live width is an override rather than a seeded copy).
+  const { liveWidth, onResize, onResizeEnd } = createPanelResize();
 
   // The newest version's key. Following it (pinnedKey null) means freshly-minted
   // versions keep advancing the view instead of leaving it stranded on a stale pick.
@@ -142,19 +132,6 @@ export function useChatViewport(
     const id = currentId();
     if (id !== null && items().length > 0 && claimAutoOpen(id)) open();
   });
-  // The browser gets its own one-shot, keyed on the *session* rather than the thread.
-  // The conversation-scoped claim is about one artifact accumulating versions, where a
-  // manual close means "not this, thanks" for the rest of the thread; a browser session
-  // is a different kind of event — it starts hours later, it is a place the agent went
-  // rather than a new version of what it was already showing, and a thread that spent
-  // its shot on a View item would otherwise browse the whole session behind a closed
-  // panel. Re-announcements of the same session share one claim, so a close during a
-  // session is still respected until the next one.
-  createEffect(() => {
-    const path = source.browserStream();
-    if (path !== null && claimAutoOpen(`browser:${path}`)) open();
-  });
-
   // Items minted after the "seen through" pointer. Counting from a key's *position* —
   // not a raw count — means a rewind that shrinks the list and a later regrow past the
   // old count can't coincidentally read as "seen"; a dropped key (rewound away)

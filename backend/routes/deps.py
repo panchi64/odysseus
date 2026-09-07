@@ -267,15 +267,10 @@ def sandbox_sessions(request_or_ws: Request | WebSocket) -> SandboxSessionManage
     return request_or_ws.app.state.sandbox
 
 
-def browser_sessions(request_or_ws: Request | WebSocket) -> BrowserSessionManager | None:
+def browser_sessions(request: Request) -> BrowserSessionManager | None:
     """The per-conversation browser manager, or None when browser control isn't wired
-    (the feature is off, or no browser to attach to ever came up).
-
-    Accepts a ``WebSocket`` for the same reason ``sandbox_sessions`` does: the frame
-    stream reaches this from a socket handler, and the two carry ``app`` without sharing
-    a base class.
-    """
-    return getattr(request_or_ws.app.state, "browser_sessions", None)
+    (the feature is off, or its manifest never assembled)."""
+    return getattr(request.app.state, "browser_sessions", None)
 
 
 def projects(request: Request) -> ProjectStore:

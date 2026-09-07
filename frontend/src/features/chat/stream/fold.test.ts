@@ -34,7 +34,6 @@ function harness(seed: ChatMessage[] = []) {
     patchById: createPatchById(messages, setMessages),
     setMessages,
     setSnapshots: () => {},
-    setBrowserStream: () => {},
     setPlan: () => {},
     setUsage: () => {},
     setStats: () => {},
