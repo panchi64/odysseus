@@ -78,14 +78,9 @@ class RunDeps:
     # Never set by a construction site: it is a per-run cache, not an input, and it lives
     # here so it dies with the run instead of in a module-level dict.
     workspace: RunWorkspace | None = field(default=None, repr=False, compare=False)
-    # Browser-session tokens this run has already announced (`browser.live`). Same
-    # reasoning as `workspace`: per-run bookkeeping, so it dies with the run rather than
-    # accumulating in the app-wide toolset. A conversation's browser outlives the run, so
-    # without this every browse tool call would re-announce the same live session.
-    announced_browsers: set[str] = field(default_factory=set, repr=False, compare=False)
     # The queries this run has already searched and the pages it has already fetched, so
     # the web tools can refuse a repeat before it costs a round trip. Per-run for the same
-    # reason as the two above — and deliberately per *run* rather than per conversation:
+    # reason as `workspace` — and deliberately per *run* rather than per conversation:
     # "I already read this" is a fact about the investigation in flight, not a durable one.
     web_dedupe: DedupeSets = field(default_factory=DedupeSets, repr=False, compare=False)
     # The key everything about this run's workspace hangs off: its container session,

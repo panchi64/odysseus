@@ -28,14 +28,11 @@ total concurrency is bounded.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import urllib.parse
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import httpx
 from playwright.async_api import Browser, BrowserContext, Playwright, async_playwright
 
 from services.sandbox import (
@@ -50,6 +47,7 @@ from services.sandbox import (
 )
 from services.sandbox.base import SandboxError
 
+from .cdp import discover_cdp_ws
 from .cookies import DomainCookieJar
 from .stealth import (
     INIT_SCRIPT,
@@ -77,7 +75,9 @@ _PIDS_LIMIT = 1024
 # python image (it imports stdlib only, none of our code).
 _PROXY_CONTAINER = "odysseus-webfetch-proxy"
 _PROXY_PORT = 3128
-_PROXY_SCRIPT = Path(__file__).with_name("proxy_script.py").resolve()
+# Public because the agent's host browser (`services/browser/host.py`) runs the *same*
+# script as a plain subprocess: one SSRF policy, spelled out once, wherever it is enforced.
+PROXY_SCRIPT = Path(__file__).with_name("proxy_script.py").resolve()
 # Force EVERY request through the proxy — including loopback (<-loopback> drops Chrome's
 # implicit localhost bypass), so a page can't reach the CDP port in the shared namespace.
 _PROXY_FLAGS = [f"--proxy-server=127.0.0.1:{_PROXY_PORT}", "--proxy-bypass-list=<-loopback>"]
@@ -124,11 +124,6 @@ class ManagedBrowser:
         self._runtime: str | None = None
         self._pw: Playwright | None = None
         self._browser: Browser | None = None
-        # The container's CDP endpoint, kept after bring-up so a *second* client can
-        # attach to the same Chromium instead of starting one of its own — the agent's
-        # controllable browser (`services/browser`) does exactly that, inheriting this
-        # container's isolation and its SSRF proxy rather than duplicating both.
-        self._ws_url: str | None = None
         self._user_agent = ""  # resolved from the override or the engine version in _bring_up
         self._browser_version = ""  # the engine version, for matching the client-hint brands
         self._task: asyncio.Task | None = None
@@ -140,17 +135,6 @@ class ManagedBrowser:
         return (
             self._browser is not None and self._browser.is_connected() and self._proxy_up
         )
-
-    @property
-    def cdp_url(self) -> str | None:
-        """The container's CDP endpoint for another client to attach to, or None when
-        there is nothing safe to attach to.
-
-        Gated on :attr:`available` for the same fail-closed reason it is: handing out the
-        endpoint while the SSRF proxy is down would let a second client reach the network
-        unguarded, which is precisely what that flag exists to prevent.
-        """
-        return self._ws_url if self.available else None
 
     async def start(self) -> None:
         """Begin bring-up. Returns immediately — the pull/launch/connect runs in a
@@ -275,7 +259,9 @@ class ManagedBrowser:
                 return
             host_port = await published_host_port(runtime, _CONTAINER, _INTERNAL_PORT)
             await await_listening(host_port, self._startup_timeout_s)
-            ws_url = await self._discover_ws(host_port)
+            ws_url = await discover_cdp_ws(host_port, self._startup_timeout_s)
+            if ws_url is None:
+                raise SandboxError("the browser's CDP endpoint did not become available")
         except SandboxError as exc:
             logger.warning("web fetch: browser did not come up: %s", exc)
             await force_remove_container(runtime, _CONTAINER)
@@ -289,7 +275,6 @@ class ManagedBrowser:
             self._pw = pw
             browser = await pw.chromium.connect_over_cdp(ws_url)
             self._browser = browser
-            self._ws_url = ws_url
         except Exception:
             logger.exception("web fetch: could not connect to the browser over CDP")
             await self._disconnect()
@@ -331,30 +316,8 @@ class ManagedBrowser:
             runtime, _PROXY_CONTAINER, b"PROXY-READY", timeout_s=self._startup_timeout_s
         )
 
-    async def _discover_ws(self, host_port: int) -> str:
-        """Read the CDP websocket endpoint from ``/json/version`` and rewrite its authority
-        to our published loopback port (the container reports its own internal port)."""
-        deadline_polls = int(self._startup_timeout_s / 0.25) + 1
-        async with httpx.AsyncClient() as client:
-            for _ in range(deadline_polls):
-                try:
-                    resp = await client.get(
-                        f"http://127.0.0.1:{host_port}/json/version", timeout=2.0
-                    )
-                    if resp.status_code == 200:
-                        raw = json.loads(resp.text)["webSocketDebuggerUrl"]
-                        parts = urllib.parse.urlsplit(raw)
-                        return urllib.parse.urlunsplit(
-                            (parts.scheme, f"127.0.0.1:{host_port}", parts.path, "", "")
-                        )
-                except (httpx.HTTPError, KeyError, ValueError):
-                    pass
-                await asyncio.sleep(0.25)
-        raise SandboxError("the browser's CDP endpoint did not become available")
-
     async def _disconnect(self) -> None:
         self._proxy_up = False
-        self._ws_url = None
         if self._browser is not None:
             try:
                 await self._browser.close()
@@ -400,5 +363,5 @@ class ManagedBrowser:
             "--pids-limit", "256",
             "--env", "PYTHONDONTWRITEBYTECODE=1",
             "--env", "PYTHONUNBUFFERED=1",
-            "--volume", f"{_PROXY_SCRIPT}:/proxy.py:ro",
+            "--volume", f"{PROXY_SCRIPT}:/proxy.py:ro",
         ]

@@ -18,8 +18,14 @@ What is used from the harness is the toolset alone — the eighteen tools over a
 own. See `tools/rebound.py` for why the tools are *defined* by a template and *dispatched*
 through a per-conversation instance.
 
-**Degrades, never fails.** No container runtime, a browser that hasn't come up, or offline
-mode having suspended it all mean there is nothing to attach to; the tools say so and the
+**The window is the operator's too.** These tools drive a visible Chromium on the
+operator's own machine, one window per conversation, which they can click in themselves —
+to log in before handing the thread over, or to do a step faster than describing it.
+Nothing announces what they did; the model simply re-reads the page with `snapshot` or
+`get_text` like it would after any other change.
+
+**Degrades, never fails.** A window that could not be launched — no Chromium, or its SSRF
+proxy refusing to start — means there is nothing to attach to; the tools say so and the
 model moves on, exactly as web fetch does under the same conditions.
 """
 
@@ -32,7 +38,6 @@ from pydantic_ai_harness.playwright import (
     PlaywrightBrowserToolset,
 )
 
-from runs import BrowserLive
 from services.browser import BrowserSessionManager
 
 from .deps import RunDeps
@@ -75,9 +80,8 @@ NETWORK_TOOLS = frozenset(f"browse_{name}" for name in TOOL_NAMES)
 VISION_TOOLS = frozenset({"browse_screenshot"})
 
 _UNAVAILABLE = (
-    "The browser is not available right now (it runs in a container, and offline mode "
-    "shuts it down). Use web_fetch or web_search to read a page instead, or try again "
-    "once the connection is back."
+    "The browser is not available right now — no window could be opened on this machine. "
+    "Use web_fetch or web_search to read a page instead, or try again later."
 )
 
 
@@ -95,21 +99,7 @@ class BrowserToolset(ReboundToolset):
         # A reaped conversation can be re-attached under a *new* session; the cached
         # toolset would still be pointed at the dead one, so it is keyed by the session's
         # token rather than by the conversation.
-        bound = self.cached(live.token, lambda: _toolset_for(live.session))
-        # Announce the live browser once per run, so the panel opens the moment the agent
-        # first touches a page rather than after the turn. Teardown has no run to ride on
-        # (a reap happens between turns), so it is delivered on the stream socket instead
-        # — see `routes/browser.py`.
-        if live.token not in ctx.deps.announced_browsers:
-            ctx.deps.announced_browsers.add(live.token)
-            ctx.deps.run.emit(
-                BrowserLive(
-                    conversation_id=key,
-                    url=f"/browser/stream/{live.token}",
-                    page_url=live.page_url or None,
-                )
-            )
-        return bound
+        return self.cached(live.token, lambda: _toolset_for(live.session))
 
 
 def _toolset_for(session: PlaywrightBrowserSession) -> AbstractToolset[RunDeps]:

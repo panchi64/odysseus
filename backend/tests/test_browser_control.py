@@ -1,18 +1,20 @@
-"""Browser control: the conversation-scoped session, its frame stream, and the tools.
+"""Browser control: the conversation-scoped session and the tools bound to it.
 
-Three layers, fastest-first:
-- ``Screencast`` — the CDP frame pump, over a fake CDP session (no browser).
-- ``BrowserSessionManager`` — acquire/reap/evict and the degrade path (fake sessions).
+Two layers, fastest-first:
+- ``BrowserSessionManager`` — attach/reap/evict, the degrade path, and what counts as
+  somebody using a browser (fake host, fake sessions).
 - the toolset — that two conversations drive two *pages*, not merely two toolsets.
 
 Nothing here starts Chromium: what is worth guarding is the wiring around the harness's
-browser, and a container would make these tests slow, flaky, and environment-dependent
-without testing more of our own code.
+browser, and launching a real window would make these tests slow, flaky and
+environment-dependent without testing more of our own code. ``test_browser_host.py``
+covers the launch itself, equally without one.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 from pydantic_ai import RunContext
@@ -21,8 +23,8 @@ from pydantic_ai.usage import RunUsage
 
 from core.container import ServiceContainer
 from runs import Run, RunStream
-from services.browser import BrowserSessionManager, LiveBrowser, Screencast
-from services.browser.session import ControlledBrowserSession
+from services.browser import BrowserSessionManager, ControlledBrowserSession, LiveBrowser
+from services.browser import session as session_module
 from tools import RunDeps
 from tools.browse import TOOL_NAMES, browse_toolset
 
@@ -32,58 +34,27 @@ OWNER = "operator"
 # --- fakes -----------------------------------------------------------------------------
 
 
-class _FakeCdp:
-    """Records what the screencast sends, and lets a test push frames in."""
-
-    def __init__(self) -> None:
-        self.sent: list[tuple[str, dict | None]] = []
-        self.detached = False
-        self._handlers: dict[str, list] = {}
-
-    def on(self, event: str, handler) -> None:
-        self._handlers.setdefault(event, []).append(handler)
-
-    async def send(self, method: str, params: dict | None = None) -> None:
-        self.sent.append((method, params))
-
-    async def detach(self) -> None:
-        self.detached = True
-
-    def push(self, data: str = "AAAA", session_id: int = 1) -> None:
-        for handler in self._handlers.get("Page.screencastFrame", []):
-            handler(
-                {
-                    "data": data,
-                    "sessionId": session_id,
-                    "metadata": {"deviceWidth": 1280, "deviceHeight": 800},
-                }
-            )
-
-    def acks(self) -> list[dict | None]:
-        return [params for method, params in self.sent if method == "Page.screencastFrameAck"]
-
-
 class _FakeContext:
-    def __init__(self, cdp: _FakeCdp) -> None:
-        self._cdp = cdp
+    """The window behind a page: the tabs really open in it, and the cookie jar the
+    manager saves on teardown."""
 
-    async def new_cdp_session(self, _page) -> _FakeCdp:
-        return self._cdp
+    def __init__(self, state: dict | None = None) -> None:
+        self.state = state or {"cookies": [{"name": "session", "value": "abc"}]}
+        self.pages: list[_FakePage] = []
 
-
-class _FailingContext(_FakeContext):
-    """A context whose CDP session can't be opened — a page mid-navigation, or a browser
-    that went away between the attach decision and the attach."""
-
-    async def new_cdp_session(self, _page) -> _FakeCdp:
-        raise RuntimeError("target closed")
+    async def storage_state(self) -> dict:
+        return self.state
 
 
 class _FakePage:
-    def __init__(self, url: str = "https://example.com", cdp: _FakeCdp | None = None) -> None:
+    def __init__(
+        self, url: str = "https://example.com", context: _FakeContext | None = None
+    ) -> None:
         self.url = url
-        self.context = _FakeContext(cdp or _FakeCdp())
+        self.context = context or _FakeContext()
+        self.context.pages.append(self)
         self.init_scripts: list[str] = []
+        self.fronted = 0
 
     async def title(self) -> str:
         return "Example"
@@ -91,181 +62,87 @@ class _FakePage:
     async def add_init_script(self, script: str) -> None:
         self.init_scripts.append(script)
 
+    async def bring_to_front(self) -> None:
+        self.fronted += 1
+
 
 class _FakeSession:
-    """Stands in for a harness browser session: an active page and the open tabs."""
+    """Stands in for a harness browser session: an active page, the open tabs, and the
+    event counter the sweep reads activity off."""
 
-    def __init__(self, page: _FakePage) -> None:
-        self.page = page
-        self.pages = [page]
+    def __init__(self, page: _FakePage | None = None, **kwargs) -> None:
+        self.page = page or _FakePage()
+        self.pages = [self.page]
+        self.events_recorded = 0
         self.exited = False
+        self.kwargs = kwargs  # what `_attach` constructed this with
+
+    async def __aenter__(self) -> _FakeSession:
+        return self
 
     async def __aexit__(self, *_args) -> None:
         self.exited = True
 
+    async def ensure_page(self) -> _FakePage:
+        return self.page
 
-class _FakeManaged:
-    """A ManagedBrowser stand-in whose availability a test can flip."""
+
+class _FakeHost:
+    """A HostBrowser stand-in whose window a test can take away."""
 
     def __init__(self, cdp_url: str | None = "http://127.0.0.1:9222") -> None:
         self.cdp_url = cdp_url
         self.stealthed: list[_FakePage] = []
+        self.closed = 0
+
+    async def ensure(self) -> str | None:
+        return self.cdp_url
+
+    async def close_if_dead(self) -> None:
+        if self.cdp_url is None:
+            self.closed += 1
 
     async def apply_stealth(self, page) -> None:
         self.stealthed.append(page)
 
 
-def _manager(managed: _FakeManaged, **kwargs) -> BrowserSessionManager:
+def _manager(host: _FakeHost, **kwargs) -> BrowserSessionManager:
     options = {"idle_ttl_s": 900.0, "reap_interval_s": 60.0, "max_live": 3} | kwargs
-    return BrowserSessionManager(managed, **options)  # type: ignore[arg-type]
+    return BrowserSessionManager(host, **options)  # type: ignore[arg-type]
 
 
 def _live(manager: BrowserSessionManager, key: str, page: _FakePage | None = None) -> LiveBrowser:
     """Install a fake session under ``key``, bypassing the real CDP attach."""
-    session = _FakeSession(page or _FakePage())
-    live = LiveBrowser(key, f"token-{key}", session, Screencast(session))  # type: ignore[arg-type]
+    session = _FakeSession(page)
+    live = LiveBrowser(key, f"token-{key}", session, None, session.page.context)  # type: ignore[arg-type]
     manager._sessions[key] = live  # noqa: SLF001 — constructing the state under test
-    manager._tokens[live.token] = key  # noqa: SLF001
     return live
 
 
-# --- the frame pump --------------------------------------------------------------------
+@pytest.fixture
+def attached(monkeypatch) -> list[_FakeSession]:
+    """Make the real attach path build fake sessions, newest last."""
+    built: list[_FakeSession] = []
 
+    def _build(**kwargs) -> _FakeSession:
+        session = _FakeSession(**kwargs)
+        built.append(session)
+        return session
 
-async def test_every_frame_is_acked_exactly_once():
-    # The ack is the flow control: Chromium withholds the next frame until it arrives, so
-    # a missed one stalls the stream and a doubled one is a protocol error.
-    cdp = _FakeCdp()
-    session = _FakeSession(_FakePage(cdp=cdp))
-    cast = Screencast(session)  # type: ignore[arg-type]
-    queue = cast.subscribe()
-    await cast.start()
-
-    cdp.push()
-    cdp.push()
-    await asyncio.sleep(0)  # let the fire-and-forget ack tasks run
-    await asyncio.sleep(0)
-
-    assert cdp.acks() == [{"sessionId": 1}, {"sessionId": 1}]
-    assert queue.qsize() == 1
-    await cast.stop()
-
-
-async def test_a_slow_watcher_sees_the_newest_frame_not_a_backlog():
-    # A stream of screenshots has no history worth keeping: a watcher that fell behind
-    # wants what the page shows *now*, not to replay the last few seconds at a delay.
-    cdp = _FakeCdp()
-    session = _FakeSession(_FakePage(cdp=cdp))
-    cast = Screencast(session)  # type: ignore[arg-type]
-    queue = cast.subscribe()
-    await cast.start()
-
-    cdp.push(data="first")
-    cdp.push(data="second")
-    cdp.push(data="third")
-
-    assert queue.qsize() == 1
-    frame = queue.get_nowait()
-    assert frame is not None and frame.data == "third"
-    await cast.stop()
-
-
-async def test_stopping_detaches_and_stops_the_stream():
-    cdp = _FakeCdp()
-    session = _FakeSession(_FakePage(cdp=cdp))
-    cast = Screencast(session)  # type: ignore[arg-type]
-    await cast.start()
-    await cast.stop()
-
-    assert ("Page.stopScreencast", None) in cdp.sent
-    assert cdp.detached
-    # No ack can follow a stop — the CDP session is gone.
-    cdp.push()
-    await asyncio.sleep(0)
-    assert cdp.acks() == []
-
-
-async def test_a_second_watcher_does_not_start_a_second_watchdog():
-    # An attach that failed leaves no CDP session but the watchdog that will retry it;
-    # a second `start()` must join that, not spawn a rival that detaches what it attaches
-    # — and `stop()` could only ever cancel whichever one the field happened to hold.
-    page = _FakePage()
-    page.context = _FailingContext(_FakeCdp())  # type: ignore[assignment]
-    cast = Screencast(_FakeSession(page))  # type: ignore[arg-type]
-
-    await cast.start()
-    first = cast._watchdog  # noqa: SLF001 — the task identity is the whole assertion
-    assert first is not None
-    assert cast._cdp is None  # noqa: SLF001 — the attach failed, as arranged
-
-    await cast.start()  # a second watcher joins
-
-    assert cast._watchdog is first  # noqa: SLF001
-    await cast.stop()
-    assert cast._watchdog is None  # noqa: SLF001
-
-
-async def test_acks_are_held_until_they_complete():
-    # The loop keeps only a weak reference to a task, and a collected ack does not fail
-    # loudly — it silently freezes the stream, since Chromium withholds the next frame.
-    cdp = _FakeCdp()
-    session = _FakeSession(_FakePage(cdp=cdp))
-    cast = Screencast(session)  # type: ignore[arg-type]
-    cast.subscribe()
-    await cast.start()
-
-    cdp.push()
-    assert len(cast._acks) == 1  # noqa: SLF001 — referenced, so it cannot be collected
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
-    assert cast._acks == set()  # noqa: SLF001 — and released once it has sent
-    assert cdp.acks() == [{"sessionId": 1}]
-    await cast.stop()
-
-
-async def test_closing_wakes_every_watcher_with_the_end_sentinel():
-    # The stop signal reaches the panel on its own socket, because a reap happens between
-    # turns when there is no run stream to carry an event.
-    session = _FakeSession(_FakePage())
-    cast = Screencast(session)  # type: ignore[arg-type]
-    first, second = cast.subscribe(), cast.subscribe()
-
-    cast.close()
-
-    assert first.get_nowait() is None
-    assert second.get_nowait() is None
-    assert cast.watchers == 0
-
-
-async def test_the_frame_envelope_carries_the_page_chrome():
-    # Metadata rides on every frame so a watcher that joins mid-stream is immediately
-    # correct — never a new page shown under the previous page's URL.
-    cdp = _FakeCdp()
-    session = _FakeSession(_FakePage(url="https://example.com/app", cdp=cdp))
-    cast = Screencast(session)  # type: ignore[arg-type]
-    queue = cast.subscribe()
-    await cast.start()
-    cdp.push(data="xyz")
-
-    envelope = queue.get_nowait().envelope()  # type: ignore[union-attr]
-    assert envelope["t"] == "frame"
-    assert envelope["data"] == "xyz"
-    assert envelope["url"] == "https://example.com/app"
-    assert (envelope["w"], envelope["h"]) == (1280, 800)
-    assert (envelope["tabs"], envelope["active"]) == (1, 0)
-    await cast.stop()
+    monkeypatch.setattr(session_module, "ControlledBrowserSession", _build)
+    return built
 
 
 # --- the session manager ---------------------------------------------------------------
 
 
 async def test_no_browser_to_attach_to_degrades_rather_than_raising():
-    manager = _manager(_FakeManaged(cdp_url=None))
+    manager = _manager(_FakeHost(cdp_url=None))
     assert await manager.acquire("c1") is None
 
 
 async def test_a_conversation_keeps_one_session_across_turns():
-    manager = _manager(_FakeManaged())
+    manager = _manager(_FakeHost())
     live = _live(manager, "c1")
     # Two sequential turns: the second must find the first turn's browser, not open one.
     assert await manager.acquire("c1") is live
@@ -274,50 +151,173 @@ async def test_a_conversation_keeps_one_session_across_turns():
 
 
 async def test_two_conversations_get_two_sessions():
-    manager = _manager(_FakeManaged())
+    manager = _manager(_FakeHost())
     first, second = _live(manager, "c1"), _live(manager, "c2")
     assert first is not second
     assert first.session.page is not second.session.page  # type: ignore[union-attr]
 
 
-async def test_a_token_resolves_only_to_its_own_session():
-    manager = _manager(_FakeManaged())
+async def test_an_attached_page_is_stealthed_and_left_where_it_is(attached):
+    # The masking is what keeps the page from being served a challenge. Coming forward is
+    # not part of attaching: the agent's first browse tool call attaches too, and that one
+    # must not throw a window over whatever the operator is doing.
+    host = _FakeHost()
+    manager = _manager(host)
+
+    live = await manager.acquire("c1")
+
+    assert live is not None
+    page = live.session.page
+    assert host.stealthed == [page]
+    assert page.fronted == 0  # type: ignore[union-attr]
+
+
+async def test_the_login_survives_the_session_it_was_made_in(tmp_path, attached):
+    # The reason state is persisted at all: an operator logs in by hand, the session is
+    # reaped fifteen minutes later, and the next turn must not land on a login page.
+    manager = _manager(_FakeHost(), state_dir=tmp_path)
+    await manager.acquire("c1")
+
+    await manager.release("c1")
+
+    saved = json.loads((tmp_path / "c1.json").read_text())
+    assert saved == {"cookies": [{"name": "session", "value": "abc"}]}
+    await manager.acquire("c1")
+    assert attached[-1].kwargs["storage_state"] == saved
+    # A different conversation is a different jar — logins are never shared across threads.
+    await manager.acquire("c2")
+    assert attached[-1].kwargs["storage_state"] is None
+
+
+async def test_the_login_is_deleted_with_the_conversation(tmp_path, attached):
+    # A deleted thread must not leave the sessions it signed into sitting on disk: the
+    # state file is the cookies, and teardown alone would write it back out.
+    manager = _manager(_FakeHost(), state_dir=tmp_path)
+    await manager.acquire("c1")
+
+    await manager.purge("c1")
+
+    assert not (tmp_path / "c1.json").exists()
+    assert manager.existing("c1") is None
+    await manager.purge("c1")  # idempotent: deleting twice is not an error
+
+
+async def test_a_session_whose_window_is_gone_is_not_handed_out_again(attached):
+    # The sweep is what normally notices, and it runs on its own clock — an operator who
+    # quits Chromium and reopens their browser a second later must not be given the dead
+    # session with a cheerful "active".
+    host = _FakeHost()
+    manager = _manager(host)
+    stale = await manager.acquire("c1")
+    assert stale is not None
+
+    host.cdp_url = None
+    assert await manager.acquire("c1") is None  # nothing to attach to: degrade, not a lie
+    assert stale.session.exited  # type: ignore[union-attr]
+
+    host.cdp_url = "http://127.0.0.1:9222"
+    fresh = await manager.acquire("c1")
+
+    assert fresh is not None and fresh is not stale
+
+
+async def test_focus_brings_the_window_forward_only_when_asked():
+    # The operator's own "open the browser" action must land the window in front; an
+    # agent tool call stealing focus mid-sentence must not.
+    manager = _manager(_FakeHost())
     live = _live(manager, "c1")
-    assert manager.resolve(live.token) is live
-    assert manager.resolve("not-a-token") is None
-    assert manager.status(live.token) == "live"
-    assert manager.status("not-a-token") == "unknown"
+
+    await manager.acquire("c1")
+    assert live.session.page.fronted == 0  # type: ignore[union-attr]
+
+    await manager.acquire("c1", focus=True)
+    assert live.session.page.fronted == 1  # type: ignore[union-attr]
 
 
-async def test_a_reaped_session_reports_stopped_not_unknown():
-    # The distinction is what lets the panel say "the browser was closed" instead of
-    # failing silently on a token the backend simply doesn't recognize.
-    manager = _manager(_FakeManaged(), idle_ttl_s=0.0)
+async def test_an_idle_session_is_reaped():
+    manager = _manager(_FakeHost(), idle_ttl_s=0.0)
     live = _live(manager, "c1")
     await manager._sweep()  # noqa: SLF001 — driving the reaper directly, no clock wait
 
     assert manager.existing("c1") is None
-    assert manager.status(live.token) == "stopped"
     assert live.session.exited  # type: ignore[union-attr]
 
 
+async def test_the_operators_own_browsing_counts_as_use():
+    # The idle clock only moves on the agent's tool calls, so a browser the operator is
+    # working in all afternoon looks perfectly idle — and would be reaped mid-login.
+    manager = _manager(_FakeHost(), idle_ttl_s=0.0)
+    events, navigation = _live(manager, "c1"), _live(manager, "c2")
+
+    events.session.events_recorded += 1  # type: ignore[union-attr]
+    navigation.session.page.url = "https://example.com/billing"  # type: ignore[union-attr]
+    await manager._sweep()  # noqa: SLF001
+
+    assert manager.existing("c1") is events and manager.existing("c2") is navigation
+
+    await manager._sweep()  # noqa: SLF001 — nothing moved this time
+
+    assert manager.existing("c1") is None and manager.existing("c2") is None
+
+
+async def test_a_window_with_no_tabs_left_is_released():
+    # Closing the last tab is as clear a "done with this" as an operator can give, and
+    # there is no page left for the session to be about.
+    manager = _manager(_FakeHost())
+    live = _live(manager, "c1")
+    live.context.pages.clear()
+
+    await manager._sweep()  # noqa: SLF001
+
+    assert manager.existing("c1") is None
+    assert live.session.exited  # type: ignore[union-attr]
+
+
+async def test_a_tab_the_operator_opened_keeps_the_session_alive():
+    # The harness only tracks the tabs it opened, so an operator who opens one of their own
+    # and closes the agent's would look like an empty window — and reaping the session
+    # closes the context, taking their tab with it.
+    manager = _manager(_FakeHost(), idle_ttl_s=0.0)
+    live = _live(manager, "c1")
+    live.context.pages.clear()  # they closed the agent's tab
+    theirs = _FakePage(url="https://example.com/inbox", context=live.context)
+    live.session.pages = []  # type: ignore[union-attr] — never held their tab
+    live.session.page = theirs  # type: ignore[union-attr]
+
+    await manager._sweep()  # noqa: SLF001
+
+    assert manager.existing("c1") is live
+
+    # And what they do in it counts as use, the same way the agent's own tab does.
+    theirs.url = "https://example.com/inbox/1"
+    await manager._sweep()  # noqa: SLF001
+
+    assert manager.existing("c1") is live
+
+
 async def test_the_browser_going_away_reaps_every_session():
-    # This is how offline mode reaches the manager without knowing it exists: suspending
-    # web fetch stops the container, and `cdp_url` going None clears what attached to it.
-    managed = _FakeManaged()
-    manager = _manager(managed)
+    # An operator who quits Chromium takes every session with it: `cdp_url` goes None and
+    # nothing any of them holds is real any more.
+    host = _FakeHost()
+    manager = _manager(host)
     first, second = _live(manager, "c1"), _live(manager, "c2")
 
-    managed.cdp_url = None
+    host.cdp_url = None
     await manager._sweep()  # noqa: SLF001
 
     assert manager.existing("c1") is None and manager.existing("c2") is None
-    assert manager.status(first.token) == "stopped"
-    assert manager.status(second.token) == "stopped"
+    assert first.session.exited and second.session.exited  # type: ignore[union-attr]
+    # And the host is told to drop what the window left behind — its proxy above all —
+    # rather than leaving it listening until something asks for a browser again.
+    assert host.closed == 1
+
+    await manager._sweep()  # noqa: SLF001 — nothing left to reap, and a host still dead
+
+    assert host.closed == 2
 
 
 async def test_the_live_cap_evicts_the_least_recently_used():
-    manager = _manager(_FakeManaged(), max_live=2)
+    manager = _manager(_FakeHost(), max_live=2)
     oldest, middle, newest = (_live(manager, k) for k in ("c1", "c2", "c3"))
     oldest._last_used -= 100  # noqa: SLF001 — make the LRU order unambiguous
     middle._last_used -= 50  # noqa: SLF001
@@ -333,7 +333,7 @@ async def test_the_live_cap_evicts_the_least_recently_used():
 async def test_creation_locks_do_not_accumulate_forever():
     # Every other map here is bounded or reaped; the per-conversation creation locks were
     # the one structure that only ever grew — an entry per conversation that ever browsed.
-    manager = _manager(_FakeManaged(cdp_url=None), idle_ttl_s=0.0)
+    manager = _manager(_FakeHost(cdp_url=None), idle_ttl_s=0.0)
     for key in ("c1", "c2", "c3"):
         await manager.acquire(key)  # degrades (no browser), but takes a lock on the way
     assert len(manager._creating) == 3  # noqa: SLF001
@@ -348,16 +348,16 @@ async def test_creation_locks_do_not_accumulate_forever():
 
 
 async def test_stop_tears_every_session_down():
-    manager = _manager(_FakeManaged())
+    manager = _manager(_FakeHost())
     live = _live(manager, "c1")
     await manager.stop()
     assert manager.existing("c1") is None
     assert live.session.exited  # type: ignore[union-attr]
 
 
-async def test_teardown_leaves_the_shared_browser_alone():
-    # The container Chromium belongs to web fetch and is still serving it; a session that
-    # merely attached must never close it.
+async def test_teardown_leaves_the_shared_window_alone():
+    # The window belongs to the host browser and other conversations — and the operator —
+    # are still in it; a session that merely attached must never close it.
     session = ControlledBrowserSession(cdp_url="http://127.0.0.1:9222")
     closed: list[bool] = []
 
@@ -394,7 +394,7 @@ async def test_the_tools_degrade_when_there_is_no_session_manager():
 
 async def test_the_tools_degrade_when_no_browser_can_be_attached():
     caps = ServiceContainer()
-    caps.add(_manager(_FakeManaged(cdp_url=None)))
+    caps.add(_manager(_FakeHost(cdp_url=None)))
     refusal = await browse_toolset().bind("navigate", _ctx(caps, "c1"))
     assert isinstance(refusal, str) and "not available" in refusal
 
@@ -403,7 +403,7 @@ async def test_two_conversations_drive_two_pages_not_two_toolsets():
     # The trap `tools/rebound.py` documents: asserting only "the toolsets differ" passes
     # while both dispatch onto the template's page. Assert the *pages* differ and each is
     # its own conversation's.
-    manager = _manager(_FakeManaged())
+    manager = _manager(_FakeHost())
     caps = ServiceContainer()
     caps.add(manager)
     first_live, second_live = _live(manager, "c1"), _live(manager, "c2")
@@ -418,29 +418,10 @@ async def test_two_conversations_drive_two_pages_not_two_toolsets():
     assert second._session is second_live.session  # noqa: SLF001
 
 
-async def test_the_live_browser_is_announced_once_per_run():
-    # The panel opens the moment the agent first touches a page; re-announcing on every
-    # one of eighteen tools would have it reopening all turn.
-    manager = _manager(_FakeManaged())
-    caps = ServiceContainer()
-    caps.add(manager)
-    live = _live(manager, "c1")
-    toolset = browse_toolset()
-    ctx = _ctx(caps, "c1")
-
-    await toolset.bind("navigate", ctx)
-    await toolset.bind("click", ctx)
-
-    announced = [e.body for e in ctx.deps.run.stream.replay() if e.body.type == "browser.live"]
-    assert len(announced) == 1
-    assert announced[0].url == f"/browser/stream/{live.token}"
-    assert announced[0].conversation_id == "c1"
-
-
 async def test_a_new_session_gets_a_new_binding():
     # A reaped conversation re-attaches under a *new* session; a toolset cached by
     # conversation would keep driving the dead one.
-    manager = _manager(_FakeManaged())
+    manager = _manager(_FakeHost())
     caps = ServiceContainer()
     caps.add(manager)
     toolset = browse_toolset()
@@ -450,7 +431,6 @@ async def test_a_new_session_gets_a_new_binding():
     await manager.release("c1")
     _live(manager, "c1", page=_FakePage(url="https://example.com/after"))
     manager._sessions["c1"].token = "token-fresh"  # noqa: SLF001 — a genuinely new session
-    manager._tokens["token-fresh"] = "c1"  # noqa: SLF001
     after = await toolset.bind("navigate", _ctx(caps, "c1"))
 
     assert before is not after

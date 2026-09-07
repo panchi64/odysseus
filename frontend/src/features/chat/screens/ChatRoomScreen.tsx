@@ -179,8 +179,8 @@ export function ChatRoomScreen(): JSX.Element {
     currentTitle: () => currentSummary()?.title,
   });
 
-  // Retitle, fork, copy and the two deletes — everything that acts on the thread
-  // rather than on a turn in it.
+  // Retitle, fork, copy, the thread's browser and the two deletes — everything that
+  // acts on the thread rather than on a turn in it.
   const actions = createConversationActions({
     conversationId: currentId,
     messages: stream.messages,
@@ -211,6 +211,7 @@ export function ChatRoomScreen(): JSX.Element {
             rename: rename.open,
             retitle: () => void actions.retitle(),
             compact: () => void stream.compactNow(),
+            openBrowser: () => void actions.openBrowser(),
             copy: actions.copyTranscript,
             remove: () => void actions.removeConversation(),
           }}
@@ -341,11 +342,7 @@ export function ChatRoomScreen(): JSX.Element {
 
       {/* Documents / live previews / artifacts sit beside the conversation, on a
           draggable divider above `lg` and in a full-screen sheet below it. */}
-      <ChatViewportMounts
-        viewport={viewport}
-        browserStream={stream.browserStream}
-        onBrowserEnded={stream.clearBrowserStream}
-      />
+      <ChatViewportMounts viewport={viewport} />
 
       {rename.element}
     </div>

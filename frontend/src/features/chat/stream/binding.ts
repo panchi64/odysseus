@@ -19,17 +19,17 @@
  * history of the thread just *left* — seeding from it puts a deleted or abandoned
  * conversation back on screen. A null key always starts empty.
  *
- * **The backfills race the stream and must lose.** Opening a thread mid-turn fires a plan
+ * **The backfill races the stream and must lose.** Opening a thread mid-turn fires a plan
  * read against state the run is still mutating; the fetch answers with what was true
- * before. So each backfill re-checks that the operator is still on the thread it asked
- * about *and* that the stream has not already said something newer — otherwise the slower
- * answer wins and the panel is stale until a mutation that may never come.
+ * before. So it re-checks that the operator is still on the thread it asked about *and*
+ * that the stream has not already said something newer — otherwise the slower answer wins
+ * and the panel is stale until a mutation that may never come.
  */
 
 import { createEffect } from "solid-js";
 import { reconcile, type SetStoreFunction } from "solid-js/store";
 import type { PlanItem } from "~/lib/stream";
-import { fetchBrowserSession, fetchPlan } from "../data/conversations";
+import { fetchPlan } from "../data/conversations";
 import type {
   ChatMessage,
   ContextUsage,
@@ -62,8 +62,6 @@ export interface BindingDeps {
   setUsage: (usage: ContextUsage | null) => void;
   setStats: (stats: ConversationStats | null) => void;
   setSnapshots: (snapshots: ViewSnapshotRef[]) => void;
-  setBrowserStream: (path: string | null) => void;
-  browserStream: () => string | null;
   setPlan: (items: PlanItem[]) => void;
   /** The loaded thread's reconstructed window/readout/snapshot state, if the caller
    *  has any — a new conversation has none. */
@@ -115,9 +113,6 @@ export function createThreadBinding(deps: BindingDeps): void {
     // Seed the git-style snapshot history from the loaded thread (empty for a new
     // conversation); the live `view.snapshot` event appends to it from here.
     deps.setSnapshots(k === null ? [] : (deps.initialSnapshots?.() ?? []));
-    // A live browser belongs to the thread, not to the client — so a switch clears the
-    // previous thread's and asks the backend whether *this* one has one.
-    deps.setBrowserStream(null);
     // The plan is owned by the backend and survives reloads, so a thread switch clears
     // the old one and refetches rather than carrying the previous thread's list over.
     deps.setPlan([]);
@@ -137,16 +132,6 @@ export function createThreadBinding(deps: BindingDeps): void {
       .catch(() => {
         // The panel is an aid, not the transcript — a failed backfill leaves it
         // empty and the next `plan.updated` fills it in.
-      });
-    void fetchBrowserSession(k)
-      .then((path) => {
-        // Only if the operator is still on this thread, and the stream hasn't already
-        // announced a session (which would be newer than this answer).
-        if (deps.key() === k && deps.browserStream() === null)
-          deps.setBrowserStream(path);
-      })
-      .catch(() => {
-        // Browser control may not be wired at all; no panel is the right answer.
       });
   }
 }

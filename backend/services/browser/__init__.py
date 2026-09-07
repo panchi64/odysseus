@@ -1,17 +1,18 @@
-"""Browser control — the agent drives a real page, and the operator watches it.
+"""Browser control — the agent drives a real page, in a window the operator shares.
 
-:class:`BrowserSessionManager` keeps one live browser per conversation (attached to the
-container Chromium web fetch already runs); :class:`Screencast` streams what that browser
-shows so the panel beside the chat is the page itself rather than a log of clicks.
+:class:`HostBrowser` is the one visible Chromium this app launches on the operator's
+machine (with the SSRF proxy it is pointed at); :class:`BrowserSessionManager` gives each
+conversation its own context on that browser — its own window, its own cookie jar — and
+reaps the ones nobody is using.
 """
 
-from .screencast import Frame, Screencast
-from .session import BrowserSessionManager, ControlledBrowserSession, LiveBrowser
+from .host import HostBrowser
+from .live import ControlledBrowserSession, LiveBrowser
+from .session import BrowserSessionManager
 
 __all__ = [
     "BrowserSessionManager",
     "ControlledBrowserSession",
-    "Frame",
+    "HostBrowser",
     "LiveBrowser",
-    "Screencast",
 ]

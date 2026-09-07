@@ -2,9 +2,10 @@
  * What the operator can do to the *thread* — as opposed to a turn inside it.
  *
  * Rename lives in its own modal, but the rest of the session menu ends up here: retitle,
- * fork, copy, and the two deletes. Each is a confirm-or-probe, a call, and a toast, and
- * none of them belongs in the screen that lays out the conversation — the screen was
- * carrying a third of its length in error handling for actions it does not render.
+ * fork, copy, open the thread's browser, and the two deletes. Each is a confirm-or-probe,
+ * a call, and a toast, and none of them belongs in the screen that lays out the
+ * conversation — the screen was carrying a third of its length in error handling for
+ * actions it does not render.
  *
  * **A delete has to ask a second question first.** Images are shared: the same attachment
  * can be referenced from more than one place, so deleting the thread that happens to hold
@@ -26,6 +27,7 @@ import {
   deleteConversation,
   fetchOrphanImageAttachments,
   forkConversation,
+  openBrowser,
   regenerateTitle,
 } from "./data";
 import type { ChatMessage } from "./model";
@@ -72,6 +74,8 @@ export interface ConversationActions {
   retitling: Accessor<boolean>;
   retitle: () => Promise<void>;
   fork: (messageId: string) => Promise<void>;
+  /** Bring up this thread's agent browser as a window on the host. */
+  openBrowser: () => Promise<void>;
   removeConversation: () => Promise<void>;
   removeMessage: (messageId: string) => Promise<void>;
   copyTranscript: () => void;
@@ -156,6 +160,22 @@ export function createConversationActions(
     }
   }
 
+  /** Open the thread's browser — a real Chromium window the operator and the agent
+   *  share, so the operator can log in or land on a page before handing the thread on.
+   *
+   *  No success toast: the window arriving in front is the confirmation, and a note
+   *  about it would land behind the thing it announced. Only a failure has anything to
+   *  say, and the backend's own sentence says it better than a generic line would. */
+  async function open(): Promise<void> {
+    const id = deps.conversationId();
+    if (!id) return;
+    try {
+      await openBrowser(id);
+    } catch (err) {
+      toast.error(isApiError(err) ? err.detail : "Unable to open the browser.");
+    }
+  }
+
   async function removeConversation(): Promise<void> {
     const id = deps.conversationId();
     if (!id) return;
@@ -197,6 +217,7 @@ export function createConversationActions(
     retitling,
     retitle,
     fork,
+    openBrowser: open,
     removeConversation,
     removeMessage,
     copyTranscript: () =>

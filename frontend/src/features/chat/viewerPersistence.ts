@@ -54,12 +54,6 @@ const LEGACY_OPEN_KEY = "ody.chat.viewport";
 /** Legacy (and still current) global panel width key — `panelWidth` keeps using it
  *  directly rather than folding width into the per-conversation v2 record. */
 const WIDTH_KEY = "ody.chat.viewport.w";
-/** The live browser's own width. Both panels take the same slot but want very
- *  different sizes: a document or a diff reads fine in a narrow column, while a
- *  1280×800 page frame scaled into one is a thumbnail. Remembering them separately is
- *  what lets a browser session widen the slot and hand the operator's own width back
- *  when it ends, without either drag overwriting the other. */
-const BROWSER_WIDTH_KEY = "ody.chat.viewport.browser.w";
 const SCROLL_KEY = "ody.chat.viewer.scroll";
 const SCROLL_LRU_CAP = 200;
 
@@ -71,20 +65,6 @@ const WIDTH_CEILING = 1200;
 /** Room the conversation column keeps however wide the panel is dragged — below this
  *  the transcript stops being a transcript and becomes a gutter. */
 const TRANSCRIPT_MIN = 480;
-
-/** The live browser's resting width and floor. A 1280×800 frame needs real width
- *  before the page inside it is legible at all: at the View's 384px default it renders
- *  240px tall, which is a thumbnail of a screenshot. */
-const BROWSER_WIDTH_DEFAULT = 860;
-const BROWSER_WIDTH_MIN = 640;
-
-/** Which panel holds the slot. They size independently — see `BROWSER_WIDTH_KEY`. */
-export type PanelKind = "view" | "browser";
-
-const MIN_WIDTH: Record<PanelKind, number> = {
-  view: WIDTH_MIN,
-  browser: BROWSER_WIDTH_MIN,
-};
 
 type PersistedMap = Record<string, ViewerPersistedState>;
 
@@ -175,42 +155,32 @@ function ceiling(): number {
   );
 }
 
-/** Clamps a candidate panel width to `kind`'s draggable range — exported so a live
- *  drag (e.g. `ChatRoomScreen`'s in-memory width signal) can apply the same
- *  bounds per pointermove tick without persisting until the drag settles.
+/** Clamps a candidate panel width to the draggable range — exported so a live drag
+ *  (see `panelResize.ts`) can apply the same bounds per pointermove tick without
+ *  persisting until the drag settles.
  *
- *  The floor gives way to the ceiling rather than fighting it: on a window too narrow
- *  to honour the browser's minimum, the panel takes what there is instead of pushing
- *  the transcript off the edge. */
-export const clampWidth = (w: number, kind: PanelKind = "view"): number => {
-  const max = ceiling();
-  return Math.min(max, Math.max(Math.min(MIN_WIDTH[kind], max), w));
-};
+ *  Floor and ceiling cannot fight: `ceiling()` is itself floored at `WIDTH_MIN`, so on a
+ *  row too narrow to spare even that, the panel keeps its minimum and the transcript
+ *  takes the squeeze — a panel clamped below the point of legibility would be a worse
+ *  answer than a short transcript column. */
+export const clampWidth = (w: number): number =>
+  Math.min(ceiling(), Math.max(WIDTH_MIN, w));
 
 /** The stored *preference*, unclamped — clamping happens on read (`panelWidth`) so a
  *  width set on a wide display isn't permanently trimmed by one narrow session. */
 const [viewWidth, setViewWidth] = createSignal(
   Number(readLS(WIDTH_KEY)) || WIDTH_DEFAULT,
 );
-const [browserWidth, setBrowserWidth] = createSignal(
-  Number(readLS(BROWSER_WIDTH_KEY)) || BROWSER_WIDTH_DEFAULT,
-);
 
-/** The global (cross-thread) width of whichever panel holds the slot — the View's
- *  keeps the legacy `ody.chat.viewport.w` key and semantics. */
-export function panelWidth(kind: PanelKind = "view"): number {
-  return clampWidth(kind === "browser" ? browserWidth() : viewWidth(), kind);
+/** The panel's global (cross-thread) width. */
+export function panelWidth(): number {
+  return clampWidth(viewWidth());
 }
 
-export function setPanelWidth(kind: PanelKind, w: number): void {
-  const clamped = clampWidth(w, kind);
-  if (kind === "browser") {
-    setBrowserWidth(clamped);
-    writeLS(BROWSER_WIDTH_KEY, String(clamped));
-  } else {
-    setViewWidth(clamped);
-    writeLS(WIDTH_KEY, String(clamped));
-  }
+export function setPanelWidth(w: number): void {
+  const clamped = clampWidth(w);
+  setViewWidth(clamped);
+  writeLS(WIDTH_KEY, String(clamped));
 }
 
 function readScrollMap(): Record<string, number> {

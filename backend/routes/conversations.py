@@ -644,6 +644,15 @@ async def delete_conversation(
             await deps.egress(request).forget(conversation_id)
         except Exception:  # noqa: BLE001 — best-effort; the DB delete already succeeded
             logger.warning("egress purge failed for %s", conversation_id, exc_info=True)
+        # And the browser: closing its window is the small half — the saved login is the
+        # point. It holds the cookies for every site this thread signed into, so leaving it
+        # behind would keep those sessions alive on disk after the thread is gone.
+        browser = deps.browser_sessions(request)
+        if browser is not None:
+            try:
+                await browser.purge(conversation_id)
+            except Exception:  # noqa: BLE001 — best-effort; the DB delete already succeeded
+                logger.warning("browser purge failed for %s", conversation_id, exc_info=True)
     finally:
         deps.release_conversation(request, conversation_id)
 

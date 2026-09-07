@@ -2,11 +2,12 @@
  * One conversation: how it is read, and everything the operator can do to it that isn't a
  * turn.
  *
- * Renaming, retitling, forking, deleting, revoking a grant, forcing compaction on or off —
- * each is a thin relay to a live endpoint, and each ends by telling the list to re-read
- * itself rather than patching a second copy of the truth locally. That is the rule this
- * module exists to keep: the backend owns a conversation's state, and the client's job is
- * to ask again, not to guess what the answer became.
+ * Renaming, retitling, forking, deleting, revoking a grant, forcing compaction on or off,
+ * raising the thread's browser window — each is a thin relay to a live endpoint, and each
+ * ends by telling the list to re-read itself rather than patching a second copy of the
+ * truth locally. That is the rule this module exists to keep: the backend owns a
+ * conversation's state, and the client's job is to ask again, not to guess what the answer
+ * became.
  */
 
 import { createResource, createSignal, type Resource } from "solid-js";
@@ -161,20 +162,16 @@ export async function fetchPlan(conversationId: string): Promise<PlanItem[]> {
   return api.get<PlanItem[]>(`/conversations/${conversationId}/plan`);
 }
 
-/** The stream path for this thread's live agent browser, or null when it has none.
+/** Open (or bring forward) this thread's agent browser — a real Chromium window on the
+ *  host that the operator and the agent share.
  *
- *  The `browser.live` event announces a session as the agent first touches a page, but a
- *  client that reloads (or opens the thread later) has no stream to replay and the
- *  session outlives the run that announced it — so the backend's session manager, not the
- *  transcript, is what the panel starts from.
- */
-export async function fetchBrowserSession(
-  conversationId: string,
-): Promise<string | null> {
-  const info = await api.get<{ active: boolean; url: string | null }>(
-    `/browser/session/${conversationId}`,
-  );
-  return info.active ? info.url : null;
+ *  There is nothing to render here: the window *is* the view, so the call returns
+ *  nothing and its only visible outcome is the window arriving in front. The backend
+ *  answers 503 with a sentence when it could not launch one; the caller surfaces that
+ *  detail rather than a generic failure, since "why not" is the whole of what the
+ *  operator can act on. */
+export async function openBrowser(conversationId: string): Promise<void> {
+  await api.post(`/browser/session/${conversationId}`, {});
 }
 
 /** Revoke one conversation auto-approval — the next call it covered asks again.
