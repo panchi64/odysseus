@@ -45,6 +45,7 @@ from services.sandbox import (
 from services.sandbox.egress_proxy import DENIED_MARKER
 
 from .deps import RunDeps
+from .emit import RunEventEmitted
 
 # language → the argv that runs source passed on the command line, inside the box.
 _INTERPRETERS: dict[str, list[str]] = {
@@ -332,8 +333,10 @@ def code_toolset() -> FunctionToolset[RunDeps]:
                     if downloading
                     else "Starting the sandbox environment…"
                 )
-                ctx.deps.run.emit(
-                    ToolProgress(tool_call_id=ctx.tool_call_id, partial=partial)
+                await ctx.emit(
+                    RunEventEmitted(
+                        body=ToolProgress(tool_call_id=ctx.tool_call_id, partial=partial)
+                    )
                 )
             result = await session.run(spec)
         except SandboxError as exc:

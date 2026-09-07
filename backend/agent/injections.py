@@ -47,7 +47,8 @@ from pydantic_ai.models import ModelRequestContext
 
 from core.text import CHARS_PER_TOKEN_PROSE, truncate_on_boundary
 from runs import INJECTED_TEXT_LIMIT, ContextInjected, Run
-from tools.deps import RunDeps
+
+from .emit import ChassisEvent
 
 
 def contributor_id(provider: Callable[..., Any]) -> str:
@@ -82,27 +83,39 @@ def injected_tokens(text: str) -> int:
     return round(len(text) / CHARS_PER_TOKEN_PROSE)
 
 
-def announce_injection(
-    run: Run, contributor: str, text: str, placement: Literal["instructions", "prompt"]
-) -> None:
-    """Emit one contribution onto the run's stream.
+def injection_body(
+    contributor: str, text: str, placement: Literal["instructions", "prompt"]
+) -> ContextInjected:
+    """One contribution, as the event body the operator's stream carries.
+
+    Built here rather than at each of the two delivery points, because there are two:
+    the capability below emits it through the run's own event stream, and the engine
+    emits it directly for a ``PromptContextProvider`` that resolves before the agent
+    starts and so has a ``Run`` but no ``RunContext``. One derivation, so the two paths
+    cannot describe the same block differently.
 
     ``tokens`` is measured over the whole block, before the wire cap is applied, so a
     truncated preview never understates what the turn actually paid for it."""
     body = truncate_on_boundary(text, INJECTED_TEXT_LIMIT)
-    run.emit(
-        ContextInjected(
-            contributor=contributor,
-            placement=placement,
-            tokens=injected_tokens(text),
-            text=body,
-            truncated=len(body) < len(text),
-        )
+    return ContextInjected(
+        contributor=contributor,
+        placement=placement,
+        tokens=injected_tokens(text),
+        text=body,
+        truncated=len(body) < len(text),
     )
 
 
+def announce_injection(
+    run: Run, contributor: str, text: str, placement: Literal["instructions", "prompt"]
+) -> None:
+    """Put one contribution on the run's stream directly — the pre-run path, for a
+    contributor that resolves before the agent exists to emit through."""
+    run.emit(injection_body(contributor, text, placement))
+
+
 @dataclass
-class AnnounceInjections(AbstractCapability[RunDeps]):
+class AnnounceInjections(AbstractCapability[Any]):
     """Announce the standing brief's named contributors as each request goes out.
 
     A capability rather than a wrapper around every provider for the reason
@@ -119,21 +132,25 @@ class AnnounceInjections(AbstractCapability[RunDeps]):
     Observes only: the request context is returned exactly as it arrived.
     """
 
+    #: Named rather than left to the library's auto-minted handle, which differs per run.
+    #: An id is how two instances of the same capability are recognised as one thing to
+    #: merge, and how anything outside the run can name this one at all.
+    id: str | None = "announce_injections"
+
     #: Contributor and a digest of the text already announced on this turn — see the
     #: module docstring on why the text is part of the key, and why only its digest is.
     seen: set[tuple[str, str]] = field(default_factory=set)
 
     async def before_model_request(
-        self, ctx: RunContext[RunDeps], request_context: ModelRequestContext
+        self, ctx: RunContext[Any], request_context: ModelRequestContext
     ) -> ModelRequestContext:
-        # Defensive on the deps hop alone, exactly as the overhead capability is: an agent
-        # built without our deps (a bare test harness) costs the readout, never the turn.
-        run = getattr(ctx.deps, "run", None)
-        if run is not None:
-            self.announce(run, request_context.model_request_parameters.instruction_parts)
+        for body in self.announce(request_context.model_request_parameters.instruction_parts):
+            await ctx.emit(ChassisEvent(body=body))
         return request_context
 
-    def announce(self, run: Run, parts: list[InstructionPart] | None) -> None:
+    def announce(self, parts: list[InstructionPart] | None) -> list[ContextInjected]:
+        """The bodies for the parts not yet announced on this turn, in brief order."""
+        bodies: list[ContextInjected] = []
         for part in parts or ():
             name = part.id.name if part.id is not None else None
             if not name or not part.content:
@@ -142,7 +159,8 @@ class AnnounceInjections(AbstractCapability[RunDeps]):
             if key in self.seen:
                 continue
             self.seen.add(key)
-            announce_injection(run, name, part.content, "instructions")
+            bodies.append(injection_body(name, part.content, "instructions"))
+        return bodies
 
 
 def _digest(text: str) -> str:

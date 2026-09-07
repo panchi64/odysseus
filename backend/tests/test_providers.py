@@ -228,3 +228,59 @@ def test_migration_backfills_local_prefix_endpoints():
     # the retired `local` provider folded into the OpenAI-compatible one it always was.
     assert tuple(local) == ("openai-compatible", 1)
     assert tuple(cloud) == ("openai-compatible", 1)
+
+
+# ── The context window on the model's profile ────────────────────────────────────
+
+
+def _window(provider_id: str, model: str, window: int | None) -> int | None:
+    spec = llm.EndpointSpec(
+        base_url="https://api.example.com",
+        model=model,
+        provider=provider_id,
+        api_key="k",
+        context_window=window,
+    )
+    return llm.build_model(spec).profile.get("context_window")
+
+
+def test_the_endpoints_own_window_wins_for_every_provider():
+    """The registry funnels every resolution through `_with_context_windows`, which
+    prefers the operator's figure and otherwise probes the server. Whatever it lands on
+    is what the model is built with — a library that resolved a different number from the
+    model's name would give the gauge and the fold trigger a second source of truth."""
+    for provider_id in ("openai-compatible", "anthropic", "google"):
+        assert _window(provider_id, "gpt-5", 8192) == 8192, provider_id
+
+
+def test_an_openai_wire_endpoint_with_no_window_declares_none():
+    """`gpt-5` names a 400k model and nothing else — this adapter fronts *any* server, so
+    the name is a coincidence of what the operator typed into a box. A llama.cpp instance
+    started with `-c 8192` behind that name must not be described as holding 400k; unknown
+    is the honest answer, and the one the fold trigger already handles by never firing."""
+    assert _window("openai-compatible", "gpt-5", None) is None
+    assert _window("openai-compatible", "some-local-thing", None) is None
+
+
+def test_a_hosted_endpoint_with_no_window_keeps_the_librarys_figure():
+    """The other side of the same rule. These adapters talk to one lab, so the model name
+    really does name that model — and Anthropic's own models API carries no context length
+    (`AnthropicNativeProvider.context_window` returns None on purpose), so the library's
+    figure is usually the only one there is. Discarding it would leave a hosted thread
+    with no gauge at all."""
+    assert _window("anthropic", "claude-sonnet-4-5", None) is not None
+
+
+def test_the_openai_wire_still_merges_leading_system_messages():
+    """The window is a *second* field on that adapter's partial profile — the merge flag
+    it has always set must survive being joined by one."""
+    spec = llm.EndpointSpec(
+        base_url="http://127.0.0.1:8080/v1",
+        model="Qwen3-30B",
+        provider="openai-compatible",
+        api_key=None,
+        context_window=8192,
+    )
+    profile = llm.build_model(spec).profile
+    assert profile.get("openai_chat_supports_multiple_system_messages") is False
+    assert profile.get("context_window") == 8192

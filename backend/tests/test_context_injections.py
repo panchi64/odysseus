@@ -37,6 +37,18 @@ def _injections(run: Run) -> list:
     return [e.body for e in run.stream.replay() if e.body.type == "context.injected"]
 
 
+def _announce(announcer: AnnounceInjections, run: Run, parts) -> None:
+    """Announce one request's brief onto ``run``, doing what the translator does.
+
+    The capability now hands its bodies to the library's event stream and
+    ``agent/translate.py`` puts them on the run; landing them here keeps these tests
+    about the two things the capability decides — which parts are worth announcing, and
+    which it has already announced this turn — rather than about the envelope.
+    """
+    for body in announcer.announce(parts):
+        run.emit(body)
+
+
 def _part(name: str | None, content: str) -> InstructionPart:
     if name is None:
         return InstructionPart(content=content)
@@ -79,7 +91,7 @@ async def test_the_same_block_is_announced_once_across_a_turns_requests():
     announcer = AnnounceInjections()
     parts = [_part("skill_catalog", "Skills: a, b, c")]
     for _ in range(5):
-        announcer.announce(run, parts)
+        _announce(announcer, run, parts)
     assert [i.contributor for i in _injections(run)] == ["skill_catalog"]
 
 
@@ -92,7 +104,7 @@ async def test_the_dedup_key_keeps_no_copy_of_the_block_it_deduplicates():
     announcer = AnnounceInjections()
     brief = "".join(f"rule {n}\n" for n in range(8_000))
     for _ in range(25):  # one model request each, the agent's own per-turn limit
-        announcer.announce(run, [_part("repo", brief)])
+        _announce(announcer, run, [_part("repo", brief)])
 
     assert [i.contributor for i in _injections(run)] == ["repo"]  # still deduplicated
     retained = sum(len(name) + len(digest) for name, digest in announcer.seen)
@@ -104,8 +116,8 @@ async def test_a_block_that_changed_mid_turn_is_announced_again():
     watching it arrive is the point of putting these on the timeline at all."""
     run = _run()
     announcer = AnnounceInjections()
-    announcer.announce(run, [_part("plan", "1. read the file")])
-    announcer.announce(run, [_part("plan", "1. read the file\n2. write the fix")])
+    _announce(announcer, run, [_part("plan", "1. read the file")])
+    _announce(announcer, run, [_part("plan", "1. read the file\n2. write the fix")])
     assert [i.text for i in _injections(run)] == [
         "1. read the file",
         "1. read the file\n2. write the fix",
@@ -117,7 +129,9 @@ async def test_our_own_fixed_brief_is_not_announced():
     parts with: identical on every turn of every thread, already reported by the gauge as
     `base`, and the one injection an operator can neither act on nor switch off."""
     run = _run()
-    AnnounceInjections().announce(run, [_part(None, "B" * 400), _part("repo", "CLAUDE.md says")])
+    _announce(
+        AnnounceInjections(), run, [_part(None, "B" * 400), _part("repo", "CLAUDE.md says")]
+    )
     assert [i.contributor for i in _injections(run)] == ["repo"]
 
 
@@ -125,13 +139,13 @@ async def test_a_provider_that_resolved_to_nothing_injected_nothing():
     """Most providers no-op on most threads (`repo` outside a worktree, `mode` where the
     mode has nothing of its own to say). An empty row would be a row about nothing."""
     run = _run()
-    AnnounceInjections().announce(run, [_part("mode", "")])
+    _announce(AnnounceInjections(), run, [_part("mode", "")])
     assert _injections(run) == []
 
 
 async def test_nothing_to_read_is_not_a_crash():
     run = _run()
-    AnnounceInjections().announce(run, None)
+    _announce(AnnounceInjections(), run, None)
     assert _injections(run) == []
 
 

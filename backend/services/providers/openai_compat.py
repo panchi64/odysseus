@@ -39,16 +39,21 @@ class OpenAICompatProvider:
     # Pydantic AI merge the leading system messages into one at wire-prep — the
     # instructions still come from the live agent, never from history, so nothing
     # about their authority changes. Harmless where multiples were fine.
-    _profile = OpenAIModelProfile(openai_chat_supports_multiple_system_messages=False)
-
     def build_model(self, spec: EndpointSpec) -> Model:
         # The OpenAI client refuses a None key outright, so a keyless local server
         # gets a placeholder — an auth header the server ignores. The placeholder is
         # an adapter-boundary quirk, never a value other layers see or store.
         provider = OpenAIProvider(base_url=spec.base_url, api_key=spec.api_key or "unused")
         # A partial profile: merged over whatever the model name resolves to, so this
-        # overrides one flag and leaves every inferred capability intact.
-        return OpenAIChatModel(spec.model, provider=provider, profile=self._profile)
+        # overrides two fields and leaves every inferred capability intact. The window is
+        # the endpoint's own, never the model's advertised maximum — see `Provider
+        # .build_model`, and note this adapter is where the two diverge most, since any
+        # server at all can be behind this base URL.
+        profile = OpenAIModelProfile(
+            openai_chat_supports_multiple_system_messages=False,
+            context_window=spec.context_window,
+        )
+        return OpenAIChatModel(spec.model, provider=provider, profile=profile)
 
     # Reached through the module (not from-imports) so a test that monkeypatches
     # `services.llm` still intercepts the adapter's calls.

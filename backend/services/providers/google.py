@@ -10,6 +10,7 @@ from __future__ import annotations
 import httpx
 from pydantic_ai.models import Model
 from pydantic_ai.models.google import GoogleModel
+from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.providers.google import GoogleProvider as _SdkProvider
 from pydantic_ai.settings import ModelSettings
 
@@ -43,7 +44,18 @@ class GoogleNativeProvider:
     def build_model(self, spec: EndpointSpec) -> Model:
         base_url = spec.base_url if spec.base_url.rstrip("/") != _DEFAULT_BASE_URL else None
         provider = _SdkProvider(api_key=spec.api_key or "", base_url=base_url)
-        return GoogleModel(spec.model, provider=provider)
+        # Our window when we have one, the library's otherwise — `Provider.build_model`
+        # has the reasoning. This adapter talks to one lab, so a model name really does
+        # name that model. Partial either way: every other inferred capability stands.
+        return GoogleModel(
+            spec.model,
+            provider=provider,
+            profile=(
+                ModelProfile(context_window=spec.context_window)
+                if spec.context_window is not None
+                else None
+            ),
+        )
 
     async def discover(
         self, base_url: str, api_key: str | None, *, client: httpx.AsyncClient | None = None

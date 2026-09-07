@@ -88,6 +88,17 @@ def _ctx(
             permission=permission,  # type: ignore[arg-type]
         )
 
+        async def emit(self, event):
+            """Stand in for the library's event stream, doing what the translator does.
+
+            A tool now says things by awaiting ``ctx.emit`` with the body wrapped, and
+            ``agent/translate.py`` unwraps it onto the run. Unwrapping here too keeps the
+            assertions about what reached the *run* — which is what these tests are
+            actually about — rather than about the envelope it travelled in.
+            """
+            self.deps.run.emit(event.body)
+            return event
+
     return _Ctx()
 
 

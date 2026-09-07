@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from typing import Any
 
 from pydantic_ai import InstructionPart, RunContext
 from pydantic_ai.capabilities import AbstractCapability
@@ -33,7 +34,8 @@ from pydantic_ai.models import ModelRequestContext
 from pydantic_ai.tools import ToolDefinition
 
 from runs import BriefBlock, ToolGroupOverhead, TurnOverhead
-from tools.deps import RunDeps
+
+from .emit import OverheadMeasured
 
 #: The block the fixed prompt is filed under — everything in the brief that no named
 #: provider claimed: our literal instructions, the system prompt, and the separators the
@@ -42,7 +44,7 @@ BASE_BLOCK = "base"
 
 
 @dataclass
-class MeasureOverhead(AbstractCapability[RunDeps]):
+class MeasureOverhead(AbstractCapability[Any]):
     """Size the standing brief and the tool schemas for each request as it goes out.
 
     A capability rather than a step-end measurement because the hook is where the
@@ -53,17 +55,22 @@ class MeasureOverhead(AbstractCapability[RunDeps]):
     Observes only: the request context is returned exactly as it arrived.
     """
 
+    #: Named rather than left to the library's auto-minted handle, which differs per run.
+    #: An id is how two instances of the same capability are recognised as one thing to
+    #: merge, and how anything outside the run can name this one at all.
+    id: str | None = "measure_overhead"
+
     async def before_model_request(
-        self, ctx: RunContext[RunDeps], request_context: ModelRequestContext
+        self, ctx: RunContext[Any], request_context: ModelRequestContext
     ) -> ModelRequestContext:
-        # Defensive on the deps hop alone: an agent built without our deps (a bare test
-        # harness) costs the readout, never the turn. Everything below is total.
-        run = getattr(ctx.deps, "run", None)
-        if run is not None:
-            params = request_context.model_request_parameters
-            run.context_overhead = measure_overhead(
-                params.instruction_parts, request_context.messages, params.function_tools
+        params = request_context.model_request_parameters
+        await ctx.emit(
+            OverheadMeasured(
+                overhead=measure_overhead(
+                    params.instruction_parts, request_context.messages, params.function_tools
+                )
             )
+        )
         return request_context
 
 

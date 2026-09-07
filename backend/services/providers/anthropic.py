@@ -10,6 +10,7 @@ from __future__ import annotations
 import httpx
 from pydantic_ai.models import Model
 from pydantic_ai.models.anthropic import AnthropicModel
+from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.providers.anthropic import AnthropicProvider as _SdkProvider
 from pydantic_ai.settings import ModelSettings
 
@@ -53,7 +54,20 @@ class AnthropicNativeProvider:
     def build_model(self, spec: EndpointSpec) -> Model:
         provider = _SdkProvider(api_key=spec.api_key, base_url=spec.base_url)
         return AnthropicModel(
-            spec.model, provider=provider, settings=self.model_settings(descriptor_of(spec))
+            spec.model,
+            provider=provider,
+            settings=self.model_settings(descriptor_of(spec)),
+            # Our window when we have one, the library's otherwise — `Provider
+            # .build_model` has the reasoning. This adapter talks to one lab, so a model
+            # name really does name that model and the library's figure is the best
+            # available; `context_window` below deliberately reports nothing, so on a
+            # hosted endpoint this is usually the only source there is. Partial either
+            # way: every other inferred capability of the named model stands.
+            profile=(
+                ModelProfile(context_window=spec.context_window)
+                if spec.context_window is not None
+                else None
+            ),
         )
 
     async def discover(

@@ -48,7 +48,9 @@ from runs import (
     ToolStarted,
 )
 from services.conversation_view import tool_images
+from tools.emit import RunEventEmitted
 
+from .emit import ChassisEvent, OverheadMeasured
 from .meta import LoopBreaker
 
 
@@ -69,6 +71,23 @@ def citations_from_tool_result(content: Any) -> list[CitationAdded]:
     if not isinstance(content, Citable):
         return []
     return [CitationAdded(url=c.url, title=c.title) for c in content.citations()]
+
+
+def _on_chassis_event(event: object, run: Run) -> bool:
+    """Land an event a tool or a capability emitted, and say whether it was ours.
+
+    Both node streams call this first, because either can carry one: a tool emits while
+    its call runs (``CallToolsNode``), a capability hook emits while the request it
+    shaped goes out (``ModelRequestNode``). Everything else falls through to the
+    model/tool handlers below, which never see these.
+    """
+    if isinstance(event, RunEventEmitted | ChassisEvent):
+        run.emit(event.body)
+        return True
+    if isinstance(event, OverheadMeasured):
+        run.context_overhead = event.overhead
+        return True
+    return False
 
 
 def _on_model_event(event: object, run: Run, mark_first_token: Callable[[], None]) -> None:
@@ -207,13 +226,15 @@ async def stream_agent_run(
             with timer.model_request() as mark_first_token:
                 async with node.stream(agent_run.ctx) as stream:
                     async for event in stream:
-                        _on_model_event(event, run, mark_first_token)
+                        if not _on_chassis_event(event, run):
+                            _on_model_event(event, run, mark_first_token)
             run.emit(StepCompleted(index=step))
-            # The request's non-conversation weight (the brief + the tool schemas) is
-            # measured by `agent/overhead.py`'s `MeasureOverhead` capability, which the
-            # engine registers on the agent — it runs on the library's own
-            # `before_model_request` hook, where the assembled request still exists as
-            # parts, and writes `run.context_overhead` itself. Nothing to do here.
+            # The request's non-conversation weight (the brief + the tool schemas) and the
+            # brief's named contributors both arrive as capability events at the head of
+            # the stream just walked — emitted by `agent/overhead.py` and
+            # `agent/injections.py` from the library's own `before_model_request` hook,
+            # where the assembled request still exists as parts. `_on_chassis_event` has
+            # already landed them by the time this line runs.
             if on_step is not None:
                 on_step(agent_run.ctx.state.message_history)
         elif Agent.is_call_tools_node(node):
@@ -222,5 +243,6 @@ async def stream_agent_run(
             with timer.tool_calls():
                 async with node.stream(agent_run.ctx) as stream:
                     async for event in stream:
-                        _on_tool_event(event, run, announced, loop_breaker)
+                        if not _on_chassis_event(event, run):
+                            _on_tool_event(event, run, announced, loop_breaker)
         # UserPromptNode / End nodes have nothing to stream.

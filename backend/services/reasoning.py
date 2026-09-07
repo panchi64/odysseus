@@ -75,9 +75,12 @@ def _qwen(descriptor: ModelDescriptor) -> ModelSettings | None:
     return None
 
 
-# OpenAI reasoning families: the o-series and GPT-5 line. Plain GPT-4o/4.1 etc. are
-# NOT reasoning models and must not match — sending them a reasoning arg 400s.
-_OPENAI_REASONING_PREFIXES = ("o1", "o3", "o4", "gpt-5")
+# OpenAI reasoning families: the o-series and the GPT-5 line onwards. Plain GPT-4o/4.1
+# etc. are NOT reasoning models and must not match — sending them a reasoning arg 400s.
+# This is a list that goes stale silently: a family added after it was last touched gets
+# no setting rather than an error, so a new GPT-6 endpoint would simply keep thinking on
+# every background title and verification until someone noticed the bill.
+_OPENAI_REASONING_PREFIXES = ("o1", "o3", "o4", "gpt-5", "gpt-6")
 
 
 def _openai_reasoning(descriptor: ModelDescriptor) -> ModelSettings | None:

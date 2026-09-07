@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
+
 from pydantic_ai import FunctionToolset, ToolApproved
-from pydantic_ai.messages import ModelRequest, UserPromptPart
-from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, UserPromptPart
+from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 
 import agent.engine as engine
@@ -38,6 +40,47 @@ async def _fresh_store(tmp_path) -> tuple[ConversationStore, object]:
     engine = make_engine("sqlite:///:memory:")
     init_db(engine)
     return ConversationStore(engine, await _unlocked_vault(tmp_path)), engine
+
+
+def _noop_toolset() -> FunctionToolset:
+    """One read-classed tool under the ``x`` category — a call the permission level lets
+    through, so what stops the turn is the tool-call bound and nothing else."""
+    toolset = FunctionToolset()
+
+    @toolset.tool_plain(metadata={"sensitivity": "read"})
+    def noop(x: int) -> int:
+        return x
+
+    return toolset
+
+
+def _bounds_tool_calls(monkeypatch) -> None:
+    """Zero the tool-call ceiling, so the first call the model reaches for stops the turn."""
+    monkeypatch.setattr(
+        engine, "get_settings", lambda: Settings(agent_request_limit=25, agent_tool_calls_limit=0)
+    )
+
+
+def _calls_noop() -> FunctionModel:
+    """A model that reaches for ``x_noop`` on every request, whatever the history holds.
+
+    `TestModel(call_tools=…)` calls its tools only while the history carries no response
+    at all, so on the *second* stopped turn of a thread it answers in text instead and the
+    bound is never tripped. These tests are about what a stop leaves behind across several
+    turns, so the model has to be the one thing that does not change between them.
+
+    Both halves are supplied because the chat orchestrator streams every request, and a
+    `FunctionModel` with no `stream_function` asserts rather than answering.
+    """
+    args = {"x": 1}
+
+    async def respond(messages, info: AgentInfo) -> ModelResponse:
+        return ModelResponse(parts=[ToolCallPart("x_noop", args)])
+
+    async def stream(messages, info: AgentInfo):
+        yield {0: DeltaToolCall(name="x_noop", json_args=json.dumps(args))}
+
+    return FunctionModel(respond, stream_function=stream)
 
 
 async def test_cache_is_bounded_and_evicted_trees_rehydrate(tmp_path):
@@ -185,15 +228,8 @@ async def test_blocked_turn_persists_with_its_reason(tmp_path, monkeypatch):
     # turn stops blocked, but what ran (the tool-call response) is real conversation
     # content — persist it, tagged with why it stopped, so a reload shows the same
     # marker the live stream rendered rather than a turn that silently never happened.
-    toolset = FunctionToolset()
-
-    @toolset.tool_plain(metadata={"sensitivity": "read"})
-    def noop(x: int) -> int:
-        return x
-
-    monkeypatch.setattr(
-        engine, "get_settings", lambda: Settings(agent_request_limit=25, agent_tool_calls_limit=0)
-    )
+    toolset = _noop_toolset()
+    _bounds_tool_calls(monkeypatch)
     store, db_engine = await _fresh_store(tmp_path)
     await store.start()
     conv = await store.create_conversation("operator", title="t")
@@ -201,7 +237,7 @@ async def test_blocked_turn_persists_with_its_reason(tmp_path, monkeypatch):
     reg = RunRegistry()
     orch = build_chat_orchestrator(
         "call the tool",
-        model=TestModel(call_tools=["x_noop"]),
+        model=_calls_noop(),
         categories={"x": toolset},
         store=store,
         conversation_id=conv,
@@ -801,15 +837,8 @@ async def test_continuing_a_stopped_turn_retires_its_marker_for_good(tmp_path, m
     # The stop marker is a standing "this turn didn't finish — resume it?" prompt.
     # Once the operator has resumed it, leaving the warning up is the UI arguing with
     # itself, so the clear has to be as durable as the marker was.
-    toolset = FunctionToolset()
-
-    @toolset.tool_plain(metadata={"sensitivity": "read"})
-    def noop(x: int) -> int:
-        return x
-
-    monkeypatch.setattr(
-        engine, "get_settings", lambda: Settings(agent_request_limit=25, agent_tool_calls_limit=0)
-    )
+    toolset = _noop_toolset()
+    _bounds_tool_calls(monkeypatch)
     store, db_engine = await _fresh_store(tmp_path)
     await store.start()
     conv = await store.create_conversation("operator", title="t")
@@ -817,7 +846,7 @@ async def test_continuing_a_stopped_turn_retires_its_marker_for_good(tmp_path, m
     reg = RunRegistry()
     orch = build_chat_orchestrator(
         "call the tool",
-        model=TestModel(call_tools=["x_noop"]),
+        model=_calls_noop(),
         categories={"x": toolset},
         store=store,
         conversation_id=conv,
@@ -846,15 +875,8 @@ async def test_clearing_an_unknown_id_retires_the_last_stop_on_the_path(tmp_path
     # optimistic id, which is not a node id here. The marker it means is still the
     # only one on the path, so the fallback retires that rather than no-oping and
     # leaving a warning the operator has visibly resolved.
-    toolset = FunctionToolset()
-
-    @toolset.tool_plain(metadata={"sensitivity": "read"})
-    def noop(x: int) -> int:
-        return x
-
-    monkeypatch.setattr(
-        engine, "get_settings", lambda: Settings(agent_request_limit=25, agent_tool_calls_limit=0)
-    )
+    toolset = _noop_toolset()
+    _bounds_tool_calls(monkeypatch)
     store, _ = await _fresh_store(tmp_path)
     await store.start()
     conv = await store.create_conversation("operator", title="t")
@@ -862,7 +884,7 @@ async def test_clearing_an_unknown_id_retires_the_last_stop_on_the_path(tmp_path
     reg = RunRegistry()
     orch = build_chat_orchestrator(
         "call the tool",
-        model=TestModel(call_tools=["x_noop"]),
+        model=_calls_noop(),
         categories={"x": toolset},
         store=store,
         conversation_id=conv,
@@ -882,15 +904,8 @@ async def test_a_second_stop_after_a_retired_one_stands_on_its_own(tmp_path, mon
     # Retiring a marker must not be a one-shot: a thread the operator keeps resuming
     # stops, gets continued, and stops again — and the second stop has to raise its own
     # marker on its own turn, with the first one staying retired underneath it.
-    toolset = FunctionToolset()
-
-    @toolset.tool_plain(metadata={"sensitivity": "read"})
-    def noop(x: int) -> int:
-        return x
-
-    monkeypatch.setattr(
-        engine, "get_settings", lambda: Settings(agent_request_limit=25, agent_tool_calls_limit=0)
-    )
+    toolset = _noop_toolset()
+    _bounds_tool_calls(monkeypatch)
     store, db_engine = await _fresh_store(tmp_path)
     await store.start()
     conv = await store.create_conversation("operator", title="t")
@@ -900,7 +915,7 @@ async def test_a_second_stop_after_a_retired_one_stands_on_its_own(tmp_path, mon
         """Run a turn that trips the tool-call bound; return its marked node id."""
         orch = build_chat_orchestrator(
             prompt,
-            model=TestModel(call_tools=["x_noop"]),
+            model=_calls_noop(),
             categories={"x": toolset},
             store=store,
             conversation_id=conv,
@@ -936,15 +951,8 @@ async def test_clearing_one_marker_leaves_an_earlier_one_alone(tmp_path, monkeyp
     # Two stops can stand on one path at once (the operator continued the first with a
     # question of their own, and that stopped too). Clearing by id must retire exactly
     # the turn named — an earlier marker is still an unanswered prompt to resume.
-    toolset = FunctionToolset()
-
-    @toolset.tool_plain(metadata={"sensitivity": "read"})
-    def noop(x: int) -> int:
-        return x
-
-    monkeypatch.setattr(
-        engine, "get_settings", lambda: Settings(agent_request_limit=25, agent_tool_calls_limit=0)
-    )
+    toolset = _noop_toolset()
+    _bounds_tool_calls(monkeypatch)
     store, _ = await _fresh_store(tmp_path)
     await store.start()
     conv = await store.create_conversation("operator", title="t")
@@ -953,7 +961,7 @@ async def test_clearing_one_marker_leaves_an_earlier_one_alone(tmp_path, monkeyp
     async def stopped_turn(prompt: str) -> str:
         orch = build_chat_orchestrator(
             prompt,
-            model=TestModel(call_tools=["x_noop"]),
+            model=_calls_noop(),
             categories={"x": toolset},
             store=store,
             conversation_id=conv,
@@ -979,15 +987,8 @@ async def test_the_fallback_retires_the_newest_stop_not_an_older_one(tmp_path, m
     # can only make one up for the turn it is streaming — the newest. With an older
     # marker also standing, the fallback must still take the newest, or continuing the
     # live stop would silently retire a stop further up the thread instead.
-    toolset = FunctionToolset()
-
-    @toolset.tool_plain(metadata={"sensitivity": "read"})
-    def noop(x: int) -> int:
-        return x
-
-    monkeypatch.setattr(
-        engine, "get_settings", lambda: Settings(agent_request_limit=25, agent_tool_calls_limit=0)
-    )
+    toolset = _noop_toolset()
+    _bounds_tool_calls(monkeypatch)
     store, _ = await _fresh_store(tmp_path)
     await store.start()
     conv = await store.create_conversation("operator", title="t")
@@ -996,7 +997,7 @@ async def test_the_fallback_retires_the_newest_stop_not_an_older_one(tmp_path, m
     async def stopped_turn(prompt: str) -> str:
         orch = build_chat_orchestrator(
             prompt,
-            model=TestModel(call_tools=["x_noop"]),
+            model=_calls_noop(),
             categories={"x": toolset},
             store=store,
             conversation_id=conv,

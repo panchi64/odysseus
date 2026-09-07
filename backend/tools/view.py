@@ -31,6 +31,7 @@ from services.sandbox import SandboxError, SandboxSessionManager
 from services.workspace_history import SnapshotView, WorkspaceHistoryStore, format_show_result
 
 from .deps import RunDeps
+from .emit import RunEventEmitted
 
 if TYPE_CHECKING:
     from services.sandbox.session import SandboxSession
@@ -61,16 +62,18 @@ async def _capture_version(
         preview_artifact_id=preview_artifact_id,
         preview_kind=preview_kind,
     )
-    ctx.deps.run.emit(
-        ViewSnapshot(
-            conversation_id=ctx.deps.workspace_key,
-            snapshot_id=snapshot.id,
-            title=snapshot.title,
-            created_at=snapshot.created_at,
-            files_changed=snapshot.files_changed,
-            summary=snapshot.summary,
-            preview_kind=snapshot.preview_kind,
-            preview_artifact_id=snapshot.preview_artifact_id,
+    await ctx.emit(
+        RunEventEmitted(
+            body=ViewSnapshot(
+                conversation_id=ctx.deps.workspace_key,
+                snapshot_id=snapshot.id,
+                title=snapshot.title,
+                created_at=snapshot.created_at,
+                files_changed=snapshot.files_changed,
+                summary=snapshot.summary,
+                preview_kind=snapshot.preview_kind,
+                preview_artifact_id=snapshot.preview_artifact_id,
+            )
         )
     )
     return snapshot
@@ -133,13 +136,15 @@ async def _show_live(
     # server whose root would list the directory (`python -m http.server` with no
     # `index.html`) renders the page instead.
     url = handle.url_for(path)
-    ctx.deps.run.emit(
-        ViewLive(
-            conversation_id=ctx.deps.workspace_key,
-            url=url,
-            title=title,
-            command=" ".join(handle.command),
-            port=port,
+    await ctx.emit(
+        RunEventEmitted(
+            body=ViewLive(
+                conversation_id=ctx.deps.workspace_key,
+                url=url,
+                title=title,
+                command=" ".join(handle.command),
+                port=port,
+            )
         )
     )
     # A live head overlays the latest version; capture one now (auto preview — the
@@ -202,7 +207,9 @@ def view_toolset() -> FunctionToolset[RunDeps]:
         if sessions is None:
             return "The live view is unavailable — your computer isn't available right now."
         await sessions.stop_preview(ctx.deps.workspace_key)
-        ctx.deps.run.emit(ViewLiveStopped(conversation_id=ctx.deps.workspace_key))
+        await ctx.emit(
+            RunEventEmitted(body=ViewLiveStopped(conversation_id=ctx.deps.workspace_key))
+        )
         return "Stopped the live view."
 
     return toolset

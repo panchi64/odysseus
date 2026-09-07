@@ -6,8 +6,11 @@ from pydantic_ai import Agent, FunctionToolResultEvent, RetryPromptPart
 from pydantic_ai.models.test import TestModel
 
 from agent import stream_agent_run
+from agent.injections import AnnounceInjections
+from agent.overhead import MeasureOverhead
 from agent.translate import _on_tool_event
-from runs import Run, RunStream
+from runs import Run, RunStream, ViewLiveStopped
+from tools.emit import RunEventEmitted
 
 
 def _run() -> Run:
@@ -95,3 +98,62 @@ async def test_a_parallel_batch_streams_every_call_independently():
 
     # And the batch is ONE model round-trip: a second step only opens for the answer.
     assert len([b for b in bodies if b.type == "step.started"]) == 2
+
+
+# ── What a tool and a capability say for themselves ──────────────────────────────
+#
+# Both used to reach through `ctx.deps` for the `Run` and call `run.emit`. They now
+# emit into the library's own event stream and this translator lands them, which is
+# what these cover: that the seam carries them at all, that a capability needs nothing
+# of ours to use it, and that a tool's news arrives inside its own call rather than
+# racing it.
+
+
+async def test_a_tool_puts_its_own_news_on_the_stream():
+    agent = Agent(TestModel(custom_output_text="done"))
+
+    @agent.tool
+    async def announce(ctx, note: str) -> str:
+        await ctx.emit(RunEventEmitted(body=ViewLiveStopped(conversation_id=note)))
+        return "ok"
+
+    run = _run()
+    async with agent.iter("say something") as agent_run:
+        await stream_agent_run(agent_run, run)
+
+    stopped = _first(run, "view.live.stopped")
+    assert stopped.conversation_id
+    # Inside its own call, not before it: the ordering the direct `run.emit` could not
+    # promise, because a value written straight to the run is visible immediately while
+    # the frame for the call it belongs to waits for the translator to reach it.
+    order = [b.type for b in _bodies(run) if b.type.startswith(("tool.", "view."))]
+    assert order == ["tool.started", "view.live.stopped", "tool.completed"]
+
+
+async def test_the_capabilities_need_nothing_of_ours_to_report():
+    """Neither capability touches `ctx.deps` any more, so both work on an agent that has
+    none — which is the whole point of moving them onto the library's event seam, and the
+    thing a mock of that seam would never catch."""
+
+    def repo_instructions() -> str:
+        return "CLAUDE.md says be brief."
+
+    agent = Agent(
+        TestModel(custom_output_text="done"),
+        capabilities=[MeasureOverhead(), AnnounceInjections()],
+    )
+    agent.instructions(name="repo")(repo_instructions)
+
+    run = _run()
+    async with agent.iter("go") as agent_run:
+        await stream_agent_run(agent_run, run)
+
+    # The brief's named contributor was announced, once, with its text.
+    injected = [b for b in _bodies(run) if b.type == "context.injected"]
+    assert [(b.contributor, b.text) for b in injected] == [
+        ("repo", "CLAUDE.md says be brief.")
+    ]
+    # And the request's non-conversation weight reached the run, where the gauge reads it.
+    assert run.context_overhead is not None
+    assert run.context_overhead.system >= len("CLAUDE.md says be brief.")
+    assert any(block.id == "repo" for block in run.context_overhead.blocks)

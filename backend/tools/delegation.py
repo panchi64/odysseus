@@ -26,6 +26,7 @@ from pydantic_ai.toolsets import ToolsetTool
 
 from runs import ToolProgress
 from tools.deps import RunDeps
+from tools.emit import RunEventEmitted
 
 logger = logging.getLogger(__name__)
 
@@ -107,13 +108,16 @@ def stream_handler(ctx: RunContext[RunDeps], name: str) -> Any:
     async def stream(sub_ctx: RunContext[Any], events) -> None:
         async for event in events:
             try:
-                # Not awaited: `Run.emit` stamps and fans out synchronously. Awaiting the
-                # `Event` it returns raised a `TypeError` straight into the guard below,
-                # which is exactly how a delegation stayed silent while looking narrated.
-                ctx.deps.run.emit(
-                    ToolProgress(
-                        tool_call_id=ctx.tool_call_id or "delegate",
-                        partial=_describe(event, name),
+                # Awaited, unlike the `Run.emit` this replaced: `RunContext.emit` is a
+                # coroutine and dropping it would leave the narration unsent. The guard
+                # below still stands — an emit into a context with no stream raises, and
+                # a delegation that cannot narrate must still delegate.
+                await ctx.emit(
+                    RunEventEmitted(
+                        body=ToolProgress(
+                            tool_call_id=ctx.tool_call_id or "delegate",
+                            partial=_describe(event, name),
+                        )
                     )
                 )
             except Exception:  # noqa: BLE001 — narration is never load-bearing

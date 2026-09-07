@@ -10,9 +10,9 @@ approval-gated (`AE-3.6` is per tool, never per server).
 
 from __future__ import annotations
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
-server = FastMCP("odysseus-test")
+server = MCPServer("odysseus-test")
 
 
 @server.tool()

@@ -35,6 +35,7 @@ from services.research_threads import (
     ResearchUnavailableError,
 )
 from tools.deps import RunDeps
+from tools.emit import RunEventEmitted
 from tools.workspace import run_workspace
 
 _UNAVAILABLE = "Deep research is unavailable in this deployment."
@@ -80,11 +81,13 @@ def research_toolset() -> FunctionToolset[RunDeps]:
         # The operator's own record that this turn spawned something: the new thread is
         # about to appear in their session list, and without this it would appear with no
         # explanation of where it came from.
-        ctx.deps.run.emit(
-            ConversationLinked(
-                conversation_id=started.conversation_id,
-                relation="research",
-                title=started.question,
+        await ctx.emit(
+            RunEventEmitted(
+                body=ConversationLinked(
+                    conversation_id=started.conversation_id,
+                    relation="research",
+                    title=started.question,
+                )
             )
         )
         return {

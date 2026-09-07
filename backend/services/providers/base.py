@@ -53,7 +53,32 @@ class Provider(Protocol):
     preset: ProviderPreset
 
     def build_model(self, spec: EndpointSpec) -> Model:
-        """A concrete Pydantic AI model from a resolved, decrypted spec."""
+        """A concrete Pydantic AI model from a resolved, decrypted spec.
+
+        **Every adapter puts ``spec.context_window`` on the model's profile**, and this
+        is the one place the reason is written down. Pydantic AI resolves a profile's
+        ``context_window`` from its own price data when no layer states one — which
+        answers a question about a *model name*, not about a *server*, and those differ
+        exactly where this product lives. A llama.cpp instance started with ``-c 8192``
+        advertises its architecture's 128k ceiling, and any endpoint named after a
+        well-known model inherits that model's number no matter what is behind the base
+        URL. The window that matters is the one the server will accept.
+
+        ``spec.context_window`` is the answer to the right question: the registry funnels
+        every resolution through ``_with_context_windows``, which prefers the operator's
+        own figure and otherwise probes the server. **When it is set, it wins** — in
+        every adapter.
+
+        Where the adapters differ is what to do when it is ``None``, and the split is
+        not arbitrary: it is whether this adapter's base URL identifies the vendor.
+        ``anthropic`` and ``google`` talk to one lab's API, so the model name really does
+        name that model and the library's figure is the best available — it is left
+        alone. ``openai-compatible`` fronts *any* server, so a recognised name is a
+        coincidence of what the operator typed and the guess is actively wrong; there the
+        profile is pinned to ``None``. Unknown is the honest state and the one the rest of
+        the codebase already handles: an endpoint that declares no window never folds,
+        because folding on a guess compacts a thread that was never under pressure.
+        """
         ...
 
     async def discover(
