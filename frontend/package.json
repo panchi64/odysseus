@@ -21,7 +21,7 @@
     "@solidjs/start": "2.0.0-alpha.2",
     "@solidjs/vite-plugin-nitro-2": "^0.1.0",
     "katex": "^0.17.0",
-    "marked": "^18.0.11",
+    "marked": "^18.0.12",
     "pdfjs-dist": "^6.3.289",
     "shiki": "^4.4.3",
     "solid-js": "^1.9.15",
@@ -36,7 +36,7 @@
     "prettier": "^3.9.6",
     "tailwindcss": "^4.3.3",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.69.0"
+    "typescript-eslint": "^8.70.0"
   },
   "engines": {
     "node": ">=22"
