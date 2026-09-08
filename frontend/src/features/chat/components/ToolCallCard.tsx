@@ -167,6 +167,13 @@ export function ToolCallCard(props: {
                    identifying part of it. */
                 class="w-full rounded-ctl border border-line object-cover object-top"
                 classList={{ "max-h-28": !open() }}
+                /* A screenshot arrives as base64 in the block, so the bytes are in
+                   the DOM the moment the turn renders. There is no fetch to defer,
+                   which is why there is no `loading="lazy"` here — it has nothing to
+                   postpone for a `data:` URI. Decoding those bytes IS real work
+                   though, and a long transcript can hold dozens, so `async` is what
+                   keeps it off the frame the turn lands on. */
+                decoding="async"
                 src={`data:${image.mediaType};base64,${image.data}`}
                 alt={`What ${props.tool.name} saw${
                   (props.tool.images?.length ?? 0) > 1 ? `, ${index() + 1}` : ""
