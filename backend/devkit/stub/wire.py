@@ -60,14 +60,25 @@ def _usage(reply: Reply) -> dict[str, int]:
 
 
 def _tool_calls_body(reply: Reply) -> list[dict[str, object]]:
-    return [
-        {
-            "id": call.id if len(reply.tool_calls) == 1 else f"{call.id}_{index}",
-            "type": "function",
-            "function": {"name": call.name, "arguments": call.arguments},
-        }
-        for index, call in enumerate(reply.tool_calls)
-    ]
+    """The wire form of a reply's tool calls, with ids that are unique among themselves.
+
+    Only a *duplicate* id is rewritten. Ids are how a client matches each result back to
+    the call that asked for it, so two calls sharing one would be indistinguishable — but
+    an id the caller set deliberately, to assert on, must survive being one of several.
+    """
+    seen: set[str] = set()
+    body: list[dict[str, object]] = []
+    for index, call in enumerate(reply.tool_calls):
+        identifier = call.id if call.id not in seen else f"{call.id}_{index}"
+        seen.add(identifier)
+        body.append(
+            {
+                "id": identifier,
+                "type": "function",
+                "function": {"name": call.name, "arguments": call.arguments},
+            }
+        )
+    return body
 
 
 def completion(model: str, reply: Reply, *, request_id: str) -> dict[str, object]:

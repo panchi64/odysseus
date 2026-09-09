@@ -45,13 +45,16 @@ class Finding:
 def _tooling() -> list[Finding]:
     findings = []
     for tool, why in (("bun", "the frontend dev server"), ("uv", "the backend")):
-        if shutil.which(tool) is None:
+        # Resolved once: two scans would be wasteful, and could in principle disagree —
+        # reporting `ok` alongside an empty path.
+        found = shutil.which(tool)
+        if found is None:
             findings.append(
                 Finding(tool, FAIL, f"not on PATH — {why} cannot start",
                         f"install {tool}, or run only the half that does not need it")
             )
         else:
-            findings.append(Finding(tool, OK, shutil.which(tool) or ""))
+            findings.append(Finding(tool, OK, found))
     if not (repo.FRONTEND / "node_modules").is_dir():
         findings.append(
             Finding("frontend deps", WARN, "node_modules is missing",

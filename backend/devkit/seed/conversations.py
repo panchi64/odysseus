@@ -16,11 +16,17 @@ from __future__ import annotations
 import asyncio
 import json
 
+import httpx
+
+from devkit import live
 from devkit.seed.registry import SeedContext, fixture, rows
 
 #: How long one seeded turn may take before seeding gives up on it. Generous for a real
 #: endpoint behind `ODY_DEV_CHAT_*`, and far beyond anything the stub needs.
 _TURN_TIMEOUT_S = 120.0
+
+#: Pushing a script is a local POST that either answers at once or is broken.
+_SCRIPT_TIMEOUT_S = 10.0
 
 #: The scripted exchanges. The second is the one worth having: an assistant turn that
 #: calls a tool and then answers from its result is the shape most of the chat UI exists
@@ -68,11 +74,13 @@ _THREADS = [
 async def _push_script(ctx: SeedContext, script: list[dict]) -> None:
     """Tell the stub what to say for this thread. A no-op against a real endpoint —
     there is nothing to script, and the reply will simply be whatever it says."""
-    from devkit import live
-
     if live.configured():
         return
-    async with ctx.client.__class__(base_url=f"http://127.0.0.1:{ctx.instance.stub_port}") as stub:
+    # Its own client: the seed context's is pointed at the backend, and the stub is a
+    # different server on a different port. Bounded, so a stub that accepts the
+    # connection and then never answers fails this fixture rather than the whole run.
+    base_url = f"http://127.0.0.1:{ctx.instance.stub_port}"
+    async with httpx.AsyncClient(base_url=base_url, timeout=_SCRIPT_TIMEOUT_S) as stub:
         await stub.post("/_stub/script", json=script)
 
 

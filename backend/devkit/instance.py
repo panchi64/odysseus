@@ -220,9 +220,10 @@ def resolve(
     name = name or worktree_name()
     home = root / name
     state = home / STATE_FILE
+    stored_instance: DevInstance | None = None
     if state.is_file():
         stored = json.loads(state.read_text())
-        instance = DevInstance(
+        stored_instance = DevInstance(
             name=stored.get("name", name),
             slot=int(stored["slot"]),
             root=home,
@@ -231,6 +232,7 @@ def resolve(
             auth=stored.get("auth", False),
             containers=stored.get("containers", False),
         )
+        instance = stored_instance
     else:
         instance = DevInstance(
             name=name,
@@ -246,5 +248,10 @@ def resolve(
         instance = replace(instance, auth=auth)
     if containers is not None:
         instance = replace(instance, containers=containers)
-    instance.save()
+    # Written only when something actually changed. `status`, `doctor` and `stop` all
+    # resolve an instance in order to read it, and a read that rewrites the file races
+    # any concurrent writer over the one record holding the slot and the vault
+    # passphrase — a torn write there leaves the workspace unopenable.
+    if instance != stored_instance:
+        instance.save()
     return instance

@@ -14,20 +14,64 @@ the properties a future session relies on without ever reading this package.
 
 from __future__ import annotations
 
+import socket
+import threading
+
 import httpx
 import pytest
+import uvicorn
 
+from devkit import ports
 from devkit.instance import DevInstance
 from devkit.seed import registry, seed_version
 from devkit.seed.base import ENDPOINT_NAME, ROLES, seed_model
 from devkit.seed.surfaces import seed_calendar, seed_memory, seed_tasks
+from devkit.stub import create_stub
 
 from ._helpers import client_app
 
 
 @pytest.fixture
-def instance(tmp_path):
-    return DevInstance(name="test", slot=0, root=tmp_path, password="unused-here")
+def served_stub():
+    """A real stub, listening on a real port, on a slot this test has claimed.
+
+    Load-bearing rather than scene-setting: binding the ``embedding`` role *probes* the
+    endpoint over HTTP before it will save the binding, so the base fixture cannot be
+    exercised against a URL nothing answers. Before this existed the test passed only
+    because a dev instance happened to be running on that port — it borrowed a live
+    process, and failed the moment anyone stopped it.
+
+    The socket is bound here rather than left to uvicorn because binding *is* the claim:
+    two parallel workers racing for a slot cannot both succeed, and the loser moves on.
+    """
+    for slot in range(ports.MAX_SLOTS):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind(("127.0.0.1", ports.slot_ports(slot)[2]))
+        except OSError:
+            sock.close()
+            continue
+        sock.listen(128)
+        break
+    else:
+        pytest.skip("no free dev-instance stub port on this host")
+
+    server = uvicorn.Server(uvicorn.Config(create_stub(), log_level="error"))
+    thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+    thread.start()
+    try:
+        while not server.started and thread.is_alive():
+            threading.Event().wait(0.02)
+        yield slot
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10.0)
+        sock.close()
+
+
+@pytest.fixture
+def instance(tmp_path, served_stub):
+    return DevInstance(name="test", slot=served_stub, root=tmp_path, password="unused-here")
 
 
 @pytest.fixture

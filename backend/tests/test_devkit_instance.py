@@ -72,6 +72,32 @@ def test_flags_are_per_run_but_the_workspace_is_not(tmp_path):
     assert resolve(root=tmp_path, name="alpha").auth is True  # and the choice persists
 
 
+def test_a_flag_that_sticks_can_also_be_turned_back_off(tmp_path):
+    # The bug: the CLI mapped an absent flag to False and then to None, so `--auth` and
+    # `--with-containers` could only ever be switched on. An instance that once ran with
+    # containers kept pulling images on every later `up`, with no way to say otherwise.
+    resolve(root=tmp_path, name="alpha", auth=True, containers=True)
+    off = resolve(root=tmp_path, name="alpha", auth=False, containers=False)
+    assert (off.auth, off.containers) == (False, False)
+    assert resolve(root=tmp_path, name="alpha").containers is False
+
+
+def test_resolving_without_a_change_does_not_rewrite_the_state_file(tmp_path):
+    # `status`, `doctor` and `stop` all resolve in order to *read*. Rewriting on read
+    # races any concurrent writer over the one record holding the slot and the vault
+    # passphrase, and a torn write there leaves the workspace unopenable.
+    instance = resolve(root=tmp_path, name="alpha")
+    state = instance.root / "instance.json"
+    before = state.stat().st_mtime_ns
+
+    resolve(root=tmp_path, name="alpha")
+    resolve(root=tmp_path, name="alpha", auth=False)  # same value as stored
+    assert state.stat().st_mtime_ns == before
+
+    resolve(root=tmp_path, name="alpha", auth=True)
+    assert state.stat().st_mtime_ns != before
+
+
 def test_the_state_file_is_not_world_readable(tmp_path):
     instance = resolve(root=tmp_path, name="alpha")
     state = instance.root / "instance.json"

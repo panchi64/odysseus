@@ -27,24 +27,26 @@ def version() -> str:
     return seed_version()
 
 
-async def _authenticated(instance: DevInstance) -> httpx.AsyncClient:
-    """A client that can write to this instance.
+async def _authenticate(client: httpx.AsyncClient, instance: DevInstance) -> None:
+    """Give the client a session token, if this instance has the gate switched on.
 
     With auth off there is nothing to do: the gate is not in the request path at all.
     With auth on the vault is already unlocked by the boot passphrase, so logging in is
     just asking for the session token — it does not decide whether the workspace opens.
     """
-    client = httpx.AsyncClient(base_url=instance.backend_url, timeout=_TIMEOUT_S)
-    if instance.auth:
-        response = await client.post("/auth/login", json={"password": instance.password})
-        response.raise_for_status()
-        client.headers["Authorization"] = f"Bearer {response.json()['token']}"
-    return client
+    if not instance.auth:
+        return
+    response = await client.post("/auth/login", json={"password": instance.password})
+    response.raise_for_status()
+    client.headers["Authorization"] = f"Bearer {response.json()['token']}"
 
 
 async def _run(instance: DevInstance) -> list[str]:
-    client = await _authenticated(instance)
-    async with client:
+    # The client is entered before anything can fail inside it, so a login that raises
+    # closes its connection pool on the way out instead of leaving one open behind an
+    # error that is hard enough to read already.
+    async with httpx.AsyncClient(base_url=instance.backend_url, timeout=_TIMEOUT_S) as client:
+        await _authenticate(client, instance)
         return await run_seed(SeedContext(client=client, instance=instance))
 
 

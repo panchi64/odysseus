@@ -20,6 +20,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -53,8 +54,6 @@ def backend_healthy(instance: DevInstance, *, timeout_s: float = 2.0) -> bool:
 
 
 def _await_health(instance: DevInstance, *, timeout_s: float) -> bool:
-    import time
-
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if backend_healthy(instance):

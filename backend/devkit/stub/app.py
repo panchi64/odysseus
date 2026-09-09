@@ -134,7 +134,7 @@ def create_stub() -> FastAPI:
 
     @app.get("/_stub/requests")
     async def requests() -> dict[str, Any]:
-        return {"count": len(book.requests), "requests": book.requests}
+        return {"count": len(book.requests), "requests": list(book.requests)}
 
     return app
 

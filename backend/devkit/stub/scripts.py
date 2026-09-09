@@ -16,9 +16,14 @@ over, which is what keeps an agent that decided to loop once more from hanging.
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 
 from devkit.stub.wire import Reply, ToolCall
+
+#: How many request bodies the stub keeps. Comfortably more than any one exchange needs
+#: to assert against, far short of what an afternoon of chatting would accumulate.
+REQUEST_LOG_LIMIT = 200
 
 
 @dataclass
@@ -66,10 +71,15 @@ class ScriptBook:
 
     def __init__(self) -> None:
         self._scenarios: list[Scenario] = []
-        #: Every request body received, in order — so a test can assert what the agent
-        #: actually sent (its tool schemas, its instructions) rather than only what came
-        #: back. The stub is a listening post as much as a mouth.
-        self.requests: list[dict] = []
+        #: The most recent request bodies, oldest first — so a test can assert what the
+        #: agent actually sent (its tool schemas, its instructions) rather than only what
+        #: came back. The stub is a listening post as much as a mouth.
+        #:
+        #: Bounded, because this process outlives any one test: a request carries the
+        #: whole replayed transcript plus every tool schema, and an afternoon's chatting
+        #: against an unbounded log would grow without limit and eventually make
+        #: ``GET /_stub/requests`` too large to read.
+        self.requests: deque[dict] = deque(maxlen=REQUEST_LOG_LIMIT)
 
     def push(self, scenarios: list[Scenario]) -> None:
         self._scenarios.extend(scenarios)

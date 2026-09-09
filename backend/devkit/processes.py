@@ -93,34 +93,61 @@ class Supervisor:
         """Launch one service, its output appended to ``<log_dir>/<name>.log``."""
         log_dir.mkdir(parents=True, exist_ok=True)
         log = log_dir / f"{name}.log"
-        handle = log.open("a", buffering=1)
-        handle.write(f"\n--- {name} started {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
-        process = subprocess.Popen(
-            argv,
-            cwd=cwd,
-            env=env,
-            stdout=handle,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
+        # Closed once Popen has dup'd it for the child: the parent's copy is pure leak,
+        # and a caller that started services repeatedly would accumulate descriptors.
+        with log.open("a", buffering=1) as handle:
+            handle.write(f"\n--- {name} started {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
+            process = subprocess.Popen(
+                argv,
+                cwd=cwd,
+                env=env,
+                stdout=handle,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
         service = Service(name=name, process=process, log=log)
         self._services.append(service)
         return service
 
     def record(self, root: Path) -> Path:
-        """Write the process groups we started, so a later command can stop them.
+        """Add the process groups we started to what this instance has recorded.
 
         Recorded rather than discovered, because the alternative — finding whatever holds
         the port — would kill a process this instance never started, on a machine where
         the whole point is not to disturb what the operator is running.
+
+        **Merged, never replaced.** ``up`` converges, so a run routinely starts only the
+        services that were missing — or none at all. Writing only what *this* run started
+        would drop the earlier run's groups, and an ``up`` that started nothing would
+        clear the file outright, leaving three live services that ``stop`` can no longer
+        find. Stale entries are dropped on the way past, so the file cannot grow forever.
         """
         path = root / PIDFILE
-        groups = {}
+        groups = _read_groups(path)
+        for name, group in list(groups.items()):
+            if not _group_alive(group):
+                del groups[name]
         for service in self._services:
             with contextlib.suppress(ProcessLookupError, OSError):
                 groups[service.name] = os.getpgid(service.process.pid)
         path.write_text(json.dumps(groups, indent=2) + "\n")
         return path
+
+    def forget(self, root: Path) -> None:
+        """Drop only the services this run started from the record.
+
+        The counterpart to the merge above, for the foreground path's teardown: a plain
+        ``up`` that converged onto an already-running detached instance owns nothing, and
+        deleting the file on its way out would strand what the detached run started.
+        """
+        path = root / PIDFILE
+        groups = _read_groups(path)
+        for service in self._services:
+            groups.pop(service.name, None)
+        if groups:
+            path.write_text(json.dumps(groups, indent=2) + "\n")
+        else:
+            path.unlink(missing_ok=True)
 
     def stop_all(self) -> None:
         """Signal every child's process group, then wait, then insist."""
@@ -143,6 +170,31 @@ def _group_of(service: Service) -> int | None:
         return None
 
 
+def _read_groups(path: Path) -> dict[str, int]:
+    """The recorded ``{name: process group}``, or nothing if it cannot be read.
+
+    An unreadable record is treated as absent rather than fatal: it is a convenience for
+    stopping things, and refusing to start because of a corrupt one would be worse than
+    the leftover it describes.
+    """
+    try:
+        groups = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return {str(name): int(group) for name, group in groups.items()} if (
+        isinstance(groups, dict)
+    ) else {}
+
+
+def _group_alive(group: int) -> bool:
+    """Whether any process is still in this group. Signal 0 checks without delivering."""
+    try:
+        os.killpg(group, 0)
+    except (ProcessLookupError, OSError):
+        return False
+    return True
+
+
 def signal_group(group: int | None, sig: int) -> None:
     """Signal a process group, tolerating one that has already gone."""
     if group is None:
@@ -154,11 +206,8 @@ def signal_group(group: int | None, sig: int) -> None:
 def stop_recorded(root: Path) -> list[str]:
     """Stop the services a previous ``up`` recorded here. Returns what was signalled."""
     path = root / PIDFILE
-    if not path.is_file():
-        return []
-    try:
-        groups: dict[str, int] = json.loads(path.read_text())
-    except (OSError, ValueError):
+    groups = _read_groups(path)
+    if not groups:
         path.unlink(missing_ok=True)
         return []
     for group in groups.values():

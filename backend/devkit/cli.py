@@ -118,13 +118,21 @@ def _print_ready(payload: dict[str, Any], outcomes: dict[str, str], *, detached:
 
 
 def _cmd_up(args: argparse.Namespace) -> int:
-    instance = resolve(auth=args.auth or None, containers=args.with_containers or None)
+    instance = resolve(auth=args.auth, containers=args.with_containers)
     supervisor = Supervisor()
     try:
         instance, outcomes = launch.bring_up(instance, supervisor, reseed=args.reseed)
     except launch.LaunchError as failure:
         supervisor.stop_all()
         print(f"error: {failure}", file=sys.stderr)
+        return 1
+    except Exception as failure:  # noqa: BLE001 — see below
+        # Everything, not just LaunchError: `bring_up` also seeds, and seeding raises
+        # ordinary HTTP and JSON errors. One escaping here would leave the services this
+        # run started alive and unrecorded — running, and beyond the reach of `stop`.
+        supervisor.stop_all()
+        print(f"error: bringing the instance up failed: {failure!r}", file=sys.stderr)
+        print(f"       logs: {instance.logs_dir}", file=sys.stderr)
         return 1
 
     supervisor.record(instance.root)
@@ -142,7 +150,10 @@ def _cmd_up(args: argparse.Namespace) -> int:
         launch.wait_for_signal()
     finally:
         supervisor.stop_all()
-        (instance.root / processes.PIDFILE).unlink(missing_ok=True)
+        # Only what this run started. A foreground `up` that converged onto an already
+        # running detached instance owns nothing, and clearing the record on its way out
+        # would strand the detached services with no way to stop them.
+        supervisor.forget(instance.root)
     return 0
 
 
@@ -234,15 +245,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="return once everything is up, leaving it running; stop it with `stop`",
     )
+    # Both are tri-state on purpose: given, they change the instance and stick, so a
+    # session need not repeat them; omitted, they leave the stored choice alone. Without
+    # the `--no-` half a flag could only ever be turned on, and an instance that once ran
+    # `--with-containers` would keep pulling images on every later `up`.
     up.add_argument(
         "--auth",
-        action="store_true",
-        help="put the real login screen in front of the app (off by default)",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="put the real login screen in front of the app (default: off, and remembered)",
     )
     up.add_argument(
         "--with-containers",
-        action="store_true",
-        help="also run the sandbox, SearXNG and web-fetch containers",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="also run the sandbox, SearXNG and web-fetch containers (remembered)",
     )
     up.add_argument(
         "--reseed",

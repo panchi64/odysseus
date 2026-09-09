@@ -18,6 +18,7 @@ from pydantic_ai.providers.openai import OpenAIProvider
 
 from devkit.stub import MODEL_ID, create_stub
 from devkit.stub.embeddings import DIMENSIONS, embed
+from devkit.stub.scripts import REQUEST_LOG_LIMIT
 
 
 @pytest.fixture
@@ -187,6 +188,69 @@ async def test_a_counted_scenario_is_consumed_so_a_two_step_exchange_can_be_scri
     assert first.choices[0].message.tool_calls is not None
     second = await client.chat.completions.create(model=MODEL_ID, messages=messages, tools=tools)
     assert second.choices[0].message.content == "Done."
+
+
+async def test_two_scripted_tool_calls_keep_the_ids_they_were_given(stub):
+    # Ids are how a client matches each result back to the call that asked for it, so a
+    # test may well assert on ones it set deliberately — being one of several must not
+    # rewrite them. Only a genuine duplicate is disambiguated.
+    client, http = stub
+    await _script(
+        http,
+        {
+            "match": "both",
+            "tool_calls": [
+                {"name": "first", "arguments": "{}", "id": "call_a"},
+                {"name": "second", "arguments": "{}", "id": "call_b"},
+            ],
+        },
+    )
+    answer = await client.chat.completions.create(
+        model=MODEL_ID,
+        messages=[{"role": "user", "content": "do both"}],
+        tools=_offer("first", "second"),
+    )
+    calls = answer.choices[0].message.tool_calls
+    assert calls is not None
+    assert [call.id for call in calls] == ["call_a", "call_b"]
+
+
+async def test_duplicate_tool_call_ids_are_made_distinct(stub):
+    client, http = stub
+    await _script(
+        http,
+        {
+            "match": "twice",
+            "tool_calls": [
+                {"name": "same", "arguments": "{}", "id": "call_x"},
+                {"name": "same", "arguments": "{}", "id": "call_x"},
+            ],
+        },
+    )
+    answer = await client.chat.completions.create(
+        model=MODEL_ID,
+        messages=[{"role": "user", "content": "do it twice"}],
+        tools=_offer("same"),
+    )
+    calls = answer.choices[0].message.tool_calls
+    assert calls is not None
+    assert len({call.id for call in calls}) == 2
+
+
+async def test_the_request_log_is_bounded(stub):
+    # The stub outlives any one test. A request carries the whole replayed transcript
+    # plus every tool schema, so an unbounded log grows without limit and eventually
+    # makes `/_stub/requests` too large to read.
+    client, http = stub
+    for index in range(REQUEST_LOG_LIMIT + 5):
+        await client.chat.completions.create(
+            model=MODEL_ID, messages=[{"role": "user", "content": f"message {index}"}]
+        )
+    recorded = (await http.get("/_stub/requests")).json()
+    assert recorded["count"] == REQUEST_LOG_LIMIT
+    # Oldest first, and it is the newest that are kept.
+    last = recorded["requests"][-1]["messages"][-1]["content"]
+    assert last == f"message {REQUEST_LOG_LIMIT + 4}"
 
 
 async def test_it_records_what_the_agent_actually_sent(stub):
