@@ -19,7 +19,7 @@ import json
 import sys
 from typing import Any
 
-from devkit import launch, ports, processes
+from devkit import doctor, launch, ports, processes
 from devkit.instance import DevInstance, resolve
 from devkit.processes import Supervisor
 from services.workspace_reset import reset_workspace
@@ -190,6 +190,19 @@ def _cmd_reset(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    findings = doctor.run(resolve())
+    if args.json:
+        print(json.dumps([finding.as_dict() for finding in findings], indent=2))
+        return 0
+    for finding in findings:
+        mark = {doctor.OK: " ok ", doctor.WARN: "warn", doctor.FAIL: "FAIL"}[finding.status]
+        print(f"[{mark}] {finding.name:<18} {finding.detail}")
+        if finding.remedy:
+            print(f"         → {finding.remedy}")
+    return 1 if any(f.status == doctor.FAIL for f in findings) else 0
+
+
 def _cmd_stop(args: argparse.Namespace) -> int:
     instance = resolve()
     stopped = processes.stop_recorded(instance.root)
@@ -259,6 +272,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     reset.add_argument("--yes", action="store_true", help="confirm the deletion")
     reset.set_defaults(handler=_cmd_reset)
+
+    check = subcommands.add_parser(
+        "doctor", help="what is wrong and what to do about it"
+    )
+    check.set_defaults(handler=_cmd_doctor)
 
     for sub in subcommands.choices.values():
         sub.add_argument(

@@ -1,0 +1,140 @@
+# The dev instance
+
+A second, disposable Odysseus you can run, drive and break: its own data directory, its
+own ports, its own containers, and a scripted model behind it. Nothing it does touches
+the operator's workspace.
+
+It exists because the test suite proves behaviour and cannot show a change working. A
+picker, a card, a layout, a flow — those are either seen in the running product or taken
+on trust, and the only other running instance holds someone's real conversations and
+credentials.
+
+> **This file is the source of truth for the agent-facing copies.** `.claude/` and
+> `CLAUDE.md` are both gitignored on purpose, so neither travels to a new clone or a new
+> git worktree. `dev_instance.py up` materializes them from this file on every run — see
+> `backend/devkit/surfaces.py`. Edit the recipe here, not in the generated copies.
+
+<!-- claude-md:begin -->
+
+## Running the app to see a change
+
+To see a change working in the real product — or to screenshot a surface, or to check a
+flow end to end — bring up the isolated dev instance:
+
+```bash
+cd backend && uv run python dev_instance.py up --detach
+```
+
+It is safe to run twice; it fills in whatever is not already running, seeds the workspace
+on first use, and prints the URLs. Then `preview_start 'odysseus-dev'` opens it in the
+browser pane. Ports differ per worktree — read them from
+`uv run python dev_instance.py status --json`, never assume them.
+
+This instance is **not** the operator's: separate data directory, separate ports,
+separate containers, a stub model. Nothing in it is real, and breaking it costs nothing.
+Full recipe in `docs/dev-instance.md`.
+
+<!-- claude-md:end -->
+
+## Getting it running
+
+```bash
+cd backend
+uv run python dev_instance.py up --detach     # start everything, seed on first use
+uv run python dev_instance.py status --json   # ports, URLs, what is running
+uv run python dev_instance.py stop            # stop what `up` started
+```
+
+`up` **converges**: it looks at what is already listening and starts only the gaps, so
+running it again is safe and cheap. Without `--detach` it stays in the foreground and
+Ctrl-C takes the services down with it.
+
+On a first run in a fresh worktree it also installs the frontend's dependencies and warms
+vite's dependency optimizer, so the first page you open is the app and not a blank screen.
+
+## Looking at it
+
+```
+preview_start 'odysseus-dev'      # opens the browser pane at this worktree's frontend
+```
+
+Then `read_page`, `find`, `computer` (click, type, screenshot) as usual, and
+`read_console_messages` / `read_network_requests` when something does not render — a CORS
+or 401 problem shows up there immediately and nowhere else.
+
+There is **no login screen** by default: auth is off and the vault is unlocked at boot, so
+navigating lands you in the app. Use `up --auth` when the login and setup screens are
+themselves what you are working on; the password is in `status --json`.
+
+## What is in it
+
+Seeded on first use, and re-seeded automatically whenever the fixture pack or the database
+schema changes:
+
+- a model endpoint bound to every role, pointed at the stub
+- two conversations, one of which called a tool
+- a calendar with three upcoming events
+- three memories
+- one scheduled task, disabled
+
+Data persists between sessions, so a scenario you build up in one is still there in the
+next. `reset --yes` wipes the workspace; the next `up` re-seeds it.
+
+## The model
+
+By default a scripted stub on its own port — deterministic, free, offline, and able to do
+things a real endpoint will not: fail on demand, take four seconds, call a tool you name.
+
+```bash
+# make it say something, call a tool, stall, or fail
+curl -X POST http://127.0.0.1:{{stub_port}}/_stub/script -H 'content-type: application/json' -d '[
+  {"match": "weather", "text": "It is raining."},
+  {"match": "add", "tool_calls": [{"name": "calculator", "arguments": "{\"a\": 2}"}]},
+  {"match": "slow", "text": "eventually", "latency_s": 4},
+  {"match": "boom", "status": 500, "error": "upstream exploded"}
+]'
+
+curl http://127.0.0.1:{{stub_port}}/_stub/requests   # what the agent actually sent
+curl -X POST http://127.0.0.1:{{stub_port}}/_stub/reset
+```
+
+Two rules worth knowing before you script one:
+
+- Scenarios match on the **last user message**, not on a call index — an agent turn is a
+  loop, so a script keyed by call count says different things depending on how many tools
+  the agent chose to call.
+- A scenario with `tool_calls` is only given to a request that **offered** tools. One user
+  message produces several requests, and the auto-titler beside the turn carries the same
+  last user message. Set `"needs_tools": false` for a reply aimed at the titler.
+
+To use a real model instead, name one before `up` — the stub is then not started at all:
+
+```bash
+export ODY_DEV_CHAT_BASE_URL=http://127.0.0.1:1234/v1
+export ODY_DEV_CHAT_MODEL=your-model
+export ODY_DEV_CHAT_KEY=…          # optional; a local engine usually needs none
+```
+
+## Containers, and why they are off
+
+The sandbox, SearXNG and the web-fetch browser do not run by default — they cost images,
+memory and boot time that most visual checks never need. `up --with-containers` turns them
+on, under a container name prefix of this instance's own, so boot reconciliation can never
+reach the operator's.
+
+## When something is wrong
+
+```bash
+uv run python dev_instance.py status --json
+tail -f ~/.odysseus/dev/<worktree>/logs/backend.log    # also stub.log, frontend.log
+```
+
+Everything lives under `~/.odysseus/dev/<worktree>/` — data, worktrees, logs, and the
+`instance.json` recording the ports and the vault passphrase. Deleting that directory
+forgets the instance entirely; the next `up` builds a new one.
+
+## What it is not
+
+Not a place to point at real data. `ODYSSEUS_DATA_DIR` and the rest are set by the
+launcher for exactly this reason: an instance aimed at the operator's data directory would
+seed fixtures into their workspace and reconcile their containers away.
