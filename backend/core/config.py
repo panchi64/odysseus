@@ -113,6 +113,19 @@ class Settings(BaseSettings):
     sandbox_enabled: bool = True
     sandbox_runtime: str | None = None
     sandbox_image: str = "python:3.12-slim"
+    # What every container and network this app creates is named after, and the only
+    # thing separating one instance's containers from another's on a shared host.
+    #
+    # It exists because boot reconciliation deletes by *pattern*: it lists everything
+    # matching our names and removes it, on the reasoning that startup is the one moment
+    # nothing carrying them can be in use. That reasoning holds for exactly one instance
+    # per machine. A second one booting under the same prefix — a test instance, a
+    # second checkout — would collect the first's live sandboxes mid-conversation, and
+    # the managed SearXNG and web-fetch containers would be force-removed out from under
+    # it by name. Giving the second instance its own prefix makes the two mutually
+    # invisible: every filter is anchored, so neither one's pattern can match the
+    # other's names.
+    container_prefix: str = "odysseus"
     # What a box may consume. These are here to protect the *host* — one runaway
     # container must not take the operator's machine with it — not to keep the agent
     # small. Set generously enough that ordinary work (a build, a dataframe, a test

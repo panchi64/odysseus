@@ -59,9 +59,10 @@ from .stealth import (
 
 logger = logging.getLogger(__name__)
 
-# The one container we name, the CDP port it exposes inside it, and conservative caps —
-# a browser is heavier than SearXNG, and Chromium crashes on a tiny /dev/shm.
-_CONTAINER = "odysseus-webfetch"
+# What our one container is called under the instance's prefix, the CDP port it exposes
+# inside it, and conservative caps — a browser is heavier than SearXNG, and Chromium
+# crashes on a tiny /dev/shm.
+_CONTAINER_SUFFIX = "webfetch"
 _INTERNAL_PORT = 9222
 _MEMORY = "2g"
 _SHM_SIZE = "1g"
@@ -73,7 +74,7 @@ _PIDS_LIMIT = 1024
 # interception enables CDP's Fetch domain, which bot walls detect and hard-block. The port
 # is loopback-only inside the shared namespace; the script is mounted read-only into a stock
 # python image (it imports stdlib only, none of our code).
-_PROXY_CONTAINER = "odysseus-webfetch-proxy"
+_PROXY_CONTAINER_SUFFIX = "webfetch-proxy"
 _PROXY_PORT = 3128
 # Public because the agent's host browser (`services/browser/host.py`) runs the *same*
 # script as a plain subprocess: one SSRF policy, spelled out once, wherever it is enforced.
@@ -105,10 +106,17 @@ class ManagedBrowser:
         cookie_max: int = 2000,
         proxy_image: str = "python:alpine",
         runtime_pref: str | None = None,
+        container_prefix: str = "odysseus",
     ) -> None:
         self._enabled = enabled
         self._image = image
         self._proxy_image = proxy_image
+        # Both names come off the same prefix, and the proxy's `--network container:`
+        # flag is built from `self._container` rather than restated — the sidecar joins
+        # the browser's namespace, so a pair that straddled two prefixes would not be a
+        # pair at all.
+        self._container = f"{container_prefix}-{_CONTAINER_SUFFIX}"
+        self._proxy_container = f"{container_prefix}-{_PROXY_CONTAINER_SUFFIX}"
         self._proxy_up = False  # the SSRF proxy is listening — gates availability (fail-closed)
         self._startup_timeout_s = startup_timeout_s
         self._sem = asyncio.Semaphore(max(1, concurrency))
@@ -161,8 +169,8 @@ class ManagedBrowser:
         await self._disconnect()  # clears _proxy_up
         if self._runtime is not None:
             # Remove the proxy first — it shares the browser's network namespace.
-            await force_remove_container(self._runtime, _PROXY_CONTAINER)
-            await force_remove_container(self._runtime, _CONTAINER)
+            await force_remove_container(self._runtime, self._proxy_container)
+            await force_remove_container(self._runtime, self._container)
 
     @asynccontextmanager
     async def context(self, url: str | None = None) -> AsyncIterator[BrowserContext]:
@@ -241,11 +249,11 @@ class ManagedBrowser:
             if not await ensure_image(runtime, self._image):
                 logger.info("web fetch: no browser image available — web fetch unavailable")
                 return
-            await force_remove_container(runtime, _PROXY_CONTAINER)  # clear any stale pair
-            await force_remove_container(runtime, _CONTAINER)
+            await force_remove_container(runtime, self._proxy_container)  # clear any stale pair
+            await force_remove_container(runtime, self._container)
             _timed_out, code, _out, err = await run_subprocess(
                 detached_run_argv(
-                    runtime, _CONTAINER, self._flags(), self._image,
+                    runtime, self._container, self._flags(), self._image,
                     [*LAUNCH_FLAGS, *_PROXY_FLAGS],
                 ),
                 timeout_s=60.0,
@@ -255,20 +263,20 @@ class ManagedBrowser:
                     "web fetch: browser container failed to start: %s",
                     err.decode("utf-8", "replace").strip(),
                 )
-                await force_remove_container(runtime, _CONTAINER)
+                await force_remove_container(runtime, self._container)
                 return
-            host_port = await published_host_port(runtime, _CONTAINER, _INTERNAL_PORT)
+            host_port = await published_host_port(runtime, self._container, _INTERNAL_PORT)
             await await_listening(host_port, self._startup_timeout_s)
             ws_url = await discover_cdp_ws(host_port, self._startup_timeout_s)
             if ws_url is None:
                 raise SandboxError("the browser's CDP endpoint did not become available")
         except SandboxError as exc:
             logger.warning("web fetch: browser did not come up: %s", exc)
-            await force_remove_container(runtime, _CONTAINER)
+            await force_remove_container(runtime, self._container)
             return
         except Exception:
             logger.exception("web fetch: browser bring-up failed unexpectedly")
-            await force_remove_container(runtime, _CONTAINER)
+            await force_remove_container(runtime, self._container)
             return
         try:
             pw = await async_playwright().start()
@@ -278,7 +286,7 @@ class ManagedBrowser:
         except Exception:
             logger.exception("web fetch: could not connect to the browser over CDP")
             await self._disconnect()
-            await force_remove_container(runtime, _CONTAINER)
+            await force_remove_container(runtime, self._container)
             return
         self._browser_version = browser.version
         self._user_agent = self._user_agent_override or realistic_user_agent(browser.version)
@@ -287,8 +295,8 @@ class ManagedBrowser:
         if not await self._start_proxy(runtime):
             logger.warning("web fetch: SSRF proxy did not come up — web fetch unavailable")
             await self._disconnect()
-            await force_remove_container(runtime, _PROXY_CONTAINER)
-            await force_remove_container(runtime, _CONTAINER)
+            await force_remove_container(runtime, self._proxy_container)
+            await force_remove_container(runtime, self._container)
             return
         self._proxy_up = True
         logger.info("web fetch: browser ready (Chromium %s) with SSRF proxy", browser.version)
@@ -301,7 +309,7 @@ class ManagedBrowser:
             return False
         _timed_out, code, _out, err = await run_subprocess(
             detached_run_argv(
-                runtime, _PROXY_CONTAINER, self._proxy_flags(), self._proxy_image,
+                runtime, self._proxy_container, self._proxy_flags(), self._proxy_image,
                 ["python", "/proxy.py", str(_PROXY_PORT)],
             ),
             timeout_s=60.0,
@@ -313,7 +321,7 @@ class ManagedBrowser:
             )
             return False
         return await await_log_marker(
-            runtime, _PROXY_CONTAINER, b"PROXY-READY", timeout_s=self._startup_timeout_s
+            runtime, self._proxy_container, b"PROXY-READY", timeout_s=self._startup_timeout_s
         )
 
     async def _disconnect(self) -> None:
@@ -354,7 +362,7 @@ class ManagedBrowser:
         no host networking), hardened like every other container, with the SSRF script
         mounted read-only into a stock python image."""
         return [
-            "--network", f"container:{_CONTAINER}",
+            "--network", f"container:{self._container}",
             "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges",
             "--read-only",

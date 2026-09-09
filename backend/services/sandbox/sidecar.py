@@ -32,6 +32,7 @@ from .container import (
     run_subprocess,
 )
 from .egress_proxy import FORWARD_FILE, FORWARD_PORT
+from .names import ContainerNames
 
 logger = logging.getLogger(__name__)
 
@@ -52,23 +53,16 @@ _CREATE_TIMEOUT_S = 180.0
 _READY_TIMEOUT_S = 30.0
 
 
-def network_name(key: str) -> str:
-    return f"odysseus-net-{key}"
-
-
-def sidecar_name(key: str) -> str:
-    return f"odysseus-egress-{key}"
-
-
-def proxy_env(key: str) -> dict[str, str]:
+def proxy_env(names: ContainerNames, key: str) -> dict[str, str]:
     """The proxy environment every container on a workspace network is started with.
 
     Both cases, because the ecosystem is split down the middle and neither half is
     optional here: curl reads the lowercase names only, while pip, uv, npm, cargo, go and
     git read the uppercase pair. ``NO_PROXY`` keeps loopback and the sidecar itself direct
     — a client that proxied its own connection to the proxy would loop."""
-    url = f"http://{sidecar_name(key)}:{PROXY_PORT}"
-    direct = f"localhost,127.0.0.1,{sidecar_name(key)}"
+    sidecar = names.sidecar(key)
+    url = f"http://{sidecar}:{PROXY_PORT}"
+    direct = f"localhost,127.0.0.1,{sidecar}"
     return {
         "HTTP_PROXY": url,
         "HTTPS_PROXY": url,

@@ -13,6 +13,7 @@ import httpx
 import pytest
 
 import services.sandbox.manager as manager_mod
+import services.sandbox.preview_tokens as preview_tokens
 import services.sandbox.reconcile as reconcile_mod
 import services.sandbox.session as session_mod
 import services.sandbox.sidecar as sidecar_mod
@@ -529,7 +530,7 @@ async def test_the_cap_never_displaces_a_conversation_serving_a_live_preview(tmp
     manager = _manager(tmp_path, vault, max_sessions=1)
     serving = await manager.acquire("conv-a")
     serving._preview = _fake_preview("tok-live")
-    manager._previews["tok-live"] = serving.key
+    manager._preview_tokens.index("tok-live", serving.key)
 
     await manager.acquire("conv-b")
 
@@ -737,7 +738,7 @@ async def test_preview_status_is_running_while_the_preview_is_live(tmp_path):
     manager = _manager(tmp_path, vault)
     session = await manager.acquire("conv-a")
     session._preview = _fake_preview("tok-1")
-    manager._previews["tok-1"] = session.key
+    manager._preview_tokens.index("tok-1", session.key)
 
     assert manager.preview_status("tok-1") == "running"
 
@@ -751,7 +752,7 @@ async def test_idle_reap_marks_the_running_previews_token_stopped(tmp_path):
     session = await manager.acquire("conv-a")
     session.workspace.mkdir(parents=True, exist_ok=True)
     session._preview = _fake_preview("tok-1")
-    manager._previews["tok-1"] = session.key
+    manager._preview_tokens.index("tok-1", session.key)
     assert manager.preview_status("tok-1") == "running"
 
     await manager._sweep()
@@ -766,7 +767,7 @@ async def test_purge_marks_the_running_previews_token_stopped(tmp_path):
     session = await manager.acquire("conv-a")
     session.workspace.mkdir(parents=True, exist_ok=True)
     session._preview = _fake_preview("tok-1")
-    manager._previews["tok-1"] = session.key
+    manager._preview_tokens.index("tok-1", session.key)
 
     await manager.purge("conv-a")
 
@@ -779,19 +780,19 @@ async def test_stopped_tokens_are_pruned_after_their_ttl(tmp_path, monkeypatch):
     session = await manager.acquire("conv-a")
     session.workspace.mkdir(parents=True, exist_ok=True)
     session._preview = _fake_preview("tok-1")
-    manager._previews["tok-1"] = session.key
+    manager._preview_tokens.index("tok-1", session.key)
 
     await manager._sweep()
     assert manager.preview_status("tok-1") == "stopped"
 
     # Fast-forward past the tombstone's TTL, then force a prune via another mark
     # (mirrors real usage — the map is pruned lazily on the next stop/reap/purge).
-    frozen_future = time.monotonic() + manager._STOPPED_TOKEN_TTL_S + 1
+    frozen_future = time.monotonic() + preview_tokens._STOPPED_TTL_S + 1
     monkeypatch.setattr("time.monotonic", lambda: frozen_future)
     other = await manager.acquire("conv-b")
     other.workspace.mkdir(parents=True, exist_ok=True)
     other._preview = _fake_preview("tok-2")
-    manager._previews["tok-2"] = other.key
+    manager._preview_tokens.index("tok-2", other.key)
     await manager.purge("conv-b")
 
     assert manager.preview_status("tok-1") == "unknown"  # aged out

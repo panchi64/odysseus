@@ -42,6 +42,7 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
         startup_timeout_s=settings.searxng_startup_timeout_s,
         external_base_url=settings.searxng_base_url,
         runtime_pref=settings.sandbox_runtime,
+        container_prefix=settings.container_prefix,
     )
     ctx.lifecycle.on_stop("searxng", searxng.stop)
     # The web outbound client does NOT follow redirects: an unguarded redirect off
@@ -71,6 +72,7 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
         cookie_max=settings.web_fetch_cookie_max,
         proxy_image=settings.web_fetch_proxy_image,
         runtime_pref=settings.sandbox_runtime,
+        container_prefix=settings.container_prefix,
     )
     ctx.lifecycle.on_stop("browser", browser.stop)
     # Goal-aware distillation of oversized pages: a closure resolves the utility
