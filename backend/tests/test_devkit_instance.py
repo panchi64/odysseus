@@ -15,6 +15,17 @@ from devkit import ports
 from devkit.instance import DevInstance, claimed_slots, resolve
 
 
+@pytest.fixture(autouse=True)
+def _ports_are_free(monkeypatch):
+    """Take the host's own ports out of the picture.
+
+    Without this the suite's answers depend on what happens to be listening — a real dev
+    instance running on slot 0 would push every assertion here up by one, and the tests
+    would fail for the developer who had actually used the thing they test.
+    """
+    monkeypatch.setattr(ports, "is_free", lambda port: True)
+
+
 def test_the_first_instance_takes_slot_zero(tmp_path):
     instance = resolve(root=tmp_path, name="alpha")
     assert instance.slot == 0
@@ -125,6 +136,14 @@ def test_allocation_reports_the_remedy_when_every_slot_is_claimed():
     with pytest.raises(ports.NoFreeSlot) as excinfo:
         ports.allocate(set(range(ports.MAX_SLOTS)))
     assert "~/.odysseus/dev" in str(excinfo.value)
+
+
+def test_a_slot_whose_ports_are_in_use_is_skipped(monkeypatch):
+    # The other half of allocation: a slot nobody has recorded but whose ports are held
+    # by something on this host — another project's dev server, most likely.
+    busy = set(ports.slot_ports(0))
+    monkeypatch.setattr(ports, "is_free", lambda port: port not in busy)
+    assert ports.allocate(set()) == 1
 
 
 def test_seeding_is_recorded_against_a_version(tmp_path):

@@ -19,8 +19,9 @@ import json
 import sys
 from typing import Any
 
-from devkit import ports
+from devkit import launch, ports, processes
 from devkit.instance import DevInstance, resolve
+from devkit.processes import Supervisor
 
 
 def _service_states(instance: DevInstance) -> dict[str, bool]:
@@ -92,6 +93,69 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_ready(payload: dict[str, Any], outcomes: dict[str, str], *, detached: bool) -> None:
+    """The block a session reads after ``up``. Ends with the next action, spelled out —
+    knowing the state and knowing what to do about it are different things."""
+    print(f"\ndev instance '{payload['name']}' ready  (slot {payload['slot']})\n")
+    for service in ("frontend", "backend", "stub"):
+        print(f"  {service:<9} {payload['urls'][service]:<28} {outcomes.get(service, '')}")
+    print(f"  data      {payload['data_dir']}")
+    print(f"  logs      {payload['root']}/logs")
+    if payload["auth"]:
+        print(f"  password  {payload['password']}")
+    else:
+        print("  login     none — auth is off, the app opens straight up")
+    print(f"\nnext: preview_start '{launch.LAUNCH_CONFIG}'")
+    print(f"      or open {payload['urls']['frontend']}")
+    print("      ports differ per worktree — read them from `dev_instance.py status --json`")
+    print(
+        "\nrunning in the background; stop it with `dev_instance.py stop`"
+        if detached
+        else "\nCtrl-C stops the services this command started."
+    )
+
+
+def _cmd_up(args: argparse.Namespace) -> int:
+    instance = resolve(auth=args.auth or None, containers=args.with_containers or None)
+    supervisor = Supervisor()
+    try:
+        outcomes = launch.bring_up(instance, supervisor)
+    except launch.LaunchError as failure:
+        supervisor.stop_all()
+        print(f"error: {failure}", file=sys.stderr)
+        return 1
+
+    supervisor.record(instance.root)
+    payload = status_payload(instance)
+    if args.json:
+        print(json.dumps({**payload, "outcomes": outcomes, "detached": args.detach}, indent=2))
+    else:
+        _print_ready(payload, outcomes, detached=args.detach)
+
+    if args.detach:
+        # Each child has its own process group, so they outlive this command. `stop`
+        # reads the pidfile just recorded and signals those groups.
+        return 0
+    try:
+        launch.wait_for_signal()
+    finally:
+        supervisor.stop_all()
+        (instance.root / processes.PIDFILE).unlink(missing_ok=True)
+    return 0
+
+
+def _cmd_stop(args: argparse.Namespace) -> int:
+    instance = resolve()
+    stopped = processes.stop_recorded(instance.root)
+    if args.json:
+        print(json.dumps({"stopped": stopped}))
+    elif stopped:
+        print(f"stopped: {', '.join(stopped)}")
+    else:
+        print("nothing recorded as running for this worktree's instance")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dev_instance",
@@ -102,10 +166,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subcommands = parser.add_subparsers(dest="command", required=True)
 
+    up = subcommands.add_parser(
+        "up",
+        help="bring the instance up (safe to run twice — it fills in what is missing)",
+    )
+    up.add_argument(
+        "--detach",
+        action="store_true",
+        help="return once everything is up, leaving it running; stop it with `stop`",
+    )
+    up.add_argument(
+        "--auth",
+        action="store_true",
+        help="put the real login screen in front of the app (off by default)",
+    )
+    up.add_argument(
+        "--with-containers",
+        action="store_true",
+        help="also run the sandbox, SearXNG and web-fetch containers",
+    )
+    up.set_defaults(handler=_cmd_up)
+
     status = subcommands.add_parser(
         "status", help="what this worktree's instance is and whether it is running"
     )
     status.set_defaults(handler=_cmd_status)
+
+    stop = subcommands.add_parser("stop", help="stop the services a previous `up` started")
+    stop.set_defaults(handler=_cmd_stop)
 
     for sub in subcommands.choices.values():
         sub.add_argument(
