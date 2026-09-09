@@ -29,6 +29,13 @@ class Scenario:
     match: str | None = None
     text: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
+    #: Whether this reply is for a request that offered tools. ``None`` — the default —
+    #: does not care. It exists because the prompt alone does not identify a request:
+    #: the agent's turn and the utility calls beside it (the auto-title, a compaction)
+    #: carry the same last user message and are told apart only by this. A scenario with
+    #: ``tool_calls`` requires it whatever this says, since a model cannot call a tool
+    #: that was not offered.
+    needs_tools: bool | None = None
     #: Seconds to stall before replying — for watching a spinner, or tripping a timeout.
     latency_s: float = 0.0
     #: An HTTP status to fail with instead of replying. The error paths are as much a
@@ -75,9 +82,24 @@ class ScriptBook:
     def pending(self) -> int:
         return len(self._scenarios)
 
-    def next_for(self, prompt: str) -> Scenario:
-        """The first unconsumed scenario matching this prompt, else the default reply."""
+    def next_for(self, prompt: str, *, has_tools: bool = True) -> Scenario:
+        """The first unconsumed scenario matching this request, else the default reply.
+
+        ``has_tools`` is not a refinement of the match — it is what makes matching by
+        prompt work at all. One user message produces several requests: the chat turn
+        that offers the agent's tools, and the utility calls beside it (the auto-title,
+        a compaction) that offer none and carry the very same last user message. Without
+        this a scripted tool call is handed to the titler, consumed there, and the turn
+        it was written for answers in plain text — which looks like the agent deciding
+        not to call the tool, and is the most misleading failure this stub can produce.
+
+        Requiring tools of a tool-call scenario is also just true: a model cannot call a
+        tool that was not offered to it.
+        """
         for scenario in self._scenarios:
+            wants = True if scenario.tool_calls else scenario.needs_tools
+            if wants is not None and wants != has_tools:
+                continue
             if scenario.match is None or scenario.match.lower() in prompt.lower():
                 if scenario.uses is not None:
                     scenario.uses -= 1

@@ -22,6 +22,7 @@ from typing import Any
 from devkit import launch, ports, processes
 from devkit.instance import DevInstance, resolve
 from devkit.processes import Supervisor
+from services.workspace_reset import reset_workspace
 
 
 def _service_states(instance: DevInstance) -> dict[str, bool]:
@@ -99,6 +100,7 @@ def _print_ready(payload: dict[str, Any], outcomes: dict[str, str], *, detached:
     print(f"\ndev instance '{payload['name']}' ready  (slot {payload['slot']})\n")
     for service in ("frontend", "backend", "stub"):
         print(f"  {service:<9} {payload['urls'][service]:<28} {outcomes.get(service, '')}")
+    print(f"  seed      {outcomes.get('seed', '')}")
     print(f"  data      {payload['data_dir']}")
     print(f"  logs      {payload['root']}/logs")
     if payload["auth"]:
@@ -119,7 +121,7 @@ def _cmd_up(args: argparse.Namespace) -> int:
     instance = resolve(auth=args.auth or None, containers=args.with_containers or None)
     supervisor = Supervisor()
     try:
-        outcomes = launch.bring_up(instance, supervisor)
+        instance, outcomes = launch.bring_up(instance, supervisor, reseed=args.reseed)
     except launch.LaunchError as failure:
         supervisor.stop_all()
         print(f"error: {failure}", file=sys.stderr)
@@ -141,6 +143,50 @@ def _cmd_up(args: argparse.Namespace) -> int:
     finally:
         supervisor.stop_all()
         (instance.root / processes.PIDFILE).unlink(missing_ok=True)
+    return 0
+
+
+def _cmd_seed(args: argparse.Namespace) -> int:
+    instance = resolve()
+    if not launch.backend_healthy(instance):
+        print(
+            "error: the backend is not running — start it with "
+            "`uv run python dev_instance.py up`",
+            file=sys.stderr,
+        )
+        return 1
+    instance, summary = launch.ensure_seeded(instance, force=args.force)
+    print(json.dumps({"seed": summary}) if args.json else summary)
+    return 0
+
+
+def _cmd_reset(args: argparse.Namespace) -> int:
+    instance = resolve()
+    if not args.yes:
+        print(
+            f"this deletes everything under {instance.data_dir}.\n"
+            "re-run with --yes to confirm.",
+            file=sys.stderr,
+        )
+        return 1
+    processes.stop_recorded(instance.root)
+    summary = reset_workspace(instance.data_dir)
+    # `reset_workspace` deliberately preserves the live database — it is written for a
+    # running app that holds the file open. Nothing holds it now, and leaving it would
+    # keep every seeded row behind the key that was just deleted.
+    removed = list(summary.removed)
+    for leftover in instance.data_dir.glob("app.db*"):
+        leftover.unlink(missing_ok=True)
+        removed.append(leftover.name)
+    instance.with_seeded("").save()
+    payload = {"removed": removed, "failed": summary.failed, "bytes_freed": summary.bytes_freed}
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"removed {len(removed)} entries from {instance.data_dir}")
+        if summary.failed:
+            print(f"could not remove: {', '.join(summary.failed)}")
+        print("next: uv run python dev_instance.py up   (it will re-seed)")
     return 0
 
 
@@ -185,6 +231,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also run the sandbox, SearXNG and web-fetch containers",
     )
+    up.add_argument(
+        "--reseed",
+        action="store_true",
+        help="re-run the fixtures even if the pack has not changed",
+    )
     up.set_defaults(handler=_cmd_up)
 
     status = subcommands.add_parser(
@@ -194,6 +245,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     stop = subcommands.add_parser("stop", help="stop the services a previous `up` started")
     stop.set_defaults(handler=_cmd_stop)
+
+    seed = subcommands.add_parser(
+        "seed", help="run the fixture pack against the running instance"
+    )
+    seed.add_argument(
+        "--force", action="store_true", help="re-run even if the pack has not changed"
+    )
+    seed.set_defaults(handler=_cmd_seed)
+
+    reset = subcommands.add_parser(
+        "reset", help="wipe this instance's workspace so the next `up` starts clean"
+    )
+    reset.add_argument("--yes", action="store_true", help="confirm the deletion")
+    reset.set_defaults(handler=_cmd_reset)
 
     for sub in subcommands.choices.values():
         sub.add_argument(

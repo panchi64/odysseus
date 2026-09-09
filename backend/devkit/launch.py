@@ -164,7 +164,29 @@ def _warm_frontend(instance: DevInstance) -> None:
             reply.read()
 
 
-def bring_up(instance: DevInstance, supervisor: Supervisor) -> dict[str, str]:
+def ensure_seeded(instance: DevInstance, *, force: bool = False) -> tuple[DevInstance, str]:
+    """Seed the workspace if the fixture pack has changed since it last was.
+
+    Data otherwise persists, which is the point: a scenario built up in one session is
+    still there in the next. What must not persist is a workspace shaped by a *previous*
+    fixture pack or a previous schema — that disagrees with the code silently, and gets
+    debugged as a ghost. The version is derived from the fixture sources and the
+    migration set, so both cases move it without anyone deciding to.
+    """
+    from devkit import seeding
+
+    version = seeding.version()
+    if instance.seeded == version and not force:
+        return instance, f"already at {version}"
+    summaries = seeding.seed(instance)
+    seeded = instance.with_seeded(version)
+    seeded.save()
+    return seeded, f"seeded {version} — " + "; ".join(summaries)
+
+
+def bring_up(
+    instance: DevInstance, supervisor: Supervisor, *, reseed: bool = False
+) -> tuple[DevInstance, dict[str, str]]:
     """Converge on a running instance, and report what each service did."""
     for directory in (instance.data_dir, instance.worktrees_dir, instance.logs_dir):
         directory.mkdir(parents=True, exist_ok=True)
@@ -172,11 +194,13 @@ def bring_up(instance: DevInstance, supervisor: Supervisor) -> dict[str, str]:
         "stub": ensure_stub(instance, supervisor),
         "backend": ensure_backend(instance, supervisor),
     }
+    # Before the frontend, so the first page a session opens is already populated.
+    instance, outcomes["seed"] = ensure_seeded(instance, force=reseed)
     outcomes["frontend"] = ensure_frontend(instance, supervisor)
     # Written on every run rather than only the first: it carries the instance's ports,
     # and a stale one would point `preview_start` at another worktree's instance.
     surfaces.write_all(instance)
-    return outcomes
+    return instance, outcomes
 
 
 def wait_for_signal() -> None:

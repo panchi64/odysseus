@@ -45,6 +45,7 @@ class ScenarioIn(BaseModel):
     match: str | None = None
     text: str = ""
     tool_calls: list[ToolCallIn] = []
+    needs_tools: bool | None = None
     latency_s: float = 0.0
     status: int = 200
     error: str = "scripted failure"
@@ -55,6 +56,7 @@ class ScenarioIn(BaseModel):
             match=self.match,
             text=self.text,
             tool_calls=[ToolCall(c.name, c.arguments, c.id) for c in self.tool_calls],
+            needs_tools=self.needs_tools,
             latency_s=self.latency_s,
             status=self.status,
             error=self.error,
@@ -82,7 +84,10 @@ def create_stub() -> FastAPI:
     @app.post("/v1/chat/completions")
     async def chat_completions(body: dict[str, Any]):
         book.requests.append(body)
-        scenario = book.next_for(last_user_prompt(body.get("messages") or []))
+        scenario = book.next_for(
+            last_user_prompt(body.get("messages") or []),
+            has_tools=bool(body.get("tools")),
+        )
         if scenario.latency_s:
             await asyncio.sleep(scenario.latency_s)
         if scenario.status >= 400:

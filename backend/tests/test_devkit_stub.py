@@ -28,6 +28,16 @@ def stub():
     yield AsyncOpenAI(base_url="http://stub/v1", api_key="unused", http_client=http), http
 
 
+#: Offered on every request that expects a tool call back. A scripted tool call is only
+#: delivered to a request that offered tools — see the guard test below — and passing
+#: them is what the agent does anyway, so the tests that want one say so.
+def _offer(*names: str) -> list[dict]:
+    return [
+        {"type": "function", "function": {"name": name, "parameters": {"type": "object"}}}
+        for name in names
+    ]
+
+
 async def _script(http: httpx.AsyncClient, *scenarios: dict) -> None:
     response = await http.post("/_stub/script", json=list(scenarios))
     assert response.status_code == 200
@@ -95,7 +105,9 @@ async def test_a_scripted_tool_call_arrives_as_a_real_tool_call(stub):
         },
     )
     answer = await client.chat.completions.create(
-        model=MODEL_ID, messages=[{"role": "user", "content": "add two numbers"}]
+        model=MODEL_ID,
+        messages=[{"role": "user", "content": "add two numbers"}],
+        tools=_offer("calculator"),
     )
     calls = answer.choices[0].message.tool_calls
     assert answer.choices[0].finish_reason == "tool_calls"
@@ -113,6 +125,7 @@ async def test_tool_call_arguments_survive_being_split_across_deltas(stub):
     stream = await client.chat.completions.create(
         model=MODEL_ID,
         messages=[{"role": "user", "content": "search for it"}],
+        tools=_offer("web"),
         stream=True,
     )
     fragments, name = "", ""
@@ -122,6 +135,31 @@ async def test_tool_call_arguments_survive_being_split_across_deltas(stub):
             fragments += (call.function.arguments if call.function else "") or ""
     assert name == "web"
     assert fragments == arguments
+
+
+async def test_a_tool_call_is_never_handed_to_a_request_that_offered_no_tools(stub):
+    # The failure this prevents: one user message produces several requests — the chat
+    # turn that offers tools, and the auto-title beside it that offers none and carries
+    # the same last user message. Without the guard the titler consumes the scripted
+    # tool call, and the turn it was written for answers in plain text, which reads as
+    # the agent deciding not to call the tool.
+    client, http = stub
+    await _script(
+        http,
+        {"match": "clock", "tool_calls": [{"name": "builtin_now", "arguments": "{}"}], "uses": 1},
+        {"match": "clock", "text": "It is late."},
+    )
+    messages = [{"role": "user", "content": "check the clock"}]
+
+    titler = await client.chat.completions.create(model=MODEL_ID, messages=messages)
+    assert titler.choices[0].message.tool_calls is None
+
+    turn = await client.chat.completions.create(
+        model=MODEL_ID,
+        messages=messages,
+        tools=_offer("builtin_now"),
+    )
+    assert turn.choices[0].message.tool_calls is not None
 
 
 async def test_a_scripted_failure_reaches_the_client_as_an_error(stub):
@@ -144,9 +182,10 @@ async def test_a_counted_scenario_is_consumed_so_a_two_step_exchange_can_be_scri
         {"match": "task", "text": "Done."},
     )
     messages = [{"role": "user", "content": "do the task"}]
-    first = await client.chat.completions.create(model=MODEL_ID, messages=messages)
+    tools = _offer("step_one")
+    first = await client.chat.completions.create(model=MODEL_ID, messages=messages, tools=tools)
     assert first.choices[0].message.tool_calls is not None
-    second = await client.chat.completions.create(model=MODEL_ID, messages=messages)
+    second = await client.chat.completions.create(model=MODEL_ID, messages=messages, tools=tools)
     assert second.choices[0].message.content == "Done."
 
 
@@ -155,12 +194,7 @@ async def test_it_records_what_the_agent_actually_sent(stub):
     await client.chat.completions.create(
         model=MODEL_ID,
         messages=[{"role": "user", "content": "hi"}],
-        tools=[
-            {
-                "type": "function",
-                "function": {"name": "calculator", "parameters": {"type": "object"}},
-            }
-        ],
+        tools=_offer("calculator"),
     )
     recorded = (await http.get("/_stub/requests")).json()
     assert recorded["count"] == 1
