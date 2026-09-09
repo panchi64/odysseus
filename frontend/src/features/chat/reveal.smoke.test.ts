@@ -136,3 +136,102 @@ test("a streamed answer leaves no reveal wrappers behind", async () => {
     wv.close();
   }
 }, 180_000);
+
+test("no character loses its wrapper while its fade is still running", async () => {
+  const wv = new Bun.WebView({ headless: true });
+  try {
+    // A realistic rate, and that is the whole point of this test. The frame-per-chunk
+    // driver runs ~3600 c/s, which pins the scheduler's `interval` at its floor and
+    // collapses the reveal into a few frames — the regime below never happens, and the
+    // bug this guards was invisible at that speed.
+    await wv.navigate(`${ORIGIN}/bench?mode=streamed&n=1&cps=300`);
+    await waitFor(
+      "the bench to mount",
+      async () => Boolean(await wv.evaluate("Boolean(window.__bench)")),
+      30_000,
+    );
+
+    // Sample every frame from inside the page: how many wrappers exist, and how many of
+    // them are still mid-fade. `document.getAnimations()` is the only thing that can
+    // answer the second question — a wrapper that has been removed and one that has
+    // finished look identical in the DOM.
+    const raw = String(
+      await wv.evaluate(`(async () => {
+        const log = [];
+        let zero = 0;
+        await new Promise((res) => {
+          const t0 = performance.now();
+          const tick = () => {
+            const spans = document.querySelectorAll('.ody-token-in').length;
+            const prose = document.querySelector('.ody-prose');
+            const chars = prose ? prose.textContent.length : 0;
+            let running = 0;
+            for (const a of document.getAnimations()) {
+              const el = a.effect && a.effect.target;
+              if (!el || !el.classList || !el.classList.contains('ody-token-in')) continue;
+              const d = a.effect.getTiming().duration || 320;
+              const ct = typeof a.currentTime === 'number' ? a.currentTime : 0;
+              if (a.playState !== 'finished' && ct / d < 1) running++;
+            }
+            log.push({ spans, running, chars });
+            zero = spans === 0 ? zero + 1 : 0;
+            if ((zero > 30 && log.length > 120) || performance.now() - t0 > 30000) { res(); return; }
+            requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+        });
+        // A wrapper may only disappear once its fade is over, so a big drop in the
+        // wrapper count while characters are still fading is the snap this guards. Two
+        // qualifiers, both load-bearing:
+        //
+        // The tolerance separates things orders of magnitude apart — a couple of
+        // characters finishing between frames and being written back as plain text is
+        // ordinary churn (observed: 1-2), where the bug collapsed 74 wrappers to 1 in a
+        // single frame with every one at opacity 0.
+        //
+        // A frame where the rendered prose got SHORTER is exempt, and that is a real
+        // rule rather than a let-off. It means markdown finished a construct that took
+        // characters out of the animatable space — most often a table, whose separator
+        // row renders as nothing and whose cells are machine voice that animatableText
+        // rejects outright. Those characters are supposed to stop fading and land hard
+        // (section 8); Markdown has already rebuilt the block by then, so the wrappers
+        // are gone before the reveal is even consulted.
+        const cuts = [];
+        for (let i = 1; i < log.length; i++)
+          if (
+            log[i - 1].running > 0 &&
+            log[i - 1].spans - log[i].spans > 10 &&
+            log[i].chars >= log[i - 1].chars
+          )
+            cuts.push({
+              wasMidFade: log[i - 1].running,
+              lost: log[i - 1].spans - log[i].spans,
+            });
+        return JSON.stringify({
+          frames: log.length,
+          peak: Math.max(...log.map((s) => s.spans)),
+          framesMidFade: log.filter((s) => s.running > 0).length,
+          cuts,
+        });
+      })()`),
+    );
+    const result = JSON.parse(raw) as {
+      frames: number;
+      peak: number;
+      framesMidFade: number;
+      cuts: { wasMidFade: number; lost: number }[];
+    };
+
+    // Without these the assertion below passes on a reveal that never animated at all.
+    expect(result.peak).toBeGreaterThan(50);
+    expect(result.framesMidFade).toBeGreaterThan(30);
+    // And an upper bound, because the failure in the other direction is silent: wrapping
+    // a block that still holds wrappers puts a span inside each existing one and doubles
+    // the count every delta. The reveal window at this rate holds a couple of hundred
+    // characters (observed peak ~190); nesting took it past a thousand.
+    expect(result.peak).toBeLessThan(500);
+    expect(result.cuts).toEqual([]);
+  } finally {
+    wv.close();
+  }
+}, 180_000);

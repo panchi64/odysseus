@@ -7,9 +7,7 @@ import {
   nextInterval,
   paceReveal,
   revealDelay,
-  settledUnits,
   startedCount,
-  unitBases,
 } from "./streamReveal";
 
 /** Replays a stream at a fixed rate through the real scheduler and returns the
@@ -229,42 +227,5 @@ describe("startedCount / firstLiveIndex", () => {
         pending === -1 ? schedule.length : pending,
       );
     }
-  });
-});
-
-describe("unwrapping settled blocks", () => {
-  test("unitBases accumulates, and an empty block does not move the next one", () => {
-    expect(unitBases([10, 0, 5])).toEqual([0, 10, 10]);
-  });
-
-  // The fixture fights the rule on purpose. Block 1 ENDS exactly at the reveal
-  // front, block 2 has one unfinished character, and block 3 is the trailing one
-  // and fully settled — so a rule that used `<` instead of `<=`, one that let a
-  // partially settled block through, or one that forgot to hold back the trailing
-  // block each fail on a different row.
-  const counts = [4, 6, 5, 3];
-
-  test("lists a block whose last character has finished, boundary included", () => {
-    expect(settledUnits(counts, 10)).toEqual([0, 1]);
-  });
-
-  test("holds back a block with one character still resolving", () => {
-    expect(settledUnits(counts, 14)).toEqual([0, 1]);
-    expect(settledUnits(counts, 15)).toEqual([0, 1, 2]);
-  });
-
-  test("never lists the trailing block, even fully settled", () => {
-    const total = counts.reduce((a, b) => a + b, 0);
-    expect(settledUnits(counts, total)).toEqual([0, 1, 2]);
-  });
-
-  test("lists nothing while the front is still inside the first block", () => {
-    expect(settledUnits(counts, 0)).toEqual([]);
-    expect(settledUnits(counts, 3)).toEqual([]);
-  });
-
-  test("a lone block is the trailing block and is never listed", () => {
-    expect(settledUnits([12], 12)).toEqual([]);
-    expect(settledUnits([], 0)).toEqual([]);
   });
 });

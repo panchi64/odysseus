@@ -41,6 +41,7 @@ import type { ChatMessage, TextBlock } from "~/features/chat/model";
  *   &n=40          turn pairs
  *   &cv=1          content-visibility on every turn but the last two
  *   &auto=1        run `compare()` as soon as the page is actually on screen
+ *   &cps=300       characters per second the timed driver streams at
  *   &led=0         kill the rail LED's four-layer glow
  *   &legibility=0  drop `text-rendering: optimizeLegibility`
  *
@@ -228,10 +229,20 @@ function measureRefresh(ms = 400): Promise<number> {
   });
 }
 
-/** One frame's worth of an answer. Fast enough that a 40-turn fixture streams in a few
- *  seconds, slow enough that the reveal window is genuinely populated per frame — a
- *  chunk larger than the window would step past the effect being exercised. */
+/** One frame's worth of an answer when the driver is stepped rather than timed —
+ *  `pump()`, which has no clock to pace against. */
 const CHUNK = 60;
+
+/** Characters per second the timed driver plays an answer at, and the reason `&cps`
+ *  exists at all.
+ *
+ *  The reveal paces its stagger against the OBSERVED gap between deltas, so the rate the
+ *  fixture streams at is not cosmetic — it selects which regime the scheduler is in. A
+ *  frame-per-chunk driver runs at roughly 3600 c/s, an order of magnitude faster than any
+ *  real model, which pins `interval` at its floor and collapses the whole reveal into a
+ *  few frames. Anything about how the fade *looks* has to be reproduced near a real rate
+ *  or it is not being reproduced at all. */
+const DEFAULT_CPS = 300;
 
 export default function Bench(): JSX.Element {
   if (!import.meta.env.DEV) return <div>bench is dev-only</div>;
@@ -247,6 +258,10 @@ export default function Bench(): JSX.Element {
   const [cv, setCv] = createSignal(flag(params, "cv", false));
   const led = flag(params, "led", true);
   const legibility = flag(params, "legibility", true);
+  const cps = Math.max(
+    10,
+    Math.min(20_000, Number(params.get("cps") ?? DEFAULT_CPS)),
+  );
 
   const seed = Array.from({ length: n }, (_, i) => makeTurn(i)).flat();
   // A store, like the real stream, so a delta patches one message in place rather than
@@ -284,12 +299,12 @@ export default function Bench(): JSX.Element {
   // whole fixture has been played.
   let turn = 1; // index of the first assistant message
   let cursor = 0;
-  const step = (): boolean => {
+  const step = (chars = CHUNK): boolean => {
     if (turn >= messages.length) {
       setReady(true);
       return false;
     }
-    cursor = Math.min(PROSE.length, cursor + CHUNK);
+    cursor = Math.min(PROSE.length, cursor + chars);
     const at = turn;
     const done = cursor >= PROSE.length;
     setMessages(
@@ -315,12 +330,23 @@ export default function Bench(): JSX.Element {
     });
 
     if (!streamed) return;
-    // A frame per chunk while the page is visible, which is what makes the fixture
-    // behave like a real stream. It is deliberately NOT the only way to drive it:
-    // `requestAnimationFrame` does not fire in a hidden page, and a headless smoke test
-    // is exactly that — `__bench.pump()` plays the same steps on microtasks instead.
-    let raf = requestAnimationFrame(function frame() {
-      raf = step() ? requestAnimationFrame(frame) : 0;
+    // Paced against the clock, not the frame, so the fixture streams at a rate a model
+    // could plausibly produce — see `DEFAULT_CPS`. It is deliberately NOT the only way to
+    // drive it: `requestAnimationFrame` does not fire in a hidden page, and
+    // `__bench.pump()` plays the same steps on microtasks for a caller that has no
+    // frames to wait on.
+    let owed = 0;
+    let last = performance.now();
+    let raf = requestAnimationFrame(function frame(now) {
+      owed += ((now - last) / 1000) * cps;
+      last = now;
+      let more = true;
+      while (owed >= 1 && more) {
+        const took = Math.min(CHUNK, Math.floor(owed));
+        more = step(took);
+        owed -= took;
+      }
+      raf = more ? requestAnimationFrame(frame) : 0;
     });
     onCleanup(() => cancelAnimationFrame(raf));
   });

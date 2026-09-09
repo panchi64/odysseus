@@ -6,8 +6,13 @@ import {
   type JSX,
 } from "solid-js";
 import { Caret, Markdown } from "~/ui";
-import { INTERVAL_SEED, REVEAL_MS, nextInterval } from "../streamReveal";
-import { applyReveal, unwrapAll } from "./answerReveal";
+import { INTERVAL_SEED, nextInterval } from "../streamReveal";
+import {
+  applyReveal,
+  createRevealState,
+  revealEndsAt,
+  unwrapAll,
+} from "./answerReveal";
 
 /** Slack past the last character's `REVEAL_MS` before the terminal flush unwraps it —
  *  two frames at 60Hz, enough that the fade is over on any display rather than merely
@@ -53,10 +58,10 @@ export function AnswerText(props: {
   });
 
   let host: HTMLDivElement | undefined;
-  // Absolute start time per animatable character. Empty until the passage goes
-  // live; a message that arrives complete (history, a settled turn) never
-  // schedules anything and so renders without animating.
-  let starts: number[] = [];
+  // The reveal's carry-over between deltas — which block is being wrapped, that block's
+  // schedule, and when each earlier block's wrappers may come out. A message that
+  // arrives complete (history, a settled turn) never runs a pass and so never animates.
+  const reveal = createRevealState();
   // Running estimate of the gap between deltas, which is what the stagger is
   // paced against — see `streamReveal.ts`. Seeded rather than measured from the
   // first delta, since there is nothing to measure against yet.
@@ -82,26 +87,20 @@ export function AnswerText(props: {
     // stream closes, and bailing here made them the one part of the answer that
     // appeared without resolving — a pop right at the end of an otherwise smooth
     // reveal.
-    if (!host || (!live() && starts.length === 0)) return;
+    if (!host || (!live() && !reveal.seeded)) return;
     // Let Markdown commit its own DOM for this delta first.
     queueMicrotask(() => {
       if (!host) return;
       const now = performance.now();
-      // Attaching to a passage that already has text (a resumed stream): treat
-      // what is on screen as settled rather than animating the whole thing in.
-      if (starts.length === 0) {
-        const existing = host.textContent?.length ?? 0;
-        starts = Array.from({ length: existing }, () => now - REVEAL_MS);
-      }
       if (lastDelta) interval = nextInterval(interval, now - lastDelta);
       lastDelta = now;
-      starts = applyReveal(host, starts, now, interval);
+      applyReveal(host, reveal, now, interval);
 
       // Arm the flush for just after the last scheduled character finishes. A frame of
-      // slack past `REVEAL_MS` rather than exactly on it: unwrapping is what ends the
-      // fade visually, and ending it a frame early is a visible snap.
+      // slack past that rather than exactly on it: unwrapping is what ends the fade
+      // visually, and ending it a frame early is a visible snap.
       if (flush !== null) clearTimeout(flush);
-      const end = starts.length ? starts[starts.length - 1] + REVEAL_MS : now;
+      const end = revealEndsAt(reveal) || now;
       flush = setTimeout(
         () => {
           flush = null;

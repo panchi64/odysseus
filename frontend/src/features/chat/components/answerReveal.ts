@@ -3,22 +3,36 @@
  * wrappers back out once they have.
  *
  * The scheduling math lives in `streamReveal.ts` and is pure; this is the part that
- * touches nodes. Two rules shape all of it:
+ * touches nodes. Three rules shape all of it.
  *
- * **Only the trailing block is ever wrapped.** `Markdown streamStable` re-renders the
- * block the delta landed in and leaves every earlier block's DOM alone, so walking the
- * whole answer per delta was O(answer) work for a bounded result — and worse, it
- * re-entered blocks that already held wrappers and nested a second span inside each one.
- * The walk is scoped to the last `[data-block-index]`, and a character's absolute index
- * is `base + local`, so `streamReveal`'s absolute-time schedule is untouched.
+ * **Only the blocks inside the reveal window are touched.** Walking the whole answer per
+ * delta was O(answer) work per token for a bounded result, and it re-entered blocks that
+ * had long since settled and nested a second span inside each existing one. A block
+ * enters `schedules` when it starts being wrapped and leaves as soon as its last fade is
+ * over, so the per-delta cost is set by the window rather than by the length of the
+ * answer — but a block still in that window IS re-wrapped, because `Markdown` rebuilds it
+ * out from under its wrappers on the delta that ends it. See `applyReveal`.
  *
- * **A settled block gets its wrappers taken back out.** Nothing did this before, so every
- * character that passed through the reveal window kept its span, its inline
- * `animation-delay`, and its filled animation for the life of the session. A finished
- * fade is invisible; the span it left behind is not — it is a permanent element in the
- * transcript, and one-character spans break text shaping into one-character runs, which
- * is paid again on every repaint of a scrolling transcript. Unwrapping is guarded on the
- * whole block having finished, so it can never cut a fade short.
+ * **The schedule is LOCAL to that block, and this is load-bearing.** An earlier version
+ * indexed one schedule across the whole answer (`base + local`, with each earlier block's
+ * character count cached). That is wrong, because the animatable character space is not
+ * stable: `animatableText` rejects machine-voice subtrees, so a fenced code block that
+ * lexes as a paragraph while its closing fence is still missing counts N characters and
+ * then counts ZERO the moment it becomes a `<pre>`. Every later character's index shifts
+ * down by N, lands on schedule entries whose fades finished long ago, and `revealDelay`
+ * returns `null` — which renders them as bare text with no wrapper and no animation. The
+ * measured symptom was 73 characters sitting at opacity 0 vanishing in a single frame,
+ * the answer snapping into place instead of resolving. Indexing within the block removes
+ * the failure rather than compensating for it: nothing an earlier block does can move a
+ * later block's indices, because they no longer share a space.
+ *
+ * **Every wrapper is taken back out.** Nothing did this originally, so every character
+ * that passed through the reveal window kept its span, its inline `animation-delay` and
+ * its filled animation for the life of the session — ~280 per answer, permanently. A
+ * finished fade is invisible; the span it left behind is not, and a one-character span is
+ * a one-character text-shaping run, paid again on every repaint of a scrolling
+ * transcript. A block is unwrapped only once its last character's fade is over, so
+ * unwrapping can never cut one short.
  */
 
 import {
@@ -26,8 +40,6 @@ import {
   extendSchedule,
   firstLiveIndex,
   revealDelay,
-  settledUnits,
-  unitBases,
 } from "../streamReveal";
 
 /** Subtrees the fade must not enter, because their contents are the machine's
@@ -54,22 +66,28 @@ const MACHINE_VOICE =
 
 const SPAN_CLASS = "ody-token-in";
 
-/** Animatable character counts for blocks that are no longer the trailing one, keyed by
- *  the element itself.
- *
- *  Keyed by identity rather than by index on purpose: `Markdown`'s `<For>` iterates raw
- *  block sources, so a block whose source changed is a *different element*, and a stale
- *  count can never be read back for it. A block whose source did not change keeps its
- *  node and its count, which is what makes the per-delta cost proportional to the number
- *  of blocks rather than to the length of the answer. */
-const settledCounts = new WeakMap<Element, number>();
+/** The reveal's carry-over between deltas. One per `AnswerText`. */
+export interface RevealState {
+  /** One schedule per block, by `data-block-index`, each in that block's OWN character
+   *  space. A block is entered here when it starts being wrapped and removed once its
+   *  last fade is over, so the map holds only the blocks inside the reveal window —
+   *  usually one, never more than the window can span. */
+  schedules: Map<number, number[]>;
+  /** Whether a pass has run. The first one treats whatever is already on screen as
+   *  settled, so attaching to a turn already under way doesn't animate the whole answer
+   *  back in from the beginning. */
+  seeded: boolean;
+}
+
+export function createRevealState(): RevealState {
+  return { schedules: new Map(), seeded: false };
+}
 
 /** Every animatable text node under `root`, in document order, with the character index
  *  each one starts at *within `root`*. Machine-voice subtrees are rejected outright, so
- *  their characters are neither wrapped nor counted — the index space is *animatable*
- *  characters, which is what keeps it stable between passes, and it is what makes a code
- *  block land hard inside an answer that is easing in around it. Collected before any
- *  mutation, since splitting a node mid-walk would invalidate the walker. */
+ *  their characters are neither wrapped nor counted — which is what makes a code block
+ *  land hard inside an answer easing in around it. Collected before any mutation, since
+ *  splitting a node mid-walk would invalidate the walker. */
 function animatableText(root: HTMLElement): {
   nodes: { node: Text; base: number }[];
   count: number;
@@ -114,8 +132,8 @@ function revealSpan(char: string, delay: number): HTMLSpanElement {
 
 /**
  * The units the answer is walked in: `Markdown streamStable`'s top-level blocks, or the
- * host itself when there are none (the default render path, or an answer so short it has
- * yet to produce a block wrapper).
+ * host itself when there are none (the default render path, or an answer too short to
+ * have produced a block wrapper yet).
  *
  * A plain descendant query rather than a child combinator because `Markdown` puts its
  * blocks inside its own `.ody-prose` element, and an answer never nests a second
@@ -124,6 +142,13 @@ function revealSpan(char: string, delay: number): HTMLSpanElement {
 function revealUnits(host: HTMLElement): HTMLElement[] {
   const blocks = host.querySelectorAll<HTMLElement>("[data-block-index]");
   return blocks.length ? Array.from(blocks) : [host];
+}
+
+/** A block's own index, which survives the re-render its element does not. Falls back to
+ *  document order for the `[host]` case, which has no attribute and only one unit. */
+function unitIndex(unit: HTMLElement, position: number): number {
+  const raw = unit.dataset.blockIndex;
+  return raw === undefined ? position : Number(raw);
 }
 
 /** Put every wrapper in `unit` back as plain text and re-join the runs it split.
@@ -138,87 +163,123 @@ export function unwrapReveal(unit: HTMLElement): void {
   unit.normalize();
 }
 
-/** Unwrap every block, settled or not — the terminal flush, run once the last character's
- *  fade is over and no more text is coming. */
+/** Unwrap every block — the terminal flush, run once the last fade is over and no more
+ *  text is coming. The tail block never stops being the tail on its own, so without this
+ *  every answer would keep its final block's wrappers for good. */
 export function unwrapAll(host: HTMLElement): void {
   revealUnits(host).forEach(unwrapReveal);
 }
 
+/** When the last character scheduled anywhere finishes resolving, or 0 when nothing is
+ *  pending — what the terminal flush is armed against. */
+export function revealEndsAt(state: RevealState): number {
+  let end = 0;
+  for (const starts of state.schedules.values())
+    if (starts.length)
+      end = Math.max(end, starts[starts.length - 1] + REVEAL_MS);
+  return end;
+}
+
+/** When every character in `starts` has finished resolving. */
+function settled(starts: number[], now: number): boolean {
+  return !starts.length || now >= starts[starts.length - 1] + REVEAL_MS;
+}
+
 /**
- * Apply `starts` to the answer's DOM: every character of the trailing block still inside
- * its reveal window becomes a span carrying its own delay, every settled block gives its
- * spans back, and everything else is left alone. Extends the schedule to cover any
- * newly-arrived characters and returns it.
+ * Wrap every block that still has a fade in flight, and give back the wrappers of any
+ * block whose fade is over. Mutates `state`.
  *
- * Rebuilding the trailing block's wrappers wholesale on each delta is deliberate — its
- * DOM is new anyway, and re-deriving each character's delay from its *absolute* start is
- * exactly what lets a fade continue across that rebuild rather than restarting.
+ * **A block behind the tail is re-wrapped, not just left alone, and that is the whole
+ * reason this loops.** `Markdown` re-renders a block whenever its source string changes,
+ * which includes the delta that ends it — the paragraph gains the blank line that closes
+ * it as the next block opens. That rebuild destroys the wrappers of every character in it
+ * that is still fading, and a rule of "only the tail is wrapped" never puts them back:
+ * measured, ~90 characters at partial opacity snapping to full at each block boundary.
+ * The loop is bounded by the reveal window rather than by the length of the answer,
+ * because a block leaves `schedules` as soon as its last character has settled.
+ *
+ * Rebuilding a block's wrappers wholesale is deliberate — its DOM is new anyway, and
+ * re-deriving each character's delay from its *absolute start time* is exactly what lets
+ * a fade continue across the rebuild rather than restarting.
  */
 export function applyReveal(
   host: HTMLElement,
-  starts: number[],
+  state: RevealState,
   now: number,
   interval: number,
-): number[] {
+): void {
   const units = revealUnits(host);
   const last = units.length - 1;
-  // Walked ONCE, and the result is carried to `wrapUnit` rather than re-derived there.
-  // This is the only unit that changes between deltas, so it is the only one whose walk
-  // cannot be cached — which makes a second walk of it the most expensive thing this
-  // function could redundantly do, and this function exists to stop doing exactly that.
-  const tail = animatableText(units[last]);
-  const counts = units.map((unit, i) => {
-    if (i === last) {
-      settledCounts.set(unit, tail.count);
-      return tail.count;
+  const byIndex = new Map<number, HTMLElement>();
+  units.forEach((unit, i) => byIndex.set(unitIndex(unit, i), unit));
+  const tail = unitIndex(units[last], last);
+
+  for (const [index, starts] of [...state.schedules]) {
+    if (index === tail) continue;
+    const unit = byIndex.get(index);
+    if (settled(starts, now)) {
+      // Its last fade is over, so the wrappers have done their job and the block goes
+      // back to being plain, re-joined text.
+      if (unit) unwrapReveal(unit);
+      state.schedules.delete(index);
+    } else if (unit) {
+      rewrap(unit, starts, now);
     }
-    // A settled block's count cannot change without its element changing with it, so a
-    // hit here is always current — see `settledCounts`.
-    const cached = settledCounts.get(unit);
-    if (cached !== undefined) return cached;
-    const count = animatableText(unit).count;
-    settledCounts.set(unit, count);
-    return count;
-  });
-  const bases = unitBases(counts);
-  const total = bases[last] + counts[last];
+  }
 
-  starts = extendSchedule(starts, total, now, interval);
-  const from = firstLiveIndex(starts, now);
-
-  // Settled blocks first: taking wrappers out cannot move an index, so the order only
-  // matters for keeping the work off the trailing block's pass.
-  for (const i of settledUnits(counts, from)) unwrapReveal(units[i]);
-
-  if (from >= total) return starts;
-  wrapUnit(tail.nodes, bases[last], starts, now, from);
-  return starts;
+  // Unwrap FIRST, then measure and wrap — the same order `rewrap` keeps, for the same
+  // reason: walking a block that still holds wrappers finds the one character inside each
+  // and wraps it again, a span inside a span, doubling every delta (measured on the
+  // re-wrap path: 1060 wrappers where there should have been ~190).
+  //
+  // On the tail specifically this is DEFENSIVE rather than load-bearing, and removing it
+  // does not fail the tests: `Markdown` rebuilds the trailing block on nearly every
+  // delta, so it is already plain text by the time this runs. It stays because "nearly"
+  // is doing real work in that sentence — a delta that leaves the tail's source untouched
+  // is possible, and the cost here is one no-op query.
+  unwrapReveal(units[last]);
+  const { nodes, count } = animatableText(units[last]);
+  let starts = state.schedules.get(tail) ?? [];
+  if (!state.seeded) {
+    state.seeded = true;
+    // Attaching to a passage that already has text — a resumed stream, or a turn already
+    // under way when this mounted: treat what is on screen as settled rather than
+    // animating the whole answer in from the start. A fresh passage has no characters
+    // yet, so this seeds nothing.
+    starts = Array.from({ length: count }, () => now - REVEAL_MS);
+  }
+  starts = extendSchedule(starts, count, now, interval);
+  state.schedules.set(tail, starts);
+  wrapNodes(nodes, starts, now);
 }
 
-/** Split at the reveal front and rebuild only what is still resolving.
- *
- *  Takes the walked nodes and the front rather than re-deriving either: both are already
- *  in hand at the one call site, and two places computing the same cut is two places to
- *  keep in agreement. */
-function wrapUnit(
+/** Take a block back to plain text and wrap it again from its schedule. The delays are
+ *  recomputed from absolute start times, so a fade that was in flight resumes at its own
+ *  phase instead of restarting — which is what makes rebuilding safe. */
+function rewrap(unit: HTMLElement, starts: number[], now: number): void {
+  unwrapReveal(unit);
+  wrapNodes(animatableText(unit).nodes, starts, now);
+}
+
+/** Split each node at the reveal front and rebuild only what is still resolving. */
+function wrapNodes(
   nodes: { node: Text; base: number }[],
-  unitBase: number,
   starts: number[],
   now: number,
-  from: number,
 ): void {
+  const from = firstLiveIndex(starts, now);
+  if (from >= starts.length) return;
   for (const { node, base } of nodes) {
-    const abs = unitBase + base;
     const len = node.data.length;
-    if (abs + len <= from || !node.parentNode) continue;
+    if (base + len <= from || !node.parentNode) continue;
     // Split the node once into "settled" and "still resolving", then rebuild
     // only the second half a character at a time.
-    const cut = Math.max(0, from - abs);
+    const cut = Math.max(0, from - base);
     const frag = document.createDocumentFragment();
     if (cut > 0)
       frag.appendChild(document.createTextNode(node.data.slice(0, cut)));
     for (let i = cut; i < len; i++) {
-      const delay = revealDelay(starts[abs + i], now);
+      const delay = revealDelay(starts[base + i], now);
       frag.appendChild(
         delay === null
           ? document.createTextNode(node.data[i])

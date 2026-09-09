@@ -150,44 +150,6 @@ export function firstLiveIndex(starts: number[], now: number): number {
   return lowerBound(starts, (start) => start + REVEAL_MS <= now);
 }
 
-/**
- * Where each unit starts in the answer's character space, given each unit's length.
- *
- * A "unit" is one of `Markdown streamStable`'s top-level blocks. The schedule is indexed
- * over the whole answer while the DOM is walked one block at a time, and this is the one
- * conversion between the two.
- */
-export function unitBases(counts: number[]): number[] {
-  const bases: number[] = [];
-  let total = 0;
-  for (const count of counts) {
-    bases.push(total);
-    total += count;
-  }
-  return bases;
-}
-
-/**
- * Indices of the units whose every character has finished resolving, given `from` — the
- * reveal front from `firstLiveIndex`. These are the blocks whose wrappers can be taken
- * back out without cutting a fade short.
- *
- * **The trailing unit is never listed**, even when it is fully settled. It is the block
- * the next delta rebuilds and re-wraps, so unwrapping it would be work undone a frame
- * later; the terminal flush is what finally clears it, once no more text is coming.
- *
- * **A partially settled unit is never listed either** — one unfinished character in it is
- * enough to hold the whole block's wrappers, because unwrapping is per block and a fade
- * that loses its span mid-flight snaps to full opacity in view of the operator.
- */
-export function settledUnits(counts: number[], from: number): number[] {
-  const bases = unitBases(counts);
-  const out: number[] = [];
-  for (let i = 0; i < counts.length - 1; i++)
-    if (bases[i] + counts[i] <= from) out.push(i);
-  return out;
-}
-
 /** First index whose start does NOT satisfy `done`. Valid because `starts` is
  *  non-decreasing — see the re-anchoring note on `paceReveal`. */
 function lowerBound(
