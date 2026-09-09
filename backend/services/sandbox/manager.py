@@ -39,7 +39,9 @@ from core.vault import Vault
 from .base import SandboxError, safe_key
 from .container import ContainerSandbox, ensure_image
 from .fork import fork_marker
+from .names import DEFAULT_NAMES, ContainerNames
 from .preview import PreviewHandle
+from .preview_tokens import PreviewTokens
 from .reconcile import reconcile as reconcile_leftovers
 from .seal import partial_marker
 from .session import LiveWork, SandboxSession
@@ -79,12 +81,6 @@ class SandboxSessionManager:
     Built only when a container runtime is present (fail-closed detection lives in
     ``detect``), so its existence means code execution is available."""
 
-    # How long a reaped/purged preview's token stays a recognized "stopped" tombstone
-    # (`preview_status`) before it's pruned as stale — long enough for an operator who left
-    # the tab open across the idle window to still get a legible answer, short enough that
-    # an abandoned conversation's tokens don't accumulate forever in memory.
-    _STOPPED_TOKEN_TTL_S = 3600.0
-
     def __init__(
         self,
         backend: ContainerSandbox,
@@ -98,9 +94,14 @@ class SandboxSessionManager:
         proxy_image: str = "python:alpine",
         preview_startup_timeout_s: float = 20.0,
         max_sessions: int = 8,
+        names: ContainerNames = DEFAULT_NAMES,
     ) -> None:
         self._backend = backend
         self._vault = vault
+        # Held here rather than per session because reconciliation reads it too, and the
+        # two have to agree: this manager names the containers it creates and, at the next
+        # boot, decides which leftovers were its own.
+        self._names = names
         # What each workspace may reach. The manager holds it (rather than each session)
         # because writing the file the fence reads is a *per-key* act that has to happen
         # before that key's first container exists — see `acquire`.
@@ -118,13 +119,10 @@ class SandboxSessionManager:
         # `_over_cap`.
         self._max_sessions = max(1, max_sessions)
         self._sessions: dict[str, SandboxSession] = {}
-        # token → safe session key, so the proxy route resolves a preview in O(1).
-        self._previews: dict[str, str] = {}
-        # token → monotonic time it was torn down *without* an explicit `view_close`
-        # (idle-reaped or purged) — lets `preview_status` tell the frontend "this server
-        # was killed out from under you" instead of a bare, indistinguishable 404. Explicit
-        # closes need no tombstone: `view_close` already emits `view.live.stopped`.
-        self._stopped_tokens: dict[str, float] = {}
+        # Which token names which preview, and which ones we killed — see
+        # :mod:`services.sandbox.preview_tokens`. Manipulated under this manager's lock
+        # wherever it has to be atomic against the reaper.
+        self._preview_tokens = PreviewTokens()
         # safe key → set once its (former) session's teardown (a sweep's seal, or
         # a purge) is in flight. A concurrent acquire()/purge() for THIS key waits
         # on it; every other key is unaffected (sandbox-02).
@@ -248,7 +246,7 @@ class SandboxSessionManager:
             if session is None:
                 continue
             self._mark_preview_stopped(session)
-            self._drop_preview_tokens(key)
+            self._preview_tokens.drop(key)
             event = asyncio.Event()
             self._tearing_down[key] = event
             detached.append((key, session, event))
@@ -333,6 +331,7 @@ class SandboxSessionManager:
             proxy_image=self._proxy_image,
             warmup=self._image_warmup,
             ephemeral=ephemeral,
+            names=self._names,
         )
 
     async def fork(
@@ -422,15 +421,15 @@ class SandboxSessionManager:
             command, port, token=token, startup_timeout_s=self._preview_startup_timeout_s
         )
         async with self._lock:
-            self._drop_preview_tokens(safe)  # one preview per conversation
-            self._previews[token] = safe
+            self._preview_tokens.drop(safe)  # one preview per conversation
+            self._preview_tokens.index(token, safe)
         return handle
 
     def resolve_preview(self, token: str) -> PreviewHandle | None:
         """The running preview a proxy request names, or None. Touches the session
         so active viewing keeps it warm (the idle reaper won't evict it). Sync (no
         await) so it reads the maps atomically against the reaper."""
-        safe = self._previews.get(token)
+        safe = self._preview_tokens.owner(token)
         if safe is None:
             return None
         session = self._sessions.get(safe)
@@ -445,35 +444,28 @@ class SandboxSessionManager:
         unrecognized. Read-only — unlike `resolve_preview`, a status check must not
         itself keep an otherwise-idle preview warm. Lets the frontend tell "the
         sandbox went idle and killed it" apart from a merely-still-loading iframe."""
-        safe = self._previews.get(token)
+        safe = self._preview_tokens.owner(token)
         if safe is not None:
             session = self._sessions.get(safe)
             if session is not None and session.preview is not None:
                 if session.preview.token == token:
                     return "running"
-        return "stopped" if token in self._stopped_tokens else "unknown"
+        return "stopped" if self._preview_tokens.was_stopped(token) else "unknown"
 
     def _mark_preview_stopped(self, session: SandboxSession) -> None:
         """Tombstone a session's preview token as stopped-without-a-signal (idle
-        reap or purge) and prune stale tombstones. Call *before* the session's
-        preview is torn down."""
-        now = time.monotonic()
-        cutoff = now - self._STOPPED_TOKEN_TTL_S
-        self._stopped_tokens = {t: ts for t, ts in self._stopped_tokens.items() if ts > cutoff}
+        reap or purge). Call *before* the session's preview is torn down."""
         if session.preview is not None:
-            self._stopped_tokens[session.preview.token] = now
+            self._preview_tokens.tombstone(session.preview.token)
 
     async def stop_preview(self, key: str) -> None:
         """Tear down the conversation's preview, leaving the exec session intact."""
         safe = safe_key(key)
         async with self._lock:
             session = self._sessions.get(safe)
-            self._drop_preview_tokens(safe)
+            self._preview_tokens.drop(safe)
             if session is not None:
                 await session.stop_preview()
-
-    def _drop_preview_tokens(self, safe: str) -> None:
-        self._previews = {t: k for t, k in self._previews.items() if k != safe}
 
     async def purge(self, key: str) -> None:
         """Delete a conversation's sandbox outright — stop any live session and
@@ -497,7 +489,7 @@ class SandboxSessionManager:
                     session = self._sessions.pop(safe, None)
                     if session is not None:
                         self._mark_preview_stopped(session)
-                        self._drop_preview_tokens(safe)
+                        self._preview_tokens.drop(safe)
                     self._tearing_down[safe] = my_event
                     break
             await other.wait()
@@ -524,7 +516,7 @@ class SandboxSessionManager:
         """Clear what the previous process left behind — see
         :mod:`services.sandbox.reconcile`, which owns the whole of it because it needs
         none of this manager's state."""
-        await reconcile_leftovers(self._backend.runtime, self._work_root)
+        await reconcile_leftovers(self._backend.runtime, self._work_root, self._names)
 
     async def start(self) -> None:
         """Reconcile what the last process left behind, then launch the idle reaper
@@ -596,7 +588,7 @@ class SandboxSessionManager:
                 except Exception:  # noqa: BLE001 — tear the rest down regardless
                     pass
             self._sessions.clear()
-            self._previews.clear()
+            self._preview_tokens.clear()
 
     async def _reaper_loop(self) -> None:
         while True:

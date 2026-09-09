@@ -28,16 +28,10 @@ from pathlib import Path
 
 from .base import SandboxError
 from .container import force_remove_container, run_subprocess
+from .names import DEFAULT_NAMES, ContainerNames
 from .sidecar import remove_network
 
 logger = logging.getLogger(__name__)
-
-# What reconciliation claims as ours. The runtime's `name` filter matches a regular
-# expression against the container/network name, so these are anchored — an unanchored
-# `odysseus-` would also match a container the operator named after this project, and
-# reconciliation removes what it matches without asking.
-_OUR_CONTAINERS = "^odysseus-(sbx|pre|egress)-"
-_OUR_NETWORKS = "^odysseus-net-"
 
 # Total wall clock reconciliation may spend talking to the runtime. Startup waits on
 # it, so it is a budget for the whole pass rather than a per-call timeout: leftovers
@@ -45,17 +39,24 @@ _OUR_NETWORKS = "^odysseus-net-"
 _BUDGET_S = 30.0
 
 
-async def reconcile(runtime: str | None, work_root: Path) -> None:
+async def reconcile(
+    runtime: str | None, work_root: Path, names: ContainerNames = DEFAULT_NAMES
+) -> None:
     """Clear what the previous process left behind — containers, networks, and the
-    scratch dirs of a pool this build no longer keeps."""
+    scratch dirs of a pool this build no longer keeps.
+
+    ``names`` decides what counts as left behind, and it must be the same scheme the
+    sessions were named under: this removes everything its filters match without asking,
+    so a mismatch here either strands leftovers forever or reaches into another
+    instance's live workspaces."""
     if runtime is not None:
-        await _reconcile_runtime(runtime)
+        await _reconcile_runtime(runtime, names)
     dirs = await asyncio.to_thread(_remove_pool_dirs, work_root)
     if dirs:
         logger.info("sandbox: removed %d leftover pre-warmed workspace dir(s)", dirs)
 
 
-async def _reconcile_runtime(runtime: str) -> None:
+async def _reconcile_runtime(runtime: str, names: ContainerNames) -> None:
     """Remove the containers and networks carrying our names, under a single
     wall-clock budget for the lot.
 
@@ -67,7 +68,11 @@ async def _reconcile_runtime(runtime: str) -> None:
     loop = asyncio.get_running_loop()
     deadline = loop.time() + _BUDGET_S
     stale = await _listed_names(
-        [runtime, "ps", "-a", "--filter", f"name={_OUR_CONTAINERS}", "--format", "{{.Names}}"],
+        [
+            runtime, "ps", "-a",
+            "--filter", f"name={names.container_filter}",
+            "--format", "{{.Names}}",
+        ],
         timeout_s=deadline - loop.time(),
     )
     removed = 0
@@ -78,7 +83,11 @@ async def _reconcile_runtime(runtime: str) -> None:
         await force_remove_container(runtime, name, timeout_s=left)
         removed += 1
     networks = await _listed_names(
-        [runtime, "network", "ls", "--filter", f"name={_OUR_NETWORKS}", "--format", "{{.Name}}"],
+        [
+            runtime, "network", "ls",
+            "--filter", f"name={names.network_filter}",
+            "--format", "{{.Name}}",
+        ],
         timeout_s=deadline - loop.time(),
     )
     dropped = 0

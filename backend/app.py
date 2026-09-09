@@ -53,6 +53,7 @@ from services.embeddings import RegistryEmbedder
 from services.plans import ConversationPlans
 from services.registry import ModelRegistry
 from services.sandbox import SandboxSessionManager, detect_sandbox, shutdown_confinement
+from services.sandbox.names import ContainerNames
 from services.sealing import seal_legacy_column
 from services.settings_store import SettingsStore
 from services.tool_policy import AvailabilityCheck, CategoryAvailability
@@ -270,6 +271,7 @@ async def _wire(app: FastAPI, settings: Settings, lifecycle: LifecycleRegistry) 
             proxy_image=settings.web_fetch_proxy_image,
             preview_startup_timeout_s=settings.sandbox_preview_startup_timeout_s,
             max_sessions=settings.sandbox_max_sessions,
+            names=ContainerNames(settings.container_prefix),
         )
         if backend is not None
         else None

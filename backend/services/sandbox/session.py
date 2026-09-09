@@ -52,14 +52,13 @@ from .container import (
     with_in_container_timeout,
 )
 from .fork import clone_workspace, fork_marker, manifest_of, merge_workspace
+from .names import DEFAULT_NAMES, ContainerNames
 from .preview import PreviewHandle, launch_preview, stop_preview_container
 from .seal import partial_marker, restore_workspace, seal_workspace, walk_files
 from .sidecar import (
     create_internal_network,
-    network_name,
     proxy_env,
     remove_network,
-    sidecar_name,
     start_egress_sidecar,
     stop_egress_sidecar,
 )
@@ -148,8 +147,10 @@ class SandboxSession:
         proxy_image: str = "python:alpine",
         warmup: ImageWarmup | None = None,
         ephemeral: bool = False,
+        names: ContainerNames = DEFAULT_NAMES,
     ) -> None:
         self.key = key
+        self._names = names
         self.workspace = workspace
         self.sealed = sealed
         # A fork taken for a delegated agent: a copy of a workspace that is already
@@ -164,13 +165,13 @@ class SandboxSession:
         # the sidecar. Owned by the egress policy, which rewrites it whenever the operator
         # approves a domain — the fence re-reads it, so a grant lands without a restart.
         self._egress_dir = egress_dir
-        self.container = f"odysseus-sbx-{key}"
-        self._preview_container = f"odysseus-pre-{key}"
         # Every runtime object this conversation owns is named after it, for the same
         # reason: a crash kills no container and removes no network, and an anonymous one
         # is a leftover that no teardown and no boot reconciliation could ever name.
-        self._network = network_name(key)
-        self._egress = sidecar_name(key)
+        self.container = names.session(key)
+        self._preview_container = names.preview(key)
+        self._network = names.network(key)
+        self._egress = names.sidecar(key)
         self._proxy_image = proxy_image
         self._backend = backend
         self._vault = vault
@@ -378,7 +379,7 @@ class SandboxSession:
                 sidecar=self._egress,
                 allow_dir=self._egress_dir,
                 token=token,
-                env=proxy_env(self.key),
+                env=proxy_env(self._names, self.key),
                 command=command,
                 port=port,
                 startup_timeout_s=startup_timeout_s,
@@ -634,7 +635,7 @@ class SandboxSession:
             self.container,
             self.workspace,
             network=self._network,
-            env=proxy_env(self.key),
+            env=proxy_env(self._names, self.key),
         )
         if err is not None:
             raise SandboxError(f"failed to start sandbox session: {err.decode('utf-8', 'replace')}")

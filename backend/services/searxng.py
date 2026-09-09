@@ -37,9 +37,9 @@ from services.sandbox.base import SandboxError
 
 logger = logging.getLogger(__name__)
 
-# The one container we name, the port SearXNG listens on inside it, and the path
-# its config is read from.
-_CONTAINER = "odysseus-searxng"
+# What our one container is called under the instance's prefix, the port SearXNG
+# listens on inside it, and the path its config is read from.
+_CONTAINER_SUFFIX = "searxng"
 _INTERNAL_PORT = 8080
 _SETTINGS_MOUNT = "/etc/searxng/settings.yml"
 
@@ -83,9 +83,11 @@ class ManagedSearxng:
         startup_timeout_s: float,
         external_base_url: str | None = None,
         runtime_pref: str | None = None,
+        container_prefix: str = "odysseus",
     ) -> None:
         self._enabled = enabled
         self._image = image
+        self._container = f"{container_prefix}-{_CONTAINER_SUFFIX}"
         self._dir = data_dir / "searxng"
         self._startup_timeout_s = startup_timeout_s
         self._external = external_base_url.rstrip("/") if external_base_url else None
@@ -129,7 +131,7 @@ class ManagedSearxng:
                 pass
             self._task = None
         if self._runtime is not None:
-            await force_remove_container(self._runtime, _CONTAINER)
+            await force_remove_container(self._runtime, self._container)
         # Drop the URL: the container is gone, so search must read this as
         # "managed search unavailable" and degrade until a fresh start succeeds.
         self._base_url = None
@@ -144,9 +146,9 @@ class ManagedSearxng:
             if not await ensure_image(runtime, self._image):
                 logger.info("search: no SearXNG image available — managed web search unavailable")
                 return
-            await force_remove_container(runtime, _CONTAINER)  # clear any stale one
+            await force_remove_container(runtime, self._container)  # clear any stale one
             _timed_out, code, _out, err = await run_subprocess(
-                detached_run_argv(runtime, _CONTAINER, self._flags(), self._image, []),
+                detached_run_argv(runtime, self._container, self._flags(), self._image, []),
                 timeout_s=60.0,
             )
             if code != 0:
@@ -154,19 +156,19 @@ class ManagedSearxng:
                     "search: managed SearXNG failed to start: %s",
                     err.decode("utf-8", "replace").strip(),
                 )
-                await force_remove_container(runtime, _CONTAINER)
+                await force_remove_container(runtime, self._container)
                 return
-            host_port = await published_host_port(runtime, _CONTAINER, _INTERNAL_PORT)
+            host_port = await published_host_port(runtime, self._container, _INTERNAL_PORT)
             await await_listening(host_port, self._startup_timeout_s)
         except SandboxError as exc:
             logger.warning("search: managed SearXNG did not come up: %s", exc)
-            await force_remove_container(runtime, _CONTAINER)
+            await force_remove_container(runtime, self._container)
             return
         except Exception:
             # Anything unexpected (e.g. an unwritable data dir) must not vanish into
             # the background task with no trace — log it and leave search degraded.
             logger.exception("search: managed SearXNG bring-up failed unexpectedly")
-            await force_remove_container(runtime, _CONTAINER)
+            await force_remove_container(runtime, self._container)
             return
         self._base_url = f"http://127.0.0.1:{host_port}"
         logger.info("search: managed SearXNG ready at %s", self._base_url)
