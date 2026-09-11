@@ -74,8 +74,10 @@ export interface ViewportSource {
   plan: Accessor<PlanItem[]>;
   branch: () => BranchState | null | undefined;
   refetchBranch: () => void;
-  /** The thread's level — the Plan surface's arrival turns on it. */
+  /** The thread's level — the Plan surface's arrival turns on it — and whether
+   *  that level has settled yet. */
   permission: () => PermissionLevel;
+  permissionPending: () => boolean;
   toggleSnapshotKeeper: (snapshotId: string, keeper: boolean) => Promise<void>;
 }
 
@@ -169,6 +171,7 @@ export function useChatViewport(
     plan: source.plan,
     branch: source.branch,
     permission: source.permission,
+    permissionPending: source.permissionPending,
   });
   const available = (id: SurfaceId): boolean => sources[id].available();
 

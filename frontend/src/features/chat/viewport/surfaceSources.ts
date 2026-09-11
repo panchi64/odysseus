@@ -57,6 +57,10 @@ export interface SurfaceDeps {
   branch: () => BranchState | null | undefined;
   /** The thread's current level. `plan` is the one that cannot act. */
   permission: () => PermissionLevel;
+  /** Whether that level is still a stand-in for one in flight. Load-bearing: the
+   *  stand-in is the *strictest* level, which is `plan` — so a level that has not
+   *  settled yet looks exactly like a thread awaiting approval. */
+  permissionPending: () => boolean;
 }
 
 export function createSurfaceSources(
@@ -73,8 +77,15 @@ export function createSurfaceSources(
       // on the operator, who does not know it. That is the one state worth putting
       // on screen uninvited. A plan that merely changed while the thread can already
       // act is progress, and progress badges.
+      // The pending check is not defensive noise. While a thread's real level is
+      // loading the seat shows the strictest one as a stand-in, and the strictest
+      // one *is* `plan` — so without this every thread that has ever written a plan
+      // would pop the panel open for the width of a fetch, spend its one-shot claim,
+      // and leave the strip sitting there after the true level arrived.
       arrival: () =>
-        deps.permission() === "plan" && deps.plan().length > 0
+        !deps.permissionPending() &&
+        deps.permission() === "plan" &&
+        deps.plan().length > 0
           ? "steal"
           : "announce",
       // Keyed by the list's length, so a *revised* plan awaiting approval is a new

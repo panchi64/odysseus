@@ -38,6 +38,7 @@ const sources = (over: Partial<SurfaceDeps> = {}) =>
     plan: () => [],
     branch: () => null,
     permission: () => "edit" as PermissionLevel,
+    permissionPending: () => false,
     ...over,
   });
 
@@ -96,6 +97,14 @@ describe("arrival", () => {
         sources({ ...awaiting, permission: () => level }).plan.arrival(),
       ).toBe("announce");
     }
+  });
+
+  test("a level that has not settled yet does not interrupt", () => {
+    // The stand-in shown while a thread's level loads *is* `plan`, so without this
+    // every thread with a plan would pop the panel for the width of a fetch.
+    expect(
+      sources({ ...awaiting, permissionPending: () => true }).plan.arrival(),
+    ).toBe("announce");
   });
 
   test("plan level with no plan yet interrupts nobody", () => {
