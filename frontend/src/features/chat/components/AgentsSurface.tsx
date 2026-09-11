@@ -1,5 +1,5 @@
 import { For, Show, type JSX } from "solid-js";
-import { Frames, StatusDot, Text, cx } from "~/ui";
+import { Frames, StatusDot, Text } from "~/ui";
 import type { SubagentRun } from "../stream/fold";
 
 /** How long a sub-agent ran, in the coarsest unit that is still true. */
@@ -77,7 +77,7 @@ export function AgentsSurface(props: {
                 <Text
                   variant="micro"
                   tone={run.status === "failed" ? "alert" : "dim"}
-                  class={cx("min-w-0 truncate")}
+                  class="min-w-0 truncate"
                 >
                   {run.status === "failed"
                     ? (run.error ?? "failed")

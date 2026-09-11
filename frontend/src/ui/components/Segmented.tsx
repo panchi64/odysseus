@@ -19,7 +19,9 @@ export interface SegmentedProps<T extends string> {
   /** Required: a radiogroup with no name is a set of buttons to a screen
    *  reader. */
   "aria-label": string;
-  /** Segments share the width equally. Off for a control sized by its labels. */
+  /** Segments share the width equally. **Defaults to on** — a set of mutually
+   *  exclusive choices is usually a control that owns its row; pass `false` for
+   *  one sized by its labels. */
   fill?: boolean;
   class?: string;
 }
@@ -79,6 +81,10 @@ export function Segmented<T extends string>(
     "class",
   ]);
 
+  /** The default lives here rather than at each use, so the two places that size
+   *  a segment cannot disagree about what an omitted `fill` means. */
+  const fills = (): boolean => local.fill !== false;
+
   /** Move the selection by `step`, wrapping — standard radiogroup behaviour, and
    *  it *selects* rather than merely focusing, which is what a radiogroup does. */
   const move = (step: number): void => {
@@ -126,7 +132,7 @@ export function Segmented<T extends string>(
                 // Focus is neutral and carried by a shadow, so it shifts no
                 // layout and never competes with the accent (§10.8).
                 "outline-none focus-visible:shadow-focus",
-                local.fill !== false && "min-w-0 flex-1",
+                fills() && "min-w-0 flex-1",
                 // Fill, edge, weight, brightness — four neutral axes, and no
                 // hue. `shadow-1` is the mode-correct resting lift underneath:
                 // a cast in Paper, a faint ring in Ink.
@@ -144,7 +150,7 @@ export function Segmented<T extends string>(
               delay={600}
               side="bottom"
               label={option.description}
-              class={cx(local.fill !== false && "min-w-0 flex-1")}
+              class={cx(fills() && "min-w-0 flex-1")}
             >
               {segment}
             </Tooltip>

@@ -40,15 +40,25 @@ export interface ContextMenuProps {
  */
 export function ContextMenu(props: ContextMenuProps): JSX.Element {
   const [at, setAt] = createSignal<{ x: number; y: number } | null>(null);
-  let panel: HTMLDivElement | undefined;
+  /** The panel's own size, as a signal rather than a read off the element —
+   *  placement has to *re-run* once it is known. A plain `offsetWidth` read is
+   *  not reactive, so the corrected position never arrived and a menu wider than
+   *  the assumption ran off the right edge it was meant to flip away from. */
+  const [size, setSize] = createSignal(ASSUMED);
 
   const close = (): void => {
     setAt(null);
   };
 
+  const measure = (el: HTMLElement): void => {
+    const width = el.offsetWidth || ASSUMED.width;
+    const height = el.offsetHeight || ASSUMED.height;
+    if (width !== size().width || height !== size().height)
+      setSize({ width, height });
+  };
+
   const place = (x: number, y: number): { x: number; y: number } => {
-    const width = panel?.offsetWidth || ASSUMED.width;
-    const height = panel?.offsetHeight || ASSUMED.height;
+    const { width, height } = size();
     return {
       x: Math.max(
         EDGE_MARGIN,
@@ -99,7 +109,7 @@ export function ContextMenu(props: ContextMenuProps): JSX.Element {
                 }}
               />
               <div
-                ref={panel}
+                ref={(el) => queueMicrotask(() => measure(el))}
                 class={cx(
                   "ody-rise fixed z-[61] min-w-40 rounded-panel bg-surface py-1 shadow-2",
                 )}

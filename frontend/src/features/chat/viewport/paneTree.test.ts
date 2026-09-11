@@ -24,7 +24,6 @@ import {
   openSurface,
   panelSurfacesOf,
   surfacesOf,
-  toggleSurface,
   type Layout,
   type PaneNode,
   type PaneShape,
@@ -45,8 +44,11 @@ const order = (id: Id): number => ORDER.indexOf(id);
 
 const open = (layout: Layout<Id>, id: Id): Layout<Id> =>
   openSurface(layout, id, SHAPE[id], order);
+/** What a header button does, spelled out here rather than in the module: the
+ *  geometry has no toggle of its own, because the one the host calls has to carry
+ *  the tiling context and this one could not. */
 const toggle = (layout: Layout<Id>, id: Id): Layout<Id> =>
-  toggleSurface(layout, id, SHAPE[id], order);
+  hasSurface(layout, id) ? closeSurface(layout, id) : open(layout, id);
 const empty = (): Layout<Id> => emptyLayout<Id>();
 
 const split = (

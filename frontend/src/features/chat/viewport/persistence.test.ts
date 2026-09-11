@@ -225,6 +225,45 @@ describe("reading a v4 record back", () => {
     expect(state.fontStep).toBe(0);
   });
 
+  test("a stack naming one surface twice becomes one tab", () => {
+    // Two tabs onto one pane would close together — `closeSurface` drops every
+    // match — so the second is a tab that cannot be shut.
+    seedStorage({
+      [V4_KEY]: {
+        c1: {
+          layout: {
+            strips: [],
+            panels: {
+              kind: "stack",
+              surfaces: ["view", "view"],
+              active: "view",
+            },
+          },
+        },
+      },
+    });
+    expect(read("c1").layout).toEqual(VIEW_LEAF);
+  });
+
+  test("a surface bag is read field by field, not spread", () => {
+    // The record is JSON the operator can edit, and `activeTab` goes straight to
+    // a tab strip: anything but the two it knows has to come back as the default.
+    seedStorage({
+      [V4_KEY]: {
+        c1: { surfaces: { view: { pinnedKey: 7, activeTab: "sideways" } } },
+      },
+    });
+    expect(read("c1").surfaces.view).toEqual({
+      pinnedKey: null,
+      activeTab: "preview",
+    });
+  });
+
+  test("a surface bag that is not an object is no bag at all", () => {
+    seedStorage({ [V4_KEY]: { c1: { surfaces: { view: "preview" } } } });
+    expect(read("c1").surfaces.view).toBeUndefined();
+  });
+
   test("a focused surface that is not on screen is not focused", () => {
     seedStorage({
       [V4_KEY]: { c1: { layout: null, focused: "view" } },

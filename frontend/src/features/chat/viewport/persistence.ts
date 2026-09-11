@@ -177,9 +177,15 @@ function parsePane(value: unknown): PaneNode<SurfaceId> | null {
   }
   if (node.kind === "stack") {
     if (!Array.isArray(node.surfaces)) return null;
-    const surfaces = node.surfaces.filter(
-      (s): s is SurfaceId => typeof s === "string" && isSurfaceId(s),
-    );
+    // Deduped: a stack is a set of tabs, and the same surface twice would be two
+    // tabs onto one pane that close together — `closeSurface` drops every match.
+    const surfaces = [
+      ...new Set(
+        node.surfaces.filter(
+          (s): s is SurfaceId => typeof s === "string" && isSurfaceId(s),
+        ),
+      ),
+    ];
     if (surfaces.length === 0) return null;
     if (surfaces.length === 1) return leaf(surfaces[0]);
     const active =
@@ -228,6 +234,18 @@ function parseLayout(value: unknown): ViewportLayout | null {
 /** Coerce one stored record into a well-formed state, filling anything missing from
  *  the defaults. Total by construction — a record it cannot make sense of comes back
  *  as the defaults rather than as an exception. */
+/** The View's bag, field by field. Spreading whatever was stored would let a
+ *  hand-edited record put a string where `activeTab` goes and hand it straight to
+ *  a tab strip — the one thing a validator that calls itself total must not do. */
+function parseViewBag(value: unknown): ViewSurfaceState | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const raw = value as Record<string, unknown>;
+  return {
+    pinnedKey: typeof raw.pinnedKey === "string" ? raw.pinnedKey : null,
+    activeTab: raw.activeTab === "code" ? "code" : "preview",
+  };
+}
+
 function parseState(value: unknown): ViewportPersistedState {
   if (typeof value !== "object" || value === null) return DEFAULT_STATE;
   const raw = value as Record<string, unknown>;
@@ -242,7 +260,10 @@ function parseState(value: unknown): ViewportPersistedState {
       if (isSurfaceId(id) && typeof key === "string") seen[id] = key;
     }
   }
-  const bags = (raw.surfaces ?? {}) as SurfaceBags;
+  const bags =
+    typeof raw.surfaces === "object" && raw.surfaces !== null
+      ? (raw.surfaces as Record<string, unknown>)
+      : {};
   return {
     layout,
     lastLayout: parseLayout(raw.lastLayout),
@@ -256,9 +277,7 @@ function parseState(value: unknown): ViewportPersistedState {
       typeof raw.fontStep === "number" ? raw.fontStep : DEFAULT_STATE.fontStep,
     softWrap:
       typeof raw.softWrap === "boolean" ? raw.softWrap : DEFAULT_STATE.softWrap,
-    surfaces: {
-      view: bags.view ? { ...DEFAULT_VIEW_SURFACE, ...bags.view } : undefined,
-    },
+    surfaces: { view: parseViewBag(bags.view) },
     seen,
   };
 }

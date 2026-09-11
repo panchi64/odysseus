@@ -117,6 +117,9 @@ export interface ChatViewport {
   /** Put a surface on screen, or take it off. Closing the last one closes the
    *  panel, since a panel showing nothing is a panel that is shut. */
   toggleSurface: (id: SurfaceId) => void;
+  /** Flip between the aside and the full-screen sheet, keeping the keyboard
+   *  where it was — see the implementation for why that is not automatic. */
+  toggleFullscreen: () => void;
   /** Whether there is anything at all to show — the panel's enablement. */
   hasContent: () => boolean;
   /** Rendered as the desktop aside. */
@@ -187,11 +190,17 @@ export function useChatViewport(
   const hasContent = () => SURFACE_IDS.some(available);
   const shown = () => state().layout !== null && hasContent();
 
-  /** Put `id` on screen, remembering the arrangement as the restore point. */
+  /** Put `id` on screen, remembering the arrangement as the restore point.
+   *
+   *  Tiled, like a header click: a surface that arrives on its own — a new version,
+   *  a plan waiting on a yes — goes *beside* what is open. Opening it without the
+   *  tiling context would hand the whole panel region to it and take down whatever
+   *  the operator was reading, which is the opposite of what arriving means. */
   const show = (id: SurfaceId): void => {
     const current = state().layout ?? emptyLayout();
     if (hasSurface(current, id)) return;
-    const next = openSurface(current, id);
+    const next = openSurface(current, id, tiling());
+    widenFor(panelSurfacesOf(next));
     patch({ layout: next, lastLayout: next, focused: id });
   };
   const open = () => {
@@ -364,6 +373,37 @@ export function useChatViewport(
     return el !== undefined && el.contains(document.activeElement);
   };
 
+  /**
+   * Enter or leave full screen.
+   *
+   * The flip is one class on the panel's wrapper — `display: contents` in the row,
+   * a fixed box over the page — which is what keeps the panel from remounting. It
+   * does re-attach the subtree to the *layout* tree, and a browser drops focus when
+   * that happens to the focused element's ancestor. Nothing is lost but the caret,
+   * and the caret is the whole control: the operator who pressed `f` would find
+   * that `f`, Escape and `shift+w` had all stopped answering.
+   *
+   * So whatever held focus is given it back — the element itself, which survives
+   * the flip, or the panel when it did not. Only if focus was in the panel to
+   * begin with, and only once it has actually gone, so a toggle can never steal
+   * the caret from the composer. Twice, because the loss lands during the layout
+   * after this call on the way in and after the frame on the way out, and putting
+   * focus back where it already is costs nothing.
+   */
+  const toggleFullscreen = (): void => {
+    const held = hasFocus()
+      ? (document.activeElement as HTMLElement | null)
+      : null;
+    patch({ fullscreen: !state().fullscreen });
+    if (held === null) return;
+    const restore = (): void => {
+      if (hasFocus()) return;
+      (held.isConnected ? held : panelEl())?.focus();
+    };
+    restore();
+    setTimeout(restore);
+  };
+
   const pinPrev = () => {
     const list = items();
     if (list.length === 0) return;
@@ -408,6 +448,7 @@ export function useChatViewport(
     adjustSplit,
     focusedSurface,
     setFocusedSurface,
+    toggleFullscreen,
     hasContent,
     asideOpen,
     sheetOpen,

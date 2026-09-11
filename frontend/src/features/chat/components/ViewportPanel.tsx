@@ -48,9 +48,6 @@ export function ViewportPanel(props: {
   onClose: () => void;
   /** Rendered only when provided — P5 wires the backend keeper flip. */
   onKeeper?: (item: ViewItem) => void;
-  /** Captures the focusable panel container for the global keymap's focus-jump
-   *  and focus-visible ring. */
-  panelRef?: (el: HTMLDivElement) => void;
 }): JSX.Element {
   // The version actually shown: the selection if still present, else the newest
   // (last) — so a stale selection or a fresh thread always lands on the latest.
@@ -86,12 +83,14 @@ export function ViewportPanel(props: {
 
   return (
     <div
-      ref={props.panelRef}
-      tabindex={-1}
       /* `p-2` keeps the header and the stage off the frame's rules — the
          surface is the framed box now, not a card with its own padding, so the
-         breathing room has to come from here. */
-      class="h-full p-2 outline-none transition-colors focus-visible:outline-1 focus-visible:outline-bright"
+         breathing room has to come from here.
+
+         No `tabindex` and no focus ring: the focusable container is the panel
+         itself (`ChatViewportMounts`), which is what "focus is in the panel"
+         has to mean once the panel can hold more than this one surface. */
+      class="h-full p-2"
     >
       {/* `bare`: the frosted surface belongs to the framed region that
           `ConstructionReveal` draws, so the panel adds no fill, no shadow and

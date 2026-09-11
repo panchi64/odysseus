@@ -4,6 +4,7 @@ import {
   createResource,
   createSignal,
   on,
+  onCleanup,
   Show,
   type JSX,
 } from "solid-js";
@@ -150,6 +151,9 @@ export function FilesSurface(props: {
         const observer = new ResizeObserver(() => setWidth(el.clientWidth));
         observer.observe(el);
         setWidth(el.clientWidth);
+        // A surface is closed and reopened as often as the operator likes, and an
+        // observer left running holds its detached element for the life of the tab.
+        onCleanup(() => observer.disconnect());
       }}
       class="flex h-full min-h-0 flex-col"
     >

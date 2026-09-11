@@ -25,16 +25,25 @@ import { SURFACES } from "../viewport/surfaces";
 export function ViewportSurfaceBar(props: {
   viewport: ChatViewport;
 }): JSX.Element {
+  /** The leftmost button actually rendered — the row is a filtered view of the
+   *  registry, so the *registry's* first surface is usually not in it (`plan`
+   *  rarely is), and keying focus-return on its index left the common thread with
+   *  no return target at all. */
+  const firstShown = (): string | undefined =>
+    SURFACES.find((spec) => props.viewport.available(spec.id))?.id;
+
   return (
     <For each={SURFACES}>
-      {(spec, index) => (
+      {(spec) => (
         <Show when={props.viewport.available(spec.id)}>
           <Tooltip label={spec.label} side="bottom">
             <Button
-              // The first button is where focus returns when the full-screen
-              // sheet closes. Any of them would do; the first is the one that is
-              // there whenever the row is.
-              ref={index() === 0 ? props.viewport.triggerRef : undefined}
+              // Where focus returns when the full-screen sheet closes. Any of
+              // them would do; the leftmost is the one that is there whenever
+              // the row is.
+              ref={(el) => {
+                if (spec.id === firstShown()) props.viewport.triggerRef(el);
+              }}
               variant="ghost"
               leading={spec.icon}
               aria-label={`Toggle ${spec.label} surface`}

@@ -8,6 +8,7 @@ import {
   cx,
 } from "~/ui";
 import { emptyLayout } from "../viewport/layout";
+import { surfaceSpec } from "../viewport/surfaces";
 import type { ChatViewport } from "../useChatViewport";
 import { ViewportHost } from "./ViewportHost";
 
@@ -59,8 +60,14 @@ export function ChatViewportMounts(
   props: ChatViewportMountsProps,
 ): JSX.Element {
   const sheet = () => props.viewport.sheetOpen();
-  const toggleFullscreen = () =>
-    props.viewport.patch({ fullscreen: !props.viewport.state().fullscreen });
+  /** What the sheet calls itself: the surface being worked in. "Viewport" is the
+   *  honest fallback for the moment before anything is focused — it is the panel
+   *  as a whole that is covering the screen. */
+  const sheetTitle = (): string => {
+    const focused = props.viewport.focusedSurface();
+    return focused === null ? "Viewport" : surfaceSpec(focused).label;
+  };
+  const toggleFullscreen = () => props.viewport.toggleFullscreen();
 
   // One close, dispatched on how the panel is currently presented. Leaving the
   // full-screen sheet has to drop `fullscreen` and hand focus back to the
@@ -143,14 +150,28 @@ export function ChatViewportMounts(
                 >
                   Back to chat
                 </Button>
+                {/* Named after the surface being worked in, not after the one
+                    the panel used to only ever hold — a sheet showing the patch
+                    that calls itself "View" is a screen reader being told the
+                    wrong thing about the whole dialog. */}
                 <span id="view-sheet-title">
                   <Text variant="label" tone="bright">
-                    View
+                    {sheetTitle()}
                   </Text>
                 </span>
               </header>
             </Show>
-            <div class="min-h-0 flex-1">
+            {/* The focusable panel container, and the thing "focus is in the
+                panel" means. It has to be here rather than on a surface: it was
+                the View's own root while the View was the only occupant, which
+                quietly made every panel-scoped binding — full screen, close the
+                pane, the digits, Escape — dead whenever the operator was working
+                in any other surface. */}
+            <div
+              ref={props.viewport.panelRef}
+              tabindex={-1}
+              class="min-h-0 flex-1 outline-none focus-visible:outline-1 focus-visible:outline-bright"
+            >
               <ViewportHost
                 // The gate requires `shown()`, which requires a layout — the
                 // fallback is for the frame the reveal keeps around on the way out.

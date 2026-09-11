@@ -93,7 +93,6 @@ export const SURFACE_RENDERERS: Record<
       // so the single-surface case reads exactly as it did.
       onClose={() => ctx.viewport.closeSurface("view")}
       onKeeper={ctx.viewport.toggleKeeper}
-      panelRef={ctx.viewport.panelRef}
     />
   ),
 };

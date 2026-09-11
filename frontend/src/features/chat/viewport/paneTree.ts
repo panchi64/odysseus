@@ -273,6 +273,13 @@ export function focusInStack<Id extends string>(
   return panels === layout.panels ? layout : { ...layout, panels };
 }
 
+/** A split's proportion, held where both children are still worth rendering.
+ *  Exported because a live drag has to apply the same bounds per pointer move,
+ *  before anything is committed to the layout — two clamps that could disagree
+ *  would let the edge run past where it will settle. */
+export const clampRatio = (ratio: number): number =>
+  Math.min(0.85, Math.max(0.15, ratio));
+
 /** Change a split's proportion, addressed by the path of `a`/`b` steps to it. */
 export function resizeSplit<Id extends string>(
   layout: Layout<Id>,
@@ -280,7 +287,7 @@ export function resizeSplit<Id extends string>(
   ratio: number,
 ): Layout<Id> {
   if (layout.panels === null) return layout;
-  const clamped = Math.min(0.85, Math.max(0.15, ratio));
+  const clamped = clampRatio(ratio);
   const walk = (node: PaneNode<Id>, at: number): PaneNode<Id> => {
     if (node.kind !== "split") return node;
     if (at === path.length) return { ...node, ratio: clamped };
@@ -341,16 +348,4 @@ export function closeSurface<Id extends string>(
     strips: layout.strips.filter((s) => s !== id),
     panels: layout.panels ? closeInNode(layout.panels, id) : null,
   };
-}
-
-/** Open `id` if it is closed, close it if it is open — what a header button does. */
-export function toggleSurface<Id extends string>(
-  layout: Layout<Id>,
-  id: Id,
-  shape: PaneShape,
-  order: (id: Id) => number,
-): Layout<Id> {
-  return hasSurface(layout, id)
-    ? closeSurface(layout, id)
-    : openSurface(layout, id, shape, order);
 }

@@ -83,7 +83,7 @@ export function registerChatRoomKeymap(deps: ChatRoomKeymapDeps): void {
     {
       combo: "f",
       when: inPanel,
-      run: () => viewport.patch({ fullscreen: !viewport.state().fullscreen }),
+      run: viewport.toggleFullscreen,
     },
     {
       // `shift+w`, not bare `w`: it sits beside `mod+w`, and a mistyped modifier on

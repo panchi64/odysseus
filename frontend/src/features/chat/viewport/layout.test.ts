@@ -63,6 +63,37 @@ describe("filing a surface by its shape", () => {
   });
 });
 
+describe("a second panel surface", () => {
+  /** A box wide and tall enough for any two of the shipped panels. */
+  const room = { box: { width: 1200, height: 900 }, cap: 2 };
+
+  test("tiles beside what is open rather than evicting it", () => {
+    const one = openSurface(emptyLayout(), "view", room);
+    const two = openSurface(one, "diff", room);
+    expect(panelSurfacesOf(two)).toEqual(["view", "diff"]);
+    expect(two.panels?.kind).toBe("split");
+  });
+
+  test("takes the region on its own when nobody measured a box", () => {
+    // The documented behaviour of the no-tiling call, and the reason every live
+    // caller passes a context: an arrival that opened this way would take down
+    // whatever the operator was reading.
+    const one = openSurface(emptyLayout(), "view");
+    expect(panelSurfacesOf(openSurface(one, "diff"))).toEqual(["diff"]);
+  });
+
+  test("tabs rather than splitting when neither half would be legible", () => {
+    const tight = { box: { width: 500, height: 300 }, cap: 2 };
+    const two = openSurface(
+      openSurface(emptyLayout(), "view", tight),
+      "diff",
+      tight,
+    );
+    expect(two.panels?.kind).toBe("stack");
+    expect(panelSurfacesOf(two)).toEqual(["view", "diff"]);
+  });
+});
+
 describe("a layout that outlived the code that wrote it", () => {
   test("a surface the registry no longer has is dropped", () => {
     const stale = {
