@@ -78,7 +78,10 @@ export const SURFACE_RENDERERS: Record<
       }
       fullscreen={ctx.viewport.state().fullscreen}
       onToggleFullscreen={ctx.onToggleFullscreen}
-      onClose={ctx.onClose}
+      // A pane's own collapse closes *that pane*, not the panel — the same act
+      // its context menu offers. Closing the last one closes the panel anyway,
+      // so the single-surface case reads exactly as it did.
+      onClose={() => ctx.viewport.closeSurface("view")}
       onKeeper={ctx.viewport.toggleKeeper}
       panelRef={ctx.viewport.panelRef}
     />
