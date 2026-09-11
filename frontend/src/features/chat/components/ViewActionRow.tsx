@@ -1,6 +1,6 @@
 import { Show, type JSX } from "solid-js";
 import { Button, Tooltip } from "~/ui";
-import { activeDownload, downloadBlob } from "../viewerPersistence";
+import { activeDownload, triggerDownload } from "../downloadRegistry";
 
 const FONT_MIN = -2;
 const FONT_MAX = 2;
@@ -48,11 +48,6 @@ export function ViewActionRow(props: {
   onClose: () => void;
 }): JSX.Element {
   const download = () => activeDownload();
-  const triggerDownload = () => {
-    const d = download();
-    if (!d) return;
-    void (async () => downloadBlob(d.name, await d.getBlob()))();
-  };
   const decFont = () =>
     props.onFontStep(Math.max(FONT_MIN, props.fontStep - 1));
   const incFont = () =>

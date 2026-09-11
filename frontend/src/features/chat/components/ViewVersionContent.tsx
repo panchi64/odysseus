@@ -2,7 +2,6 @@ import {
   createEffect,
   createMemo,
   createResource,
-  onCleanup,
   Match,
   Show,
   Switch,
@@ -13,7 +12,7 @@ import { bytes } from "~/lib/format";
 import { Button, CodeBlock, ErrorState, LoadingText, Text } from "~/ui";
 import type { ViewPreviewRef } from "../model";
 import { detectContentKind, extensionOf } from "../viewport";
-import { downloadBlob, setActiveDownload } from "../viewerPersistence";
+import { createDownloadSlot, downloadBlob } from "../downloadRegistry";
 import { CsvTable } from "./renderers/CsvTable";
 import { fontStepMetrics } from "./renderers/fontStep";
 import { JsonTree } from "./renderers/JsonTree";
@@ -73,12 +72,12 @@ export function ViewVersionContent(props: {
   // Whenever this component has an artifact's bytes in hand, arm the panel-level
   // download button with them — a relay of what's already been fetched, not a
   // decision the frontend makes on its own.
+  const armDownload = createDownloadSlot();
   createEffect(() => {
     const b = blob();
     if (!b) return;
-    setActiveDownload({ name: props.title, getBlob: async () => b });
+    armDownload({ name: props.title, getBlob: async () => b });
   });
-  onCleanup(() => setActiveDownload(null));
 
   const isTextLike = (): boolean => kind() === "text" || kind() === "code";
   // Assume inline while the size isn't known yet, so the small/common case never

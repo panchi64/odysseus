@@ -3,7 +3,6 @@ import {
   createMemo,
   createResource,
   Match,
-  onCleanup,
   Switch,
   type JSX,
   type Resource,
@@ -13,7 +12,7 @@ import { EmptyState, ErrorState, LoadingText } from "~/ui";
 import { snapshotFilePath } from "../data";
 import type { SnapshotFile, ViewSnapshotRef } from "../model";
 import { pickEntryHtml } from "../viewport";
-import { setActiveDownload } from "../viewerPersistence";
+import { createDownloadSlot } from "../downloadRegistry";
 import { SandboxedFrame } from "./SandboxedFrame";
 
 /**
@@ -54,13 +53,13 @@ export function ViewSnapshotPreview(props: {
     },
     ([snapshotId, path]) => api.getBlob(snapshotFilePath(snapshotId, path)),
   );
+  const armDownload = createDownloadSlot();
   createEffect(() => {
     const path = entry();
     const blob = entryBlob();
     if (!path || !blob) return;
-    setActiveDownload({ name: path, getBlob: async () => blob });
+    armDownload({ name: path, getBlob: async () => blob });
   });
-  onCleanup(() => setActiveDownload(null));
 
   return (
     <Switch fallback={<LoadingText label="Loading preview…" />}>

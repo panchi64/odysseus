@@ -5,7 +5,6 @@ import {
   createSignal,
   For,
   Match,
-  onCleanup,
   Show,
   Switch,
   type JSX,
@@ -33,7 +32,8 @@ import {
 } from "../data";
 import type { SnapshotFile, ViewSnapshotRef } from "../model";
 import { extensionOf, type PriorVersion } from "../viewport";
-import { rememberScroll, setActiveDownload } from "../viewerPersistence";
+import { rememberScroll } from "../viewerPersistence";
+import { createDownloadSlot } from "../downloadRegistry";
 
 /** "Compare vs" value for plain code (no diff). */
 const NO_DIFF = "";
@@ -150,19 +150,19 @@ export function ViewSnapshotCode(props: {
   // The currently selected file downloads from the entry on stage (this
   // component's own snapshot — independent of whichever TO/FROM is active in
   // the compare selectors above).
+  const armDownload = createDownloadSlot();
   createEffect(() => {
     const path = props.selectedPath;
     if (!path) {
-      setActiveDownload(null);
+      armDownload(null);
       return;
     }
     const snapshotId = id();
-    setActiveDownload({
+    armDownload({
       name: path.split("/").pop() ?? path,
       getBlob: () => api.getBlob(snapshotFilePath(snapshotId, path)),
     });
   });
-  onCleanup(() => setActiveDownload(null));
 
   return (
     <div class="flex h-full min-h-0">

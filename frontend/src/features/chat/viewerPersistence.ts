@@ -235,40 +235,11 @@ export function rememberScroll(el: HTMLElement, key: () => string): void {
   });
 }
 
-// ── Cross-component seams ────────────────────────────────────────────────────
-// Single panel instance exists app-wide, so module-level signals are the correct
-// scope (mirrors `claimAutoOpen` in `viewport.ts`).
-
 // The approval deep-link's "scroll the card into view and flash it" intent lived here.
 // It has no work left to do: a park now takes over the composer's slot, so it is on
 // screen the moment the thread opens — there is nothing to scroll to, and the panel's
 // own arrival is the emphasis the flash used to supply.
-
-export interface ActiveDownload {
-  name: string;
-  getBlob: () => Promise<Blob>;
-}
-
-const [downloadSignal, setDownloadSignal] = createSignal<ActiveDownload | null>(
-  null,
-);
-
-export function setActiveDownload(d: ActiveDownload | null): void {
-  setDownloadSignal(d);
-}
-export function activeDownload(): ActiveDownload | null {
-  return downloadSignal();
-}
-
-/** Triggers a browser download of `blob` as `name` via a throwaway anchor +
- *  object URL. */
-export function downloadBlob(name: string, blob: Blob): void {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = name;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
+//
+// The panel's download seam lived here too, as a single unowned signal. It moved to
+// `downloadRegistry.ts` when it grew owners — see that module for why a claim now
+// belongs to the component that made it.

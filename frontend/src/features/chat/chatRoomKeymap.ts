@@ -13,6 +13,7 @@
  */
 
 import { registerKeymap } from "~/lib/keymap";
+import { triggerDownload } from "./downloadRegistry";
 import type { ChatViewport } from "./useChatViewport";
 
 export interface ChatRoomKeymapDeps {
@@ -60,7 +61,7 @@ export function registerChatRoomKeymap(deps: ChatRoomKeymapDeps): void {
     {
       combo: "d",
       when: viewport.hasFocus,
-      run: viewport.triggerActiveDownload,
+      run: triggerDownload,
     },
     {
       combo: "escape",

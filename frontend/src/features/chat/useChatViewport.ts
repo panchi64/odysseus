@@ -30,8 +30,6 @@ import {
 import { createPanelResize, observeAvailableWidth } from "./panelResize";
 import type { ChatMessage, ViewSnapshotRef } from "./model";
 import {
-  activeDownload,
-  downloadBlob,
   useViewerPersistence,
   type ViewerPersistedState,
 } from "./viewerPersistence";
@@ -70,7 +68,6 @@ export interface ChatViewport {
   requestTab: (tab: "preview" | "code") => void;
   pinPrev: () => void;
   pinNext: () => void;
-  triggerActiveDownload: () => void;
   toggleKeeper: (item: ViewItem) => void;
   /** Whether focus is inside the panel — the gate on its scoped key bindings. */
   hasFocus: () => boolean;
@@ -203,12 +200,6 @@ export function useChatViewport(
     else selectView(list[idx + 1].key);
   };
 
-  const triggerActiveDownload = () => {
-    const d = activeDownload();
-    if (!d) return;
-    void (async () => downloadBlob(d.name, await d.getBlob()))();
-  };
-
   // Flip the shown snapshot's keeper bookmark. Relays to the backend; the stream store
   // applies the optimistic update and reverts on failure.
   const toggleKeeper = (item: ViewItem) => {
@@ -235,7 +226,6 @@ export function useChatViewport(
     requestTab,
     pinPrev,
     pinNext,
-    triggerActiveDownload,
     toggleKeeper,
     hasFocus,
     panelRef: setPanelEl,

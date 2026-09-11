@@ -22,7 +22,8 @@ import {
   LoadingText,
   Text,
 } from "~/ui";
-import { downloadBlob, rememberScroll } from "../../viewerPersistence";
+import { rememberScroll } from "../../viewerPersistence";
+import { downloadBlob } from "../../downloadRegistry";
 import { fontStepClass } from "./fontStep";
 
 const ROW_CAP = 5_000;
