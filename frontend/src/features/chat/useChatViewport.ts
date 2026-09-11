@@ -35,6 +35,7 @@ import {
 } from "solid-js";
 import { createPanelResize, observeAvailableWidth } from "./panelResize";
 import type { ChatMessage, ViewSnapshotRef } from "./model";
+import type { BranchState } from "./data";
 import type { PlanItem } from "~/lib/stream/events";
 import {
   emptyLayout,
@@ -71,6 +72,8 @@ export interface ViewportSource {
   messages: ChatMessage[];
   snapshots: Accessor<ViewSnapshotRef[]>;
   plan: Accessor<PlanItem[]>;
+  branch: () => BranchState | null | undefined;
+  refetchBranch: () => void;
   toggleSnapshotKeeper: (snapshotId: string, keeper: boolean) => Promise<void>;
 }
 
@@ -85,6 +88,9 @@ export interface ChatViewport {
   items: Accessor<ViewItem[]>;
   /** The thread's task list, for the Plan surface. */
   plan: Accessor<PlanItem[]>;
+  /** The thread's branch, for the Diff surface. */
+  branch: () => BranchState | null | undefined;
+  refetchBranch: () => void;
   /** Whether a surface has anything to show — which header buttons exist. */
   available: (id: SurfaceId) => boolean;
   /** Whether a surface is currently in the layout. */
@@ -156,7 +162,11 @@ export function useChatViewport(
   const items = createMemo(() =>
     collectViewItems(source.messages, source.snapshots()),
   );
-  const sources = createSurfaceSources({ viewItems: items, plan: source.plan });
+  const sources = createSurfaceSources({
+    viewItems: items,
+    plan: source.plan,
+    branch: source.branch,
+  });
   const available = (id: SurfaceId): boolean => sources[id].available();
 
   // The pane only makes sense with something to show. Gating the effective open state
@@ -369,6 +379,8 @@ export function useChatViewport(
     patchView,
     items,
     plan: source.plan,
+    branch: source.branch,
+    refetchBranch: source.refetchBranch,
     available,
     isOpen,
     toggleSurface,

@@ -17,6 +17,7 @@
  */
 
 import type { PlanItem } from "~/lib/stream/events";
+import type { BranchState } from "../data";
 import type { SurfaceId } from "./surfaces";
 import type { ViewItem } from "./viewItems";
 
@@ -30,6 +31,7 @@ export interface SurfaceSource {
 export interface SurfaceDeps {
   viewItems: () => ViewItem[];
   plan: () => PlanItem[];
+  branch: () => BranchState | null | undefined;
 }
 
 export function createSurfaceSources(
@@ -41,5 +43,8 @@ export function createSurfaceSources(
     // An empty task list is not a plan. The agent writes one the moment it has
     // something to write, so "no rows" and "no plan" are the same state.
     plan: { available: () => deps.plan().length > 0 },
+    // Only a code thread has a branch at all; the fetch answers 404 for every other
+    // kind, which is the ordinary case rather than a failure.
+    diff: { available: () => Boolean(deps.branch()) },
   };
 }

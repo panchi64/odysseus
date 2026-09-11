@@ -71,6 +71,17 @@ export const SURFACES = [
     maxRows: 8,
   },
   {
+    id: "diff",
+    shape: "panel",
+    label: "Changes",
+    icon: "compare",
+    // A split diff needs real width before either column is readable; below this
+    // it renders stacked, which is why the floor is higher than the View's.
+    minWidth: 420,
+    minHeight: 260,
+    defaultWidth: 560,
+  },
+  {
     id: "view",
     shape: "panel",
     label: "View",

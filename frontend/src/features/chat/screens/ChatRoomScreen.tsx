@@ -38,6 +38,7 @@ import { ModelPicker } from "~/app/ModelPicker";
 import { createConversationActions } from "../conversationActions";
 import { registerChatRoomKeymap } from "../chatRoomKeymap";
 import { useChatViewport } from "../useChatViewport";
+import { createBranchState } from "../branchState";
 import { createTranscriptFollow } from "../transcriptScroll";
 import { createRenameConversation } from "../components/RenameConversationModal";
 
@@ -214,10 +215,20 @@ export function ChatRoomScreen(): JSX.Element {
     refreshSessions();
   });
 
+  // A code thread's branch, read once for everyone who shows it: the header's chip and
+  // the Diff surface are two views of one fetch, and two resources over the same
+  // endpoint would disagree for as long as either was in flight. Re-reads when a turn
+  // settles, since that is when the agent has just changed something.
+  const branch = createBranchState(currentId, () => (stream.sending() ? 0 : 1));
+
   // The viewport pane beside the conversation — everything about what it holds, how
   // wide it is, whether it renders as an aside or a sheet, and where focus goes when
   // it closes. It is a concern of its own, so it lives in one.
-  const viewport = useChatViewport(currentId, stream);
+  const viewport = useChatViewport(currentId, {
+    ...stream,
+    branch: branch.latest,
+    refetchBranch: branch.refetch,
+  });
 
   registerChatRoomKeymap({
     viewport,
@@ -271,6 +282,7 @@ export function ChatRoomScreen(): JSX.Element {
           streaming={stream.sending}
           messageCount={() => stream.messages.length}
           viewport={viewport}
+          branch={branch.latest}
           actions={{
             rename: rename.open,
             retitle: () => void actions.retitle(),

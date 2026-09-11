@@ -10,6 +10,7 @@ import {
 } from "~/ui";
 import { REVEAL_SPEED_MS } from "../data";
 import type { ChatViewport } from "../useChatViewport";
+import type { BranchState } from "../data";
 import { BranchChip } from "./BranchChip";
 import { ViewportSurfaceBar } from "./ViewportSurfaceBar";
 
@@ -43,6 +44,8 @@ export interface ChatRoomHeaderProps {
   /** Length of the transcript, which is what makes compact and copy available. */
   messageCount: () => number;
   viewport: ChatViewport;
+  /** The thread's branch, fetched by the room and shared with the Diff surface. */
+  branch: () => BranchState | null | undefined;
   actions: ChatRoomHeaderActions;
 }
 
@@ -91,18 +94,13 @@ export function ChatRoomHeader(props: ChatRoomHeaderProps): JSX.Element {
         </Show>
       </span>
       <div class="flex shrink-0 items-center gap-2">
-        {/* A code thread's branch and diffstat. Renders nothing for a sandbox
-            thread — the backend answers 404 for one, which is the ordinary
-            case. Re-reads when a turn settles, since that is when the agent
-            has just changed something. */}
-        <Show when={props.conversationId()}>
-          {(id) => (
-            <BranchChip
-              conversationId={id()}
-              revision={() => (props.streaming() ? 0 : 1)}
-            />
-          )}
-        </Show>
+        {/* A code thread's branch and diffstat, and the way into the patch.
+            Renders nothing for a sandbox thread — the backend answers 404 for
+            one, which is the ordinary case. */}
+        <BranchChip
+          branch={props.branch}
+          onOpen={() => props.viewport.toggleSurface("diff")}
+        />
         {/* One button per surface that has anything to show — the eye toggle
             grown up. It could only ever say "the panel", which was enough while
             the panel held one thing and a guess once it holds several. */}

@@ -19,6 +19,7 @@
  */
 
 import type { JSX } from "solid-js";
+import { DiffSurface } from "../components/DiffSurface";
 import { PlanSurface } from "../components/PlanSurface";
 import { ViewportPanel } from "../components/ViewportPanel";
 import type { ChatViewport } from "../useChatViewport";
@@ -46,6 +47,14 @@ export const SURFACE_RENDERERS: Record<
       />
     );
   },
+  diff: (ctx) => (
+    <DiffSurface
+      branch={ctx.viewport.branch}
+      onChanged={ctx.viewport.refetchBranch}
+      fontStep={ctx.viewport.state().fontStep}
+      softWrap={ctx.viewport.state().softWrap}
+    />
+  ),
   view: (ctx) => (
     <ViewportPanel
       items={ctx.viewport.items()}
