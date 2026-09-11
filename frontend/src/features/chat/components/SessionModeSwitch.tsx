@@ -1,11 +1,21 @@
-import { For, type JSX } from "solid-js";
+import { type JSX } from "solid-js";
 import { useNavigate } from "@solidjs/router";
-import { SESSION_MODES } from "~/lib/modes";
-import { Icon, Text, Tooltip, cx } from "~/ui";
+import { SESSION_MODES, type SessionMode } from "~/lib/modes";
+import { Segmented, type SegmentedOption } from "~/ui";
 import {
   activeSessionMode,
   setActiveSessionMode,
 } from "~/lib/stores/sessionMode";
+
+/** The registry's modes as the control's options — built once, since the set is
+ *  static and rebuilding it per render would remake the array every time the
+ *  mode changed. */
+const OPTIONS: SegmentedOption<SessionMode>[] = SESSION_MODES.map((spec) => ({
+  value: spec.id,
+  label: spec.label,
+  icon: spec.icon,
+  description: spec.description,
+}));
 
 /**
  * **Which kind of work you are looking at** — the rail's first control, above the
@@ -44,50 +54,13 @@ export function SessionModeSwitch(): JSX.Element {
   };
 
   return (
-    <div class="flex flex-col gap-1 px-2 pb-1">
-      <div
-        role="radiogroup"
+    <div class="px-2 pb-1">
+      <Segmented
         aria-label="Session mode"
-        class="flex items-center gap-1 rounded-ctl bg-sunken p-0.5"
-      >
-        <For each={SESSION_MODES}>
-          {(spec) => (
-            <Tooltip
-              delay={600}
-              side="bottom"
-              label={spec.description}
-              class="min-w-0 flex-1"
-            >
-              <button
-                type="button"
-                role="radio"
-                aria-checked={mode() === spec.id}
-                onClick={() => setMode(spec.id)}
-                class={cx(
-                  "flex w-full items-center justify-center gap-1.5 rounded-ctl px-2 py-1.5 transition-colors hover:bg-raised",
-                  // Selection is a raised fill on a smoothed corner, the same
-                  // way the rail marks the page you are on — not a coloured pill,
-                  // which would spend the signature accent on the control that
-                  // *chooses* the signature accent.
-                  mode() === spec.id && "bg-raised",
-                )}
-              >
-                <Icon
-                  name={spec.icon}
-                  size={14}
-                  class={mode() === spec.id ? "text-bright" : "text-dim"}
-                />
-                <Text
-                  variant="label"
-                  tone={mode() === spec.id ? "bright" : "dim"}
-                >
-                  {spec.label}
-                </Text>
-              </button>
-            </Tooltip>
-          )}
-        </For>
-      </div>
+        options={OPTIONS}
+        value={mode()}
+        onChange={setMode}
+      />
     </div>
   );
 }

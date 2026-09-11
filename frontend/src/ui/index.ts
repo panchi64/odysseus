@@ -186,6 +186,11 @@ export {
 } from "./components/Disclosure";
 export { Toggle, type ToggleProps } from "./components/Toggle";
 export { Tabs, type TabsProps, type TabItem } from "./components/Tabs";
+export {
+  Segmented,
+  type SegmentedProps,
+  type SegmentedOption,
+} from "./components/Segmented";
 export { Modal, type ModalProps } from "./components/Modal";
 export { Drawer, type DrawerProps } from "./components/Drawer";
 export {
