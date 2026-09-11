@@ -13,7 +13,7 @@
  */
 
 import { registerKeymap } from "~/lib/keymap";
-import { triggerDownload } from "./downloadRegistry";
+import { triggerDownload } from "./viewport/downloadRegistry";
 import type { ChatViewport } from "./useChatViewport";
 
 export interface ChatRoomKeymapDeps {

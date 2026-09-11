@@ -13,7 +13,7 @@ import { CONTEXT_OVERFLOW_DETAIL } from "~/lib/stream";
 import { selectedModelLabel } from "~/lib/stores/models";
 import type { ApprovalDecision, ChatMessage, Citation } from "../model";
 import { hasLayers as turnHasLayers } from "../blocks";
-import type { ViewItem } from "../viewport";
+import type { ViewItem } from "../viewport/viewItems";
 import { CompactionDivider } from "./CompactionDivider";
 import { MessageActions, TURN_REVEAL_CLASS } from "./MessageActions";
 import { MessageAttachments } from "./MessageAttachments";

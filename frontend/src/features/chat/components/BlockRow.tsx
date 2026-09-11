@@ -14,7 +14,12 @@ import type {
   ViewVersionBlock,
 } from "../model";
 import type { BlockGroup, LayoutItem } from "../blocks";
-import { LIVE_KEY, snapshotKey, versionIcon, type ViewItem } from "../viewport";
+import {
+  LIVE_KEY,
+  snapshotKey,
+  versionIcon,
+  type ViewItem,
+} from "../viewport/viewItems";
 import { AnswerText } from "./AnswerText";
 import { CompactionProgressCard } from "./CompactionProgressCard";
 import { ContextInjectionCard } from "./ContextInjectionCard";

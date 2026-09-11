@@ -1,6 +1,6 @@
 import { For, Show, createEffect, on, type JSX } from "solid-js";
 import { Icon, Text, cx } from "~/ui";
-import type { ViewItem } from "../viewport";
+import type { ViewItem } from "../viewport/viewItems";
 import {
   classifyViewItem,
   viewItemTimeLabel,

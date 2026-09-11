@@ -17,7 +17,7 @@ import {
   planTurnLayout,
   type LayoutItem,
 } from "../blocks";
-import type { ViewItem } from "../viewport";
+import type { ViewItem } from "../viewport/viewItems";
 import {
   BlockRow,
   topSpacing,

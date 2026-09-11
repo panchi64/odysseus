@@ -8,7 +8,11 @@ import {
   type SelectOption,
   type TabItem,
 } from "~/ui";
-import { priorSnapshots, type PriorVersion, type ViewItem } from "../viewport";
+import {
+  priorSnapshots,
+  type PriorVersion,
+  type ViewItem,
+} from "../viewport/viewItems";
 import { ViewActionRow } from "./ViewActionRow";
 import { ViewStage } from "./ViewStage";
 import { ViewTimelineRail } from "./ViewTimelineRail";

@@ -23,7 +23,7 @@ import {
   Text,
 } from "~/ui";
 import { rememberScroll } from "../../viewerPersistence";
-import { downloadBlob } from "../../downloadRegistry";
+import { downloadBlob } from "../../viewport/downloadRegistry";
 import { fontStepClass } from "./fontStep";
 
 const ROW_CAP = 5_000;

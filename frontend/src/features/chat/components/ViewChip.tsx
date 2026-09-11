@@ -1,6 +1,6 @@
 import { Show, type JSX } from "solid-js";
 import { Icon, StatusFlag, Text, cx, type IconName } from "~/ui";
-import { detectContentKind, type ViewItem } from "../viewport";
+import { detectContentKind, type ViewItem } from "../viewport/viewItems";
 
 /** Fallback kind word derived from `icon` alone, for callers that only have a
  *  chip icon (no full `ViewItem`) — e.g. the transcript's inline chips, which

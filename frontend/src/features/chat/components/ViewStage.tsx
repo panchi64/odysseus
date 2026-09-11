@@ -11,7 +11,7 @@ import {
 import { EmptyState } from "~/ui";
 import { fetchSnapshotFiles } from "../data";
 import type { ViewSnapshotRef } from "../model";
-import type { ViewItem, PriorVersion } from "../viewport";
+import type { ViewItem, PriorVersion } from "../viewport/viewItems";
 import { ViewLiveContent } from "./ViewLiveContent";
 import { ViewVersionContent } from "./ViewVersionContent";
 import { ViewSnapshotPreview } from "./ViewSnapshotPreview";

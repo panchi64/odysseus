@@ -33,7 +33,11 @@ import {
   useViewerPersistence,
   type ViewerPersistedState,
 } from "./viewerPersistence";
-import { claimAutoOpen, collectViewItems, type ViewItem } from "./viewport";
+import {
+  claimAutoOpen,
+  collectViewItems,
+  type ViewItem,
+} from "./viewport/viewItems";
 
 /** What the pane needs from the room's stream — narrowed to the three reads, so a
  *  panel can be reasoned about without the whole streaming controller. */

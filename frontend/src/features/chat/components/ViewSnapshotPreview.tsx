@@ -11,8 +11,8 @@ import { api, useAuthedBlobUrl } from "~/lib/api";
 import { EmptyState, ErrorState, LoadingText } from "~/ui";
 import { snapshotFilePath } from "../data";
 import type { SnapshotFile, ViewSnapshotRef } from "../model";
-import { pickEntryHtml } from "../viewport";
-import { createDownloadSlot } from "../downloadRegistry";
+import { pickEntryHtml } from "../viewport/viewItems";
+import { createDownloadSlot } from "../viewport/downloadRegistry";
 import { SandboxedFrame } from "./SandboxedFrame";
 
 /**

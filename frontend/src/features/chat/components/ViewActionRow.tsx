@@ -1,6 +1,6 @@
 import { Show, type JSX } from "solid-js";
 import { Button, Tooltip } from "~/ui";
-import { activeDownload, triggerDownload } from "../downloadRegistry";
+import { activeDownload, triggerDownload } from "../viewport/downloadRegistry";
 
 const FONT_MIN = -2;
 const FONT_MAX = 2;

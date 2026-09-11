@@ -11,7 +11,7 @@ import {
   Show,
   type JSX,
 } from "solid-js";
-import { detectContentKind } from "../../viewport";
+import { detectContentKind } from "../../viewport/viewItems";
 
 export function MediaPlayer(props: {
   data: Blob;

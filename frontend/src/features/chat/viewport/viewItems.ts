@@ -14,7 +14,7 @@ import type {
   ViewLiveRef,
   ViewPreviewRef,
   ViewSnapshotRef,
-} from "./model";
+} from "../model";
 
 /** One version on the View canvas: a workspace `snapshot` (its code, plus how it
  *  previews — a static file by kind, or an auto-picked entry HTML page), optionally
