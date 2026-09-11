@@ -35,21 +35,25 @@ import {
 } from "solid-js";
 import { createPanelResize, observeAvailableWidth } from "./panelResize";
 import type { ChatMessage, ViewSnapshotRef } from "./model";
+import type { PlanItem } from "~/lib/stream/events";
 import {
   emptyLayout,
   hasSurface,
+  isEmpty,
   leaf,
   openSurface,
   surfacesOf,
+  toggleSurface as toggleLayout,
   type ViewportLayout,
 } from "./viewport/layout";
+import { createSurfaceSources } from "./viewport/surfaceSources";
 import {
   DEFAULT_VIEW_SURFACE,
   useViewportPersistence,
   type ViewportPersistedState,
   type ViewSurfaceState,
 } from "./viewport/persistence";
-import type { SurfaceId } from "./viewport/surfaces";
+import { SURFACE_IDS, type SurfaceId } from "./viewport/surfaces";
 import {
   claimAutoOpen,
   collectViewItems,
@@ -61,6 +65,7 @@ import {
 export interface ViewportSource {
   messages: ChatMessage[];
   snapshots: Accessor<ViewSnapshotRef[]>;
+  plan: Accessor<PlanItem[]>;
   toggleSnapshotKeeper: (snapshotId: string, keeper: boolean) => Promise<void>;
 }
 
@@ -73,7 +78,16 @@ export interface ChatViewport {
   viewState: () => ViewSurfaceState;
   patchView: (next: Partial<ViewSurfaceState>) => void;
   items: Accessor<ViewItem[]>;
-  /** Whether there is anything at all to show — the eye toggle's enablement. */
+  /** The thread's task list, for the Plan surface. */
+  plan: Accessor<PlanItem[]>;
+  /** Whether a surface has anything to show — which header buttons exist. */
+  available: (id: SurfaceId) => boolean;
+  /** Whether a surface is currently in the layout. */
+  isOpen: (id: SurfaceId) => boolean;
+  /** Put a surface on screen, or take it off. Closing the last one closes the
+   *  panel, since a panel showing nothing is a panel that is shut. */
+  toggleSurface: (id: SurfaceId) => void;
+  /** Whether there is anything at all to show — the panel's enablement. */
   hasContent: () => boolean;
   /** Rendered as the desktop aside. */
   asideOpen: () => boolean;
@@ -127,10 +141,13 @@ export function useChatViewport(
   const items = createMemo(() =>
     collectViewItems(source.messages, source.snapshots()),
   );
+  const sources = createSurfaceSources({ viewItems: items, plan: source.plan });
+  const available = (id: SurfaceId): boolean => sources[id].available();
+
   // The pane only makes sense with something to show. Gating the effective open state
-  // on having items keeps a persisted-open thread that has since lost them (or a fresh
+  // on that keeps a persisted-open thread that has since lost its content (or a fresh
   // chat that never had any) from showing an empty panel.
-  const hasContent = () => items().length > 0;
+  const hasContent = () => SURFACE_IDS.some(available);
   const shown = () => state().layout !== null && hasContent();
 
   /** Put `id` on screen, remembering the arrangement as the restore point. */
@@ -151,6 +168,22 @@ export function useChatViewport(
     patch({ layout: null, lastLayout: current });
   };
   const toggle = () => (state().layout === null ? open() : close());
+
+  const isOpen = (id: SurfaceId): boolean => {
+    const layout = state().layout;
+    return layout !== null && hasSurface(layout, id);
+  };
+  /** A header button's click. Closing the last surface closes the panel rather
+   *  than leaving an empty frame behind — "open with nothing in it" is a state
+   *  the layout deliberately cannot express. */
+  const toggleSurface = (id: SurfaceId): void => {
+    const next = toggleLayout(state().layout ?? emptyLayout(), id);
+    if (isEmpty(next)) {
+      close();
+      return;
+    }
+    patch({ layout: next, lastLayout: next, focused: id });
+  };
 
   // The aside's width, and the drag that changes it (see `panelResize.ts` for why the
   // live width is an override rather than a seeded copy).
@@ -278,6 +311,10 @@ export function useChatViewport(
     viewState,
     patchView,
     items,
+    plan: source.plan,
+    available,
+    isOpen,
+    toggleSurface,
     hasContent,
     asideOpen,
     sheetOpen,

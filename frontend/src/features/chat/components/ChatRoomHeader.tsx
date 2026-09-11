@@ -5,13 +5,13 @@ import {
   Icon,
   Menu,
   Text,
-  Tooltip,
   TypewriterText,
   type MenuItem,
 } from "~/ui";
 import { REVEAL_SPEED_MS } from "../data";
 import type { ChatViewport } from "../useChatViewport";
 import { BranchChip } from "./BranchChip";
+import { ViewportSurfaceBar } from "./ViewportSurfaceBar";
 
 /** The session menu's entries — everything that acts on the thread rather than on a
  *  turn in it. Handed in as one object because they arrive as one: they are the
@@ -103,30 +103,10 @@ export function ChatRoomHeader(props: ChatRoomHeaderProps): JSX.Element {
             />
           )}
         </Show>
-        {/* `md`, matching the session-actions trigger beside it — these are
-            peer controls in the same row and the two most-reached-for things
-            in the header, so they get the same target. The rest of the
-            product's ghost icon buttons stay `sm`; this row is deliberately
-            the exception, not the new default. */}
-        <Tooltip label="Viewport" side="bottom">
-          <Button
-            ref={props.viewport.triggerRef}
-            variant="ghost"
-            leading="eye"
-            aria-label="Toggle viewport panel"
-            onClick={props.viewport.toggle}
-            disabled={!props.viewport.hasContent()}
-            class={
-              props.viewport.hasContent() ? undefined : "hidden lg:inline-flex"
-            }
-          >
-            <Show when={props.viewport.unseenCount() > 0}>
-              {props.viewport.unseenCount() > 9
-                ? "9+"
-                : props.viewport.unseenCount()}
-            </Show>
-          </Button>
-        </Tooltip>
+        {/* One button per surface that has anything to show — the eye toggle
+            grown up. It could only ever say "the panel", which was enough while
+            the panel held one thing and a guess once it holds several. */}
+        <ViewportSurfaceBar viewport={props.viewport} />
         <Menu
           trigger={
             <Button variant="ghost" aria-label="Session actions">

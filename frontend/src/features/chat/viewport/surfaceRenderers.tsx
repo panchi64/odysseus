@@ -19,9 +19,10 @@
  */
 
 import type { JSX } from "solid-js";
+import { PlanSurface } from "../components/PlanSurface";
 import { ViewportPanel } from "../components/ViewportPanel";
 import type { ChatViewport } from "../useChatViewport";
-import type { SurfaceId } from "./surfaces";
+import { SURFACE_BY_ID, type SurfaceId } from "./surfaces";
 
 /** What every surface is handed. Generic on purpose — see the module note. */
 export interface SurfaceContext {
@@ -36,6 +37,15 @@ export const SURFACE_RENDERERS: Record<
   SurfaceId,
   (ctx: SurfaceContext) => JSX.Element
 > = {
+  plan: (ctx) => {
+    const spec = SURFACE_BY_ID.plan;
+    return (
+      <PlanSurface
+        items={ctx.viewport.plan}
+        maxRows={spec.shape === "strip" ? spec.maxRows : 8}
+      />
+    );
+  },
   view: (ctx) => (
     <ViewportPanel
       items={ctx.viewport.items()}

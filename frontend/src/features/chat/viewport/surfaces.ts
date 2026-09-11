@@ -62,6 +62,15 @@ export type SurfaceSpec = StripSpec | PanelSpec;
  */
 export const SURFACES = [
   {
+    id: "plan",
+    shape: "strip",
+    label: "Plan",
+    icon: "note",
+    // Eight rows before it stops growing. A plan longer than that is a plan the
+    // operator scrolls, not one that pushes the panels off the bottom.
+    maxRows: 8,
+  },
+  {
     id: "view",
     shape: "panel",
     label: "View",
