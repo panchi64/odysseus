@@ -228,6 +228,7 @@ export function ChatRoomScreen(): JSX.Element {
     ...stream,
     branch: branch.latest,
     refetchBranch: branch.refetch,
+    permission,
   });
 
   registerChatRoomKeymap({

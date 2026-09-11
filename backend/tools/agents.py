@@ -43,6 +43,7 @@ from tools.delegation import (
     DELEGATE_TOOL,
     EXPLORER,
     WORKER,
+    delegated,
     redescribed_def,
     redescribed_tool,
     stream_handler,
@@ -127,6 +128,7 @@ class _ConversationAgentsToolset(AbstractToolset[RunDeps]):
         tool: ToolsetTool[RunDeps],
     ) -> Any:
         wanted = str(tool_args.get(AGENT_NAME_ARG) or "")
+        task = str(tool_args.get("task") or "")
         # Before anything else, and only for the writer: a delegation that ends in edits
         # is the operator's to allow, and asking after a container has been forked for it
         # would be a side effect they never approved.
@@ -148,12 +150,21 @@ class _ConversationAgentsToolset(AbstractToolset[RunDeps]):
         if wanted == WORKER:
             if not self._claim_worker(ctx.deps.run.id):
                 return _SPENT
-            return await run_worker(
+            # `delegated` brackets the awaited child with the structured sub-agent frames
+            # (`tools/delegation.py`); it goes here rather than inside `run_worker`
+            # because the explorer below has no such function to put it in, and a roster
+            # whose two sub-agents were reported from two different layers would drift.
+            return await delegated(
                 ctx,
-                workspace,
-                task=str(tool_args.get("task") or ""),
-                background=background,
-                stream=stream_handler(ctx, WORKER),
+                WORKER,
+                task,
+                lambda: run_worker(
+                    ctx,
+                    workspace,
+                    task=task,
+                    background=background,
+                    stream=stream_handler(ctx, WORKER),
+                ),
             )
 
         bound = self._bind(str(workspace.root), background, ctx)
@@ -163,7 +174,15 @@ class _ConversationAgentsToolset(AbstractToolset[RunDeps]):
             return f"Unknown delegate tool {name!r}."
         # Pydantic AI dispatches through the tool's own call_func, so delegating the
         # call alone would still run against the template's bindings.
-        return await bound.call_tool(name, tool_args, ctx, resolved)
+        return await delegated(
+            # `wanted` rather than EXPLORER: the harness answers an unrecognised name with
+            # a message of its own, and a row labelled with a sub-agent that never ran
+            # would be the one place the operator could not see what was actually asked.
+            ctx,
+            wanted or EXPLORER,
+            task,
+            lambda: bound.call_tool(name, tool_args, ctx, resolved),
+        )
 
     def _claim_worker(self, run_id: str) -> bool:
         """Whether this run may set one more worker going, counting it if so."""

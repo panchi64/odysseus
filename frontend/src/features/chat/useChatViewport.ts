@@ -34,7 +34,7 @@ import {
   type Accessor,
 } from "solid-js";
 import { createPanelResize, observeAvailableWidth } from "./panelResize";
-import type { ChatMessage, ViewSnapshotRef } from "./model";
+import type { ChatMessage, PermissionLevel, ViewSnapshotRef } from "./model";
 import type { BranchState } from "./data";
 import type { PlanItem } from "~/lib/stream/events";
 import {
@@ -74,6 +74,8 @@ export interface ViewportSource {
   plan: Accessor<PlanItem[]>;
   branch: () => BranchState | null | undefined;
   refetchBranch: () => void;
+  /** The thread's level — the Plan surface's arrival turns on it. */
+  permission: () => PermissionLevel;
   toggleSnapshotKeeper: (snapshotId: string, keeper: boolean) => Promise<void>;
 }
 
@@ -166,6 +168,7 @@ export function useChatViewport(
     viewItems: items,
     plan: source.plan,
     branch: source.branch,
+    permission: source.permission,
   });
   const available = (id: SurfaceId): boolean => sources[id].available();
 
@@ -275,14 +278,20 @@ export function useChatViewport(
     show("view");
   };
 
-  // First-time-only auto-open: when a thread first produces a View item, open the pane
-  // once. `claimAutoOpen` is one-shot per conversation *per surface*, so a later manual
-  // close is respected and subsequent items update it silently — and a thread that has
-  // spent the View's shot still has one for every other surface.
+  // **Arrival.** A surface that has just gained something may put itself on screen,
+  // and whether it may is the surface's own answer rather than a rule the panel
+  // applies uniformly — see `surfaceSources.ts`. The claim is one-shot per
+  // conversation per surface per *key*, so a manual close is respected, a surface
+  // re-rendering does not reopen itself, and a genuinely new arrival (a revised plan
+  // still awaiting a yes) earns a fresh one.
   createEffect(() => {
-    const id = currentId();
-    if (id !== null && items().length > 0 && claimAutoOpen(`${id}:view`))
-      show("view");
+    const conversation = currentId();
+    if (conversation === null) return;
+    for (const id of SURFACE_IDS) {
+      const source = sources[id];
+      if (!source.available() || source.arrival() !== "steal") continue;
+      if (claimAutoOpen(`${conversation}:${id}:${source.claimKey()}`)) show(id);
+    }
   });
 
   // Items minted after the "seen through" pointer. Counting from a key's *position* —

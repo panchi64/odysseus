@@ -75,6 +75,33 @@ export interface FoldState {
   activeRunId: string | null;
 }
 
+/** One delegation, as the conversation knows it.
+ *
+ *  Conversation-scoped for the same reason the plan is: a delegation outlives the turn
+ *  that started it in the operator's reading of the thread — "what did that worker end
+ *  up doing?" is asked after the turn has finished — and pinning it to a message block
+ *  would strand it on whichever bubble happened to be open.
+ *
+ *  `partial` is latest-wins, not a log: the backend sends one line per child event, and
+ *  a row shows where a sub-agent has got to rather than everywhere it has been. */
+export interface SubagentRun {
+  /** `{run_id}:{tool_call_id}:{seq}` — unique per delegation, including across the
+   *  retries of one tool call, which share a `tool_call_id`. */
+  id: string;
+  /** Which sub-agent: "explorer", "worker", or whatever the model asked for. */
+  name: string;
+  task: string;
+  /** The delegating call, so a row can be tied back to its tool card. */
+  toolCallId: string;
+  status: "running" | "completed" | "failed";
+  /** The most recent line of narration, while it runs. */
+  partial?: string;
+  /** Its report, once it has one (capped backend-side; the tool card carries the rest). */
+  summary?: string;
+  error?: string;
+  durationMs?: number;
+}
+
 /** Everything the fold is allowed to touch. Passed in rather than reached for, so the
  *  same fold serves the persistent main room and an ephemeral compare pane without
  *  either one knowing the other exists. */

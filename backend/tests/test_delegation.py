@@ -20,6 +20,7 @@ import os
 import shutil
 from functools import partial
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic_ai import RunContext, RunUsage
@@ -255,7 +256,35 @@ def _ctx(caps: ServiceContainer, conversation_id: str, *, approved: bool = False
     # What the engine sets on the re-invocation after an approval; the gate below fires
     # once and then lets the delegation run.
     ctx.tool_call_approved = approved
+    # The call a delegation's sub-agent ids are namespaced under. Set because it is the
+    # half of the id that collides on a retry, which `TestSubagentEvents` asserts on.
+    ctx.tool_call_id = "call-7"
     return ctx
+
+
+@pytest.fixture
+def emitted(monkeypatch) -> list[Any]:
+    """Every body a delegation put on the run's stream, in order.
+
+    Patched onto `RunContext` itself rather than onto one instance: the contexts built
+    above are not backed by a running agent, so the real `emit` raises `UserError` — and
+    the emission sites are all best-effort by design, so they would swallow precisely
+    what is under test and every assertion would pass on an empty list.
+    """
+    seen: list[Any] = []
+
+    async def emit(self, event):
+        body = getattr(event, "body", None)
+        if body is not None:
+            seen.append(body)
+        return event
+
+    monkeypatch.setattr(RunContext, "emit", emit)
+    return seen
+
+
+def _of(bodies: list[Any], type_: str) -> list[Any]:
+    return [b for b in bodies if getattr(b, "type", None) == type_]
 
 
 async def _delegate(toolset, ctx, agent_name: str, task: str = "do the thing") -> str:
@@ -594,6 +623,116 @@ class TestWhatAChildCannotDo:
         assert {"execute", "write_file", "read_file"} <= child
         # And it is told to hand the question upwards rather than stall on it.
         assert "report" in WORKER_BRIEF
+
+
+# --- what a delegation says about itself on the stream ---------------------------------
+
+
+class TestSubagentEvents:
+    """A delegation reports itself twice, on purpose.
+
+    The flattened `tool.progress` line is what the transcript reads: one sentence under
+    the call that made it. The `subagent.*` frames are what a roster of sub-agents reads:
+    which one is running, what it was asked, how it ended. Neither is derivable from the
+    other — every delegation on one tool call flattens onto the same `tool_call_id` — so
+    the assertions below pin *both* being emitted, not one replacing the other.
+    """
+
+    async def test_a_delegation_opens_and_closes_a_sub_agent(self, tmp_path, emitted):
+        caps, _sessions = _sandbox_caps(tmp_path, _reports("I read the file"))
+
+        result = await _delegate(agents_toolset(), _ctx(caps, "conv-a"), EXPLORER, "look around")
+
+        (started,) = _of(emitted, "subagent.started")
+        assert started.agent_name == EXPLORER
+        # The task, verbatim: a row that cannot say what was asked is a spinner.
+        assert started.task == "look around"
+        assert started.tool_call_id == "call-7"
+        # Namespaced by run *and* call, so two conversations cannot collide on one row.
+        assert started.subagent_id.startswith("run-1:call-7:")
+
+        (completed,) = _of(emitted, "subagent.completed")
+        assert completed.subagent_id == started.subagent_id
+        assert "I read the file" in completed.summary
+        assert completed.duration_ms >= 0
+        # And the report the frames describe is still what the model got back.
+        assert "I read the file" in result
+        assert _of(emitted, "subagent.failed") == []
+
+    async def test_the_flattened_transcript_line_still_goes_out(self, tmp_path, emitted):
+        """The whole point of the pair: this is not a migration.
+
+        A sub-agent's events reach the transcript as one line of prose under the
+        delegating call, and reach the roster as `subagent.progress` filed under the
+        sub-agent that said it. Dropping either leaves one of the two surfaces blind.
+        """
+        caps, _sessions = _sandbox_caps(tmp_path, _reports("done"))
+
+        await _delegate(agents_toolset(), _ctx(caps, "conv-a"), EXPLORER)
+
+        flattened = _of(emitted, "tool.progress")
+        structured = _of(emitted, "subagent.progress")
+        assert flattened, "the transcript's one-liner must survive"
+        assert structured, "the roster's per-sub-agent line must exist"
+        # Same events, same words — filed two ways.
+        assert [b.partial for b in flattened] == [b.partial for b in structured]
+        assert all(line.startswith(f"{EXPLORER}: ") for line in (b.partial for b in structured))
+        (started,) = _of(emitted, "subagent.started")
+        assert {b.subagent_id for b in structured} == {started.subagent_id}
+
+    async def test_a_retried_delegation_is_a_second_sub_agent(self, tmp_path, emitted):
+        """The model re-issuing a delegation reuses its `tool_call_id`.
+
+        Keyed on that alone the two runs would fold into one row that started twice and
+        finished twice; the sequence is what keeps them apart.
+        """
+        caps, _sessions = _sandbox_caps(tmp_path, _reports("done"))
+        toolset, ctx = agents_toolset(), _ctx(caps, "conv-a")
+
+        await _delegate(toolset, ctx, EXPLORER)
+        await _delegate(toolset, ctx, EXPLORER)
+
+        ids = [b.subagent_id for b in _of(emitted, "subagent.started")]
+        assert len(ids) == 2
+        assert len(set(ids)) == 2
+        assert all(i.startswith("run-1:call-7:") for i in ids)
+        # Each close names its own opener, or the second row never stops spinning.
+        assert [b.subagent_id for b in _of(emitted, "subagent.completed")] == ids
+
+    async def test_a_sub_agent_that_raises_still_reports(self, tmp_path, emitted, monkeypatch):
+        """The failure case is the one a row would otherwise sit on forever.
+
+        A delegation's ordinary failures degrade to a sentence for the model, so anything
+        that actually escapes is unusual — and the close is in a `finally` for exactly
+        that: the exception reaches the turn untouched, and the row still ends.
+        """
+        caps, _sessions = _sandbox_caps(tmp_path)
+
+        async def boom(*args, **kwargs):
+            raise RuntimeError("the fork went away")
+
+        monkeypatch.setattr("tools.agents.run_worker", boom)
+
+        with pytest.raises(RuntimeError):
+            await _delegate(agents_toolset(), _ctx(caps, "conv-a", approved=True), WORKER)
+
+        (started,) = _of(emitted, "subagent.started")
+        assert started.agent_name == WORKER
+        (failed,) = _of(emitted, "subagent.failed")
+        assert failed.subagent_id == started.subagent_id
+        assert "the fork went away" in failed.error
+        assert _of(emitted, "subagent.completed") == []
+
+    async def test_a_delegation_that_never_happens_opens_no_row(self, tmp_path, emitted):
+        """Degrading before anything is delegated is not a sub-agent.
+
+        `delegate_task` answers "unavailable" for a missing registry or workspace the same
+        way every capability-backed tool degrades. A row opened for one would name a
+        sub-agent that never existed and never close.
+        """
+        await _delegate(agents_toolset(), _ctx(ServiceContainer(), "conv-a"), EXPLORER)
+
+        assert _of(emitted, "subagent.started") == []
 
 
 # --- what the model and the operator are told -----------------------------------------

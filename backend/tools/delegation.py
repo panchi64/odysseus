@@ -18,13 +18,25 @@ from __future__ import annotations
 
 import copy
 import logging
+import time
+from collections import OrderedDict
+from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from dataclasses import replace
 from typing import Any
 
+from pydantic import BaseModel
 from pydantic_ai import RunContext
 from pydantic_ai.toolsets import ToolsetTool
 
-from runs import ToolProgress
+from runs.events import (
+    SUBAGENT_SUMMARY_LIMIT,
+    SubagentCompleted,
+    SubagentFailed,
+    SubagentProgress,
+    SubagentStarted,
+    ToolProgress,
+)
 from tools.deps import RunDeps
 from tools.emit import RunEventEmitted
 
@@ -97,16 +109,109 @@ def redescribed_def(name: str, tool: ToolsetTool[RunDeps]) -> ToolsetTool[RunDep
     )
 
 
-def stream_handler(ctx: RunContext[RunDeps], name: str) -> Any:
-    """A sub-agent's events, flattened onto the parent's `tool.progress`.
+#: The delegation the current task is inside, for the one reader that cannot be told.
+#: `stream_handler` is built once per run — the explorer's binding caches it, long before
+#: the delegation whose events it will carry exists — so the id cannot be closed over and
+#: a lookup keyed on the call id would read the *first* delegation's. A context variable
+#: is set by :func:`delegated` around the awaited child, which is exactly the scope the
+#: handler runs in, and stays right when a turn has two delegations in flight at once.
+_CURRENT: ContextVar[str | None] = ContextVar("odysseus_subagent", default=None)
 
-    One short line per event, because `partial` is a string — the frozen run protocol has
-    no nested shape and does not need one. Best-effort: a delegation must not fail because
-    its narration did.
+#: Per-run delegation counter, bounded like every other cache a long-lived process keeps
+#: per run. It is what makes a retried delegation a second sub-agent rather than the same
+#: one reported twice: the model re-issuing a call reuses its `tool_call_id`, so the id
+#: below would otherwise collide and two rows would fold into one that finished twice.
+_SEQ: OrderedDict[str, int] = OrderedDict()
+_MAX_RUNS = 64
+
+
+def _next_seq(run_id: str) -> int:
+    seq = _SEQ.get(run_id, 0) + 1
+    _SEQ[run_id] = seq
+    _SEQ.move_to_end(run_id)
+    while len(_SEQ) > _MAX_RUNS:
+        _SEQ.popitem(last=False)
+    return seq
+
+
+async def _announce(ctx: RunContext[RunDeps], body: BaseModel) -> None:
+    """One structured frame about a sub-agent, best-effort.
+
+    Guarded for the same reason the narration below is: an emit into a context with no
+    stream raises, and a delegation that cannot be reported on must still delegate.
+    """
+    try:
+        await ctx.emit(RunEventEmitted(body=body))
+    except Exception:  # noqa: BLE001 — reporting is never load-bearing
+        logger.debug("delegate: dropped a sub-agent frame", exc_info=True)
+
+
+async def delegated(
+    ctx: RunContext[RunDeps],
+    agent_name: str,
+    task: str,
+    call: Callable[[], Awaitable[Any]],
+) -> Any:
+    """Run one delegation, bracketed by the frames a roster of sub-agents is built from.
+
+    Wrapped around the *awaited child* rather than around the whole tool call, so a
+    delegation that degrades before anything is delegated — no registry, no workspace, the
+    worker budget spent — never opens a row for a sub-agent that does not exist.
+
+    The close is in a `finally`, because a sub-agent that raises is precisely the case a
+    row would otherwise sit on "running" forever: the ordinary failures here degrade to a
+    sentence for the model, so anything that does escape is unusual and worth seeing end.
+    """
+    run_id = ctx.deps.run.id
+    tool_call_id = ctx.tool_call_id or "delegate"
+    subagent_id = f"{run_id}:{tool_call_id}:{_next_seq(run_id)}"
+    await _announce(
+        ctx,
+        SubagentStarted(
+            subagent_id=subagent_id,
+            agent_name=agent_name,
+            task=task,
+            tool_call_id=tool_call_id,
+        ),
+    )
+    began = time.monotonic()
+    token = _CURRENT.set(subagent_id)
+    outcome: BaseModel
+    try:
+        result = await call()
+    except BaseException as exc:  # noqa: BLE001 — recorded, then re-raised untouched
+        outcome = SubagentFailed(subagent_id=subagent_id, error=str(exc) or type(exc).__name__)
+        raise
+    else:
+        outcome = SubagentCompleted(
+            subagent_id=subagent_id,
+            summary=str(result)[:SUBAGENT_SUMMARY_LIMIT],
+            duration_ms=int((time.monotonic() - began) * 1000),
+        )
+        return result
+    finally:
+        _CURRENT.reset(token)
+        await _announce(ctx, outcome)
+
+
+def stream_handler(ctx: RunContext[RunDeps], name: str) -> Any:
+    """A sub-agent's events, flattened onto the parent's `tool.progress` **and** carried
+    as `subagent.progress`.
+
+    Two frames per event, deliberately, because there are two readers and neither's is
+    derivable from the other. The transcript wants one short line under the call that
+    made it — `partial` is a string, the frozen run protocol has no nested shape there and
+    does not need one. A roster of sub-agents wants the same line filed under *which*
+    sub-agent said it, which the flattened form cannot say: every delegation on one tool
+    call flattens onto the same `tool_call_id`.
+
+    Both are best-effort, and separately so: a delegation must not fail because its
+    narration did, and neither reader's frame is worth losing the other's.
     """
 
     async def stream(sub_ctx: RunContext[Any], events) -> None:
         async for event in events:
+            line = _describe(event, name)
             try:
                 # Awaited, unlike the `Run.emit` this replaced: `RunContext.emit` is a
                 # coroutine and dropping it would leave the narration unsent. The guard
@@ -116,12 +221,15 @@ def stream_handler(ctx: RunContext[RunDeps], name: str) -> Any:
                     RunEventEmitted(
                         body=ToolProgress(
                             tool_call_id=ctx.tool_call_id or "delegate",
-                            partial=_describe(event, name),
+                            partial=line,
                         )
                     )
                 )
             except Exception:  # noqa: BLE001 — narration is never load-bearing
                 logger.debug("delegate: dropped a sub-agent event", exc_info=True)
+            subagent_id = _CURRENT.get()
+            if subagent_id is not None:
+                await _announce(ctx, SubagentProgress(subagent_id=subagent_id, partial=line))
 
     return stream
 

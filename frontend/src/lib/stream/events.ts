@@ -465,6 +465,48 @@ export interface PlanUpdated extends Base {
   type: "plan.updated";
   items: PlanItem[];
 }
+/** A sub-agent was handed a piece of work.
+ *
+ *  The structured half of a delegation. The `tool.progress` line beside it is not a
+ *  leftover: the transcript wants one sentence of prose under the call that made it,
+ *  and a roster of sub-agents wants name, task and outcome as fields. Every delegation
+ *  on one tool call flattens onto the same `tool_call_id`, so neither surface can be
+ *  rebuilt from the other's frames.
+ *
+ *  `subagent_id` is `{run_id}:{tool_call_id}:{seq}` — the call id alone collides, since
+ *  a delegation the model retries is the same call id twice. */
+export interface SubagentStarted extends Base {
+  type: "subagent.started";
+  subagent_id: string;
+  agent_name: string;
+  task: string;
+  /** The delegating call, so a roster row ties back to the tool card that made it. */
+  tool_call_id: string;
+}
+/** One line of what a sub-agent is doing, as it does it. Latest-wins rather than a log:
+ *  a delegation is minutes of a child's own tool calls, and the row shows where it has
+ *  got to, not everywhere it has been. */
+export interface SubagentProgress extends Base {
+  type: "subagent.progress";
+  subagent_id: string;
+  partial: string;
+}
+/** A sub-agent finished and reported back. `summary` is capped backend-side; the
+ *  untruncated text is the delegating call's `tool.completed` result. */
+export interface SubagentCompleted extends Base {
+  type: "subagent.completed";
+  subagent_id: string;
+  summary: string;
+  duration_ms: number;
+}
+/** A sub-agent raised rather than reporting. Rare by design — a delegation that cannot
+ *  happen degrades to a sentence for the model — so this is the case where a row would
+ *  otherwise sit on "running" forever. */
+export interface SubagentFailed extends Base {
+  type: "subagent.failed";
+  subagent_id: string;
+  error: string;
+}
 export interface LimitNotice extends Base {
   type: "limit.notice";
   /** "context" = the model's context window was exceeded; the run stops (it isn't
@@ -535,6 +577,10 @@ export type RunEvent =
   | MessageWithdrawn
   | MessageInjected
   | PlanUpdated
+  | SubagentStarted
+  | SubagentProgress
+  | SubagentCompleted
+  | SubagentFailed
   | LimitNotice;
 
 /** A run is over after one of these — the stream reader stops. */
