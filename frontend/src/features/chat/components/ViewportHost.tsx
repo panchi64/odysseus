@@ -1,4 +1,4 @@
-import { type JSX } from "solid-js";
+import { For, Show, type JSX } from "solid-js";
 import { cx } from "~/ui";
 import {
   SURFACE_RENDERERS,
@@ -69,12 +69,18 @@ export function ViewportHost(props: {
 
   return (
     <div class="flex h-full min-h-0 flex-col">
-      {props.layout.strips.map((id) => (
-        <div class="shrink-0">{renderSurface(id)}</div>
-      ))}
-      {props.layout.panels ? (
-        <div class="flex min-h-0 flex-1">{renderPane(props.layout.panels)}</div>
-      ) : null}
+      {/* `For`/`Show` rather than `.map` and a ternary. A ternary's guard does not
+          gate its own branches in Solid — the child expression compiles to a
+          computation of its own and re-runs when the layout changes, so a panel
+          region that has just emptied reaches the renderer as null. */}
+      <For each={props.layout.strips}>
+        {(id) => <div class="shrink-0">{renderSurface(id)}</div>}
+      </For>
+      <Show when={props.layout.panels}>
+        {(panels) => (
+          <div class="flex min-h-0 flex-1">{renderPane(panels())}</div>
+        )}
+      </Show>
     </div>
   );
 }

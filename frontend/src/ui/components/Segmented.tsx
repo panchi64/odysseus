@@ -94,14 +94,22 @@ export function Segmented<T extends string>(
               tabindex={active() ? 0 : -1}
               onClick={() => local.onChange(option.value)}
               class={cx(
-                "flex items-center justify-center gap-1.5 rounded-ctl px-3 py-1.5 text-body font-sans font-medium whitespace-nowrap transition-colors",
+                "flex items-center justify-center gap-1.5 rounded-ctl px-3 py-1.5 text-body font-sans whitespace-nowrap transition-colors",
                 // Focus is neutral and carried by a shadow, so it shifts no
                 // layout and never competes with the accent (§10.8).
                 "outline-none focus-visible:shadow-focus",
                 local.fill !== false && "min-w-0 flex-1",
+                // The picked segment is separated from the rest on three axes at
+                // once — it lifts to `surface-raised`, it carries `shadow-1`'s
+                // hairline ring so it reads as an object rather than a tint, and
+                // it is the only one at medium weight. A raised fill alone was
+                // too close a step off the rail's own surface to find at a
+                // glance, and the answer is not a coloured pill: this control
+                // may be the one *choosing* the accent, so spending the accent
+                // on it says the wrong thing.
                 active()
-                  ? "bg-raised text-bright"
-                  : "text-dim hover:bg-raised hover:text-text",
+                  ? "bg-raised text-bright font-medium shadow-1"
+                  : "font-normal text-dim hover:bg-raised hover:text-text",
               )}
             >
               {option.icon ? <Icon name={option.icon} size={14} /> : null}
