@@ -263,6 +263,7 @@ export { Divider, type DividerProps } from "./components/Divider";
 export {
   ResizeHandle,
   type ResizeHandleProps,
+  type ResizeOrientation,
 } from "./components/ResizeHandle";
 export { Marquee, type MarqueeProps } from "./components/Marquee";
 export { PageHeader, type PageHeaderProps } from "./components/PageHeader";
