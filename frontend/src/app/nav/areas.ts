@@ -1,4 +1,4 @@
-import type { NavArea, NavPin } from "./types";
+import type { NavArea, NavItem, RailRow } from "./types";
 
 /**
  * The areas the rail still groups. There is exactly one, and that is the point:
@@ -45,58 +45,81 @@ export const AREAS: NavArea[] = [
 ];
 
 /**
- * The destinations kept outside the one area.
+ * The surfaces that belong to no area.
  *
- * Chat sits first because the rail beneath it *is* chat — its thread list. The
- * two below it are the surfaces still worth a page and not mail: the corpus the
- * assistant reads from, and the compare bench. Each is a place with its own
- * screen, so a rail row is the honest affordance; none is a group, so none is an
- * area.
+ * **This is the map, not the rail.** Being here says the app owns this route:
+ * it is what tells the shell `/chat` is a real backed surface rather than
+ * something to paint NOT CONNECTED over, what names the page, and what the
+ * palette can jump to. Whether the rail draws a row for it — and where — is a
+ * separate question with a separate answer, in `RAIL_ROWS` below.
  *
- * Research is deliberately **not** here any more. It stopped being a surface that
- * produces reports and became a *mode a thread can be in*, so its home is the
- * thread list beneath Chat — a page of its own would list the same conversations
- * twice under two names.
+ * Those two were one list until a row was removed from the rail and took the
+ * route's registration with it, overlaying NOT CONNECTED across the whole of
+ * chat. Placement and existence are not the same fact and no longer share a
+ * declaration.
+ *
+ * Research is deliberately **not** here. It stopped being a surface that produces
+ * reports and became a *mode a thread can be in*, so its home is the thread list —
+ * a page of its own would list the same conversations twice under two names.
  *
  * MCP is deliberately **not** here. Registering a tool server and deciding which
  * of its tools may run is configuration — a value you set and leave — so it is a
- * section of the settings dialog, beside the other connections. A pin for it
- * meant a permanent rail row for a page most operators open twice.
+ * section of the settings dialog, beside the other connections.
  *
  * Settings is deliberately **not** here. It opens the dialog rather than
- * navigating, so there is no `href` to pin, and the rail's footer renders it
+ * navigating, so there is no `href` to name, and the rail's footer renders it
  * directly.
  */
-export const PINS: NavPin[] = [
-  {
-    slot: "top",
-    item: {
-      label: "Chat",
-      href: "/chat",
-      icon: "chat",
-      connected: true,
-      description: "Converse with local models and tool-using agents",
-    },
-  },
-  {
-    slot: "top",
-    item: {
-      label: "Knowledge Base",
-      href: "/rag",
-      icon: "library",
-      connected: true,
-      description:
-        "The unified retrieval corpus — every source the assistant can search (RAG)",
-    },
-  },
-  {
-    slot: "top",
-    item: {
-      label: "Compare",
-      href: "/compare",
-      icon: "compare",
-      connected: true,
-      description: "Run the same prompt across models side by side",
-    },
-  },
+export const CHAT: NavItem = {
+  label: "Chat",
+  href: "/chat",
+  icon: "chat",
+  connected: true,
+  description: "Converse with local models and tool-using agents",
+};
+
+export const KNOWLEDGE_BASE: NavItem = {
+  label: "Knowledge Base",
+  href: "/rag",
+  icon: "library",
+  connected: true,
+  description:
+    "The unified retrieval corpus — every source the assistant can search (RAG)",
+};
+
+export const COMPARE: NavItem = {
+  label: "Compare",
+  href: "/compare",
+  icon: "compare",
+  connected: true,
+  description: "Run the same prompt across models side by side",
+};
+
+/** Every surface outside an area. Order is the palette's, not the rail's. */
+export const LOOSE_SURFACES: NavItem[] = [CHAT, KNOWLEDGE_BASE, COMPARE];
+
+/**
+ * Where the rail draws a row, and in what order.
+ *
+ * A surface absent from this list simply has no row — it is still on the map, so
+ * nothing about the route changes. That asymmetry is the point: rail layout can
+ * be rearranged freely without any chance of un-registering a page.
+ *
+ * Rows carry the surface itself rather than an href to look up, so a row for a
+ * surface that does not exist cannot be written.
+ *
+ * **Chat has no row.** One pointing at `/chat` sat directly above the mode
+ * switch, the project switcher and the thread list — three controls that are all
+ * *about* chat — so it read as a fourth sibling rather than as the destination
+ * containing them. The mode switch is the honest entry point: picking a kind of
+ * work is how you get to the work, and it files the list underneath at the same
+ * time.
+ *
+ * **The other two sit in the footer**, on the same footing as COMMS and for the
+ * same reason: a corpus and a compare bench are things you go and check, not the
+ * thing you are doing.
+ */
+export const RAIL_ROWS: RailRow[] = [
+  { slot: "footer", item: KNOWLEDGE_BASE },
+  { slot: "footer", item: COMPARE },
 ];

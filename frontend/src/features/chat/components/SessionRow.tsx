@@ -13,8 +13,6 @@ import type { ChatActivity } from "../model";
 
 export interface SessionRowProps {
   title: string;
-  /** Right-aligned meta, e.g. relative time. */
-  meta: string;
   selected?: boolean;
   pinned?: boolean;
   /** A freshly auto-generated title to type out in place of the static one. The
@@ -111,9 +109,6 @@ export function SessionRow(props: SessionRowProps): JSX.Element {
             <span class="sr-only">{activityLabel[activity()]}</span>
           )}
         </Show>
-        <Text variant="micro" tone="dim" class="shrink-0">
-          {props.meta}
-        </Text>
       </button>
       <Button
         variant="ghost"

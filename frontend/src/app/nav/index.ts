@@ -1,4 +1,4 @@
-import { AREAS, PINS } from "./areas";
+import { AREAS, LOOSE_SURFACES, RAIL_ROWS } from "./areas";
 import { searchSettings } from "./settings-search";
 import type {
   NavArea,
@@ -8,14 +8,14 @@ import type {
   SettingEntry,
 } from "./types";
 
-export { AREAS, PINS };
+export { AREAS, LOOSE_SURFACES, RAIL_ROWS };
 export type {
   NavArea,
   NavIndicator,
   NavItem,
   NavMatch,
-  NavPin,
   PaletteHit,
+  RailRow,
   SettingEntry,
   SettingChoice,
   SettingKind,
@@ -33,11 +33,18 @@ export {
   isNumberSetting,
 } from "./settings-search";
 
-export const TOP_PINS = PINS.filter((p) => p.slot === "top").map((p) => p.item);
+/** The rail's rows for one slot, in declaration order. Placement only — a
+ *  surface missing from every slot still exists (see `areas.ts`). */
+export const railRows = (slot: "top" | "footer"): NavItem[] =>
+  RAIL_ROWS.filter((r) => r.slot === slot).map((r) => r.item);
 
-/** Every page in the nav, area-owned or not. A pin that only shortcuts into an
- *  area is skipped — its page is already here under its own label, and listing
- *  it twice would give search two rows for one destination. */
+/** Every page in the nav, area-owned or not — the map the shell, the titles and
+ *  the palette all read. A loose surface an area already owns is skipped: its
+ *  page is here under its own label, and listing it twice would give search two
+ *  rows for one destination.
+ *
+ *  Note this reads the *surfaces*, never the rail rows. A page's existence does
+ *  not depend on the rail drawing it. */
 export function flattenNav(areas: NavArea[] = AREAS): NavMatch[] {
   const owned = areas.flatMap((area) =>
     area.items.map((item) => ({ item, area })),
@@ -45,8 +52,8 @@ export function flattenNav(areas: NavArea[] = AREAS): NavMatch[] {
   const hrefs = new Set(owned.map((m) => m.item.href));
   return [
     ...owned,
-    ...PINS.filter((p) => !hrefs.has(p.item.href)).map((p) => ({
-      item: p.item,
+    ...LOOSE_SURFACES.filter((item) => !hrefs.has(item.href)).map((item) => ({
+      item,
     })),
   ];
 }

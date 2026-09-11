@@ -1,4 +1,5 @@
 import { For, type JSX } from "solid-js";
+import { useNavigate } from "@solidjs/router";
 import { SESSION_MODES } from "~/lib/modes";
 import { Icon, Text, Tooltip, cx } from "~/ui";
 import {
@@ -29,7 +30,18 @@ import {
  */
 export function SessionModeSwitch(): JSX.Element {
   const mode = activeSessionMode;
-  const setMode = setActiveSessionMode;
+  const navigate = useNavigate();
+  /** Pick a mode, and go where that mode's threads are.
+   *
+   *  Filing the rail without moving was right while a Chat row sat above this one
+   *  to do the moving. With that row gone this is the way in, and a control that
+   *  re-sorts a list you cannot see is not one. Navigating from `/chat` is a no-op
+   *  and leaves the open thread alone, so the only case it changes is the one
+   *  where the operator is looking at something else. */
+  const setMode = (id: Parameters<typeof setActiveSessionMode>[0]): void => {
+    setActiveSessionMode(id);
+    navigate("/chat");
+  };
 
   return (
     <div class="flex flex-col gap-1 px-2 pb-1">

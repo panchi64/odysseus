@@ -1,20 +1,25 @@
 import { type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { Button, ConstructionReveal, ResizeHandle, Reveal, Text } from "~/ui";
+import { emptyLayout } from "../viewport/layout";
 import type { ChatViewport } from "../useChatViewport";
-import { ViewportPanel } from "./ViewportPanel";
+import { ViewportHost } from "./ViewportHost";
 
 export interface ChatViewportMountsProps {
   viewport: ChatViewport;
 }
 
 /**
- * The two places the viewport can be, and the one panel that goes in either.
+ * The two places the viewport can be, and the one host that goes in either.
  *
  * Above `lg` it is a resizable aside beside the conversation; below `lg`, or in fullscreen
- * at any width, the same panel renders in a full-screen sheet. The panel's JSX is
- * therefore defined once and placed conditionally — never both at once, since only one
- * `Show` branch mounts at a time, so the panel's own state never runs twice.
+ * at any width, the same host renders in a full-screen sheet. Its JSX is therefore defined
+ * once and placed conditionally — never both at once, since only one `Show` branch mounts
+ * at a time, so the surfaces' own state never runs twice.
+ *
+ * What goes *inside* is no longer this file's business. It hands the layout to
+ * `ViewportHost` and the host asks the registry what to draw, so a new surface never
+ * reaches here.
  *
  * `onClose` is passed per mount site: the aside's own Collapse just toggles the panel, but
  * the sheet's (routed through the same `ViewActionRow`) must also reset `fullscreen` and
@@ -35,23 +40,15 @@ export function ChatViewportMounts(
     props.viewport.patch({ fullscreen: !props.viewport.state().fullscreen });
 
   const renderPanel = (onClose: () => void) => (
-    <ViewportPanel
-      items={props.viewport.items()}
-      selectedKey={props.viewport.viewState().pinnedKey}
-      onSelect={props.viewport.selectView}
-      activeTab={props.viewport.viewState().activeTab}
-      onSelectTab={props.viewport.requestTab}
-      fontStep={props.viewport.state().fontStep}
-      onFontStep={(step) => props.viewport.patch({ fontStep: step })}
-      softWrap={props.viewport.state().softWrap}
-      onToggleWrap={() =>
-        props.viewport.patch({ softWrap: !props.viewport.state().softWrap })
-      }
-      fullscreen={props.viewport.state().fullscreen}
-      onToggleFullscreen={toggleFullscreen}
-      onClose={onClose}
-      onKeeper={props.viewport.toggleKeeper}
-      panelRef={props.viewport.panelRef}
+    <ViewportHost
+      // A mount only renders while `shown()` holds, which requires a layout — the
+      // fallback is for the frame the reveal keeps around on the way out.
+      layout={props.viewport.state().layout ?? emptyLayout()}
+      ctx={{
+        viewport: props.viewport,
+        onClose,
+        onToggleFullscreen: toggleFullscreen,
+      }}
     />
   );
 

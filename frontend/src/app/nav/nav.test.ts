@@ -6,13 +6,14 @@
  * Two kinds of test live here, and the split is deliberate:
  *  - Behaviour, against `FIXTURE`, so a test fails when a rule changes rather
  *    than when a page is added.
- *  - Invariants, against the real `AREAS`/`PINS`, because those are claims the
+ *  - Invariants, against the real `AREAS` / surface lists, because those are claims the
  *    rail's documentation makes about the actual data and nothing else checks.
  */
 import { describe, expect, test } from "bun:test";
 import {
   AREAS,
-  PINS,
+  LOOSE_SURFACES,
+  RAIL_ROWS,
   areaForPath,
   flattenNav,
   isConnectedRoute,
@@ -100,19 +101,40 @@ describe("areaForPath", () => {
 });
 
 describe("flattenNav", () => {
-  test("keeps a pin that no area owns and drops one that shortcuts into an area", () => {
+  test("keeps a loose surface no area owns and drops one that shortcuts into an area", () => {
     const hrefs = flattenNav(AREAS).map((m) => m.item.href);
     const areaOwned = new Set(AREAS.flatMap((a) => a.items.map((i) => i.href)));
 
-    for (const pin of PINS) {
-      const occurrences = hrefs.filter((h) => h === pin.item.href).length;
+    for (const surface of LOOSE_SURFACES) {
+      const occurrences = hrefs.filter((h) => h === surface.href).length;
       expect(occurrences).toBe(1);
-      // An area-owned pin appears once via its area (with an `area`); a
-      // standalone pin appears once as a pin (without one).
-      const match = flattenNav(AREAS).find(
-        (m) => m.item.href === pin.item.href,
-      );
-      expect(match?.area === undefined).toBe(!areaOwned.has(pin.item.href));
+      // An area-owned surface appears once via its area (with an `area`); a
+      // standalone one appears once on its own (without one).
+      const match = flattenNav(AREAS).find((m) => m.item.href === surface.href);
+      expect(match?.area === undefined).toBe(!areaOwned.has(surface.href));
+    }
+  });
+});
+
+describe("the map and the rail are separate", () => {
+  /** The bug this separation exists for: the rail's rows and the app's list of
+   *  surfaces were one declaration, so deleting Chat's row deleted `/chat` from
+   *  the map — and `isConnectedRoute` then painted NOT CONNECTED over the whole
+   *  of chat. Placement must never decide existence. */
+  test("a surface with no rail row is still a connected route", () => {
+    const drawn = new Set(RAIL_ROWS.map((r) => r.item.href));
+    expect(drawn.has("/chat")).toBe(false);
+    expect(isConnectedRoute("/chat")).toBe(true);
+  });
+
+  test("every rail row points at a surface that is on the map", () => {
+    const mapped = new Set(flattenNav(AREAS).map((m) => m.item.href));
+    for (const row of RAIL_ROWS) expect(mapped.has(row.item.href)).toBe(true);
+  });
+
+  test("every loose surface is reachable, drawn or not", () => {
+    for (const surface of LOOSE_SURFACES) {
+      expect(isConnectedRoute(surface.href)).toBe(Boolean(surface.connected));
     }
   });
 });

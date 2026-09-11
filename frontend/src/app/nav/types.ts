@@ -34,12 +34,21 @@ export interface NavArea {
 /** A destination kept outside the switcher, always one click away. A pin is a
  *  single page, not a group — that is why it isn't an area with one item: the
  *  switcher lists groups, and a lone page in that list has nothing to switch to. */
-export interface NavPin {
-  /** `top` sits above the switcher, `footer` beside OPERATOR/LOCK. */
+/**
+ * One row the rail draws, and where.
+ *
+ * A row is *placement only*. It says nothing about whether a surface exists —
+ * that is what the surface lists themselves say, and the two are deliberately
+ * separate declarations. Deleting a row removes a row and nothing else.
+ *
+ * It carries the surface rather than an href, so a row pointing at a page that
+ * does not exist cannot be written down.
+ */
+export interface RailRow {
+  /** `top` above the switcher, `footer` above COMMS. */
   slot: "top" | "footer";
-  /** The page the pin opens. It may point at a page that also lives in an area
-   *  (Settings opens the first SYSTEM page), in which case the area still owns
-   *  it and the pin is only a shortcut. */
+  /** The surface this row opens. It may be one an area already owns, in which
+   *  case the area still owns it and the row is only a shortcut. */
   item: NavItem;
 }
 

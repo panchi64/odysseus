@@ -23,7 +23,6 @@ import {
   type MenuItem,
 } from "~/ui";
 import { createListView } from "~/lib/list";
-import { relativeTime } from "~/lib/format";
 import type { ChatSummary } from "../model";
 import {
   isPinned,
@@ -217,7 +216,6 @@ function SessionRows(props: {
       {(s) => (
         <SessionRow
           title={s.title}
-          meta={relativeTime(s.updatedAt)}
           selected={s.id === props.currentId}
           pinned={isPinned(s.id)}
           reveal={titleReveals[s.id]}
