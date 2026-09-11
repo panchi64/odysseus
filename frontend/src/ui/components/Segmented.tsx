@@ -33,13 +33,35 @@ export interface SegmentedProps<T extends string> {
  * and the distinction is not pedantry — it is what a screen reader announces, and
  * "tab 1 of 3" is a lie about a control that is not revealing anything.
  *
- * **The selection is a raised fill and nothing else.** No track behind the set:
- * `surface-sunken` is the fill of a turn in a transcript, not a groove for a
- * control to sit in, and a second surface under the segments makes a small
- * control read as a component with a frame. Selection lifts to `surface-raised`,
- * the same way the rail marks the page you are on — never a coloured pill, which
- * would spend the accent on a control whose whole job may be *choosing* the
- * accent.
+ * **The picked segment is a lifted slab with its own edge — never a coloured
+ * pill**, which would spend the accent on a control whose whole job may be
+ * *choosing* the accent. It is separated on four neutral axes at once: it fills
+ * to `surface-raised`, it is drawn at `line-strong` — the token's documented use
+ * is "active control outlines" — it is the only one at medium weight, and it is
+ * the only one at `text-bright`.
+ *
+ * **The edge is what makes it survive both modes.** The two modes carry depth
+ * differently (§6): Ink steps up in surface value, which against pure black is
+ * legible on its own, while Paper's `surface-raised` is a 4% tint on white and
+ * `shadow-1` there is a 5% cast — a fill alone all but vanished in Paper. A
+ * hairline is the one instrument that lands in both, and §7 licenses it for
+ * exactly this case: a control's own edge, where the border *is* the affordance.
+ * The unpicked segments carry the same border transparent, so the ring costs no
+ * layout and picking one shifts nothing by a pixel.
+ *
+ * It also keeps hover and selection apart. Hover fills to `surface-raised` too,
+ * so with the fill as the only mark a hovered segment wore the selected one's
+ * costume; the edge belongs to the selection alone.
+ *
+ * No track behind the set: `surface-sunken` is the fill of a turn in a
+ * transcript, not a groove for a control to sit in, and a second surface under
+ * the segments makes a small control read as a component with a frame.
+ *
+ * **`shadow-focus` is left to mean focus.** §7 offers it as part of a selected
+ * state, but here focus and selection are always the same segment — the roving
+ * tabindex parks on the picked one and the arrows *select* as they move — so a
+ * halo worn at rest would be a halo that never appears, and tabbing into the
+ * control would show the operator nothing.
  *
  * **Roving tabindex, because a radiogroup is one stop.** Tab reaches the control
  * and the arrow keys move within it; every segment being separately tabbable is
@@ -94,22 +116,23 @@ export function Segmented<T extends string>(
               tabindex={active() ? 0 : -1}
               onClick={() => local.onChange(option.value)}
               class={cx(
-                "flex items-center justify-center gap-1.5 rounded-ctl px-3 py-1.5 text-body font-sans whitespace-nowrap transition-colors",
+                // The border is on every segment — coloured on the picked one,
+                // transparent on the rest — so the geometry is identical in
+                // both states and nothing reflows when the choice moves. The
+                // height is pinned to the 32px `md` control step rather than
+                // left to fall out of the padding, so the edge grows inward and
+                // the row does not gain 2px for wearing it (§4).
+                "flex h-8 items-center justify-center gap-1.5 rounded-ctl border px-3 text-body font-sans whitespace-nowrap transition-colors",
                 // Focus is neutral and carried by a shadow, so it shifts no
                 // layout and never competes with the accent (§10.8).
                 "outline-none focus-visible:shadow-focus",
                 local.fill !== false && "min-w-0 flex-1",
-                // The picked segment is separated from the rest on three axes at
-                // once — it lifts to `surface-raised`, it carries `shadow-1`'s
-                // hairline ring so it reads as an object rather than a tint, and
-                // it is the only one at medium weight. A raised fill alone was
-                // too close a step off the rail's own surface to find at a
-                // glance, and the answer is not a coloured pill: this control
-                // may be the one *choosing* the accent, so spending the accent
-                // on it says the wrong thing.
+                // Fill, edge, weight, brightness — four neutral axes, and no
+                // hue. `shadow-1` is the mode-correct resting lift underneath:
+                // a cast in Paper, a faint ring in Ink.
                 active()
-                  ? "bg-raised text-bright font-medium shadow-1"
-                  : "font-normal text-dim hover:bg-raised hover:text-text",
+                  ? "border-line-strong bg-raised text-bright font-medium shadow-1"
+                  : "border-transparent font-normal text-dim hover:bg-raised hover:text-text",
               )}
             >
               {option.icon ? <Icon name={option.icon} size={14} /> : null}
