@@ -92,6 +92,15 @@ export const SURFACES = [
     minHeight: 240,
     defaultWidth: 384,
   },
+  {
+    id: "files",
+    shape: "panel",
+    label: "Files",
+    icon: "file",
+    minWidth: 320,
+    minHeight: 240,
+    defaultWidth: 420,
+  },
 ] as const satisfies readonly SurfaceSpec[];
 
 export type SurfaceId = (typeof SURFACES)[number]["id"];

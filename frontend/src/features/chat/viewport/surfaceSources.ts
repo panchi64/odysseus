@@ -46,5 +46,10 @@ export function createSurfaceSources(
     // Only a code thread has a branch at all; the fetch answers 404 for every other
     // kind, which is the ordinary case rather than a failure.
     diff: { available: () => Boolean(deps.branch()) },
+    // The workspace is browsable once a version of it has been captured — the same
+    // snapshots the View lists, read as a tree rather than as versions.
+    files: {
+      available: () => deps.viewItems().some((i) => i.snapshot),
+    },
   };
 }

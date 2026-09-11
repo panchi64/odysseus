@@ -3,7 +3,6 @@ import {
   createMemo,
   createResource,
   createSignal,
-  For,
   Match,
   Show,
   Switch,
@@ -16,13 +15,10 @@ import {
   DiffView,
   EmptyState,
   ErrorState,
-  ListRow,
   LoadingText,
-  Resource as ResourceView,
   Select,
   Text,
   type SelectOption,
-  type TextTone,
 } from "~/ui";
 import {
   fetchSnapshotDiffs,
@@ -34,19 +30,10 @@ import type { SnapshotFile, ViewSnapshotRef } from "../model";
 import { extensionOf, type PriorVersion } from "../viewport/viewItems";
 import { rememberScroll } from "../scrollMemory";
 import { createDownloadSlot } from "../viewport/downloadRegistry";
+import { SnapshotFileTree } from "./SnapshotFileTree";
 
 /** "Compare vs" value for plain code (no diff). */
 const NO_DIFF = "";
-
-/** The tone + single-letter marker for a file's change status. Kept monochrome —
- *  brightness separates changed (bright) from unchanged (dim), per the design
- *  system's color discipline; the two semantic accents are reserved for the diff. */
-function statusTone(status: SnapshotFile["status"]): TextTone {
-  return status === "unchanged" ? "dim" : "bright";
-}
-function statusMark(status: SnapshotFile["status"]): string {
-  return status === "added" ? "A" : status === "modified" ? "M" : "·";
-}
 
 /**
  * Renders a workspace snapshot's CODE — a left file list (with change-status markers)
@@ -166,41 +153,17 @@ export function ViewSnapshotCode(props: {
 
   return (
     <div class="flex h-full min-h-0">
-      {/* File tree — pick a file; its change status reads through tone. */}
-      <div class="flex w-56 shrink-0 flex-col border-r border-line">
-        <div class="px-3 py-2">
-          <Text variant="micro" tone="dim">
-            {props.snapshot.summary}
-          </Text>
-        </div>
-        <div class="min-h-0 flex-1 overflow-y-auto">
-          <ResourceView
-            data={toId() === id() ? props.files : toFiles}
-            onRetry={toId() === id() ? props.onRetryFiles : refetchToFiles}
-            loadingLabel="Loading files…"
-            isEmpty={(rows) => rows.length === 0}
-            emptyMessage="No files"
-          >
-            {(rows) => (
-              <For each={rows()}>
-                {(file) => (
-                  <ListRow
-                    label={file.path}
-                    leading="file"
-                    selected={props.selectedPath === file.path}
-                    onClick={() => props.onSelectPath(file.path)}
-                    right={
-                      <Text variant="micro" tone={statusTone(file.status)}>
-                        {statusMark(file.status)}
-                      </Text>
-                    }
-                  />
-                )}
-              </For>
-            )}
-          </ResourceView>
-        </div>
-      </div>
+      {/* File tree — pick a file; its change status reads through tone. Shared
+          with the Files surface, which shows the same list for a different
+          reason. */}
+      <SnapshotFileTree
+        inline
+        files={toId() === id() ? props.files : toFiles}
+        onRetry={toId() === id() ? props.onRetryFiles : refetchToFiles}
+        selectedPath={props.selectedPath}
+        onSelectPath={props.onSelectPath}
+        summary={props.snapshot.summary}
+      />
 
       {/* Content — full code or a diff against the chosen FROM. */}
       <div class="flex min-w-0 flex-1 flex-col">
