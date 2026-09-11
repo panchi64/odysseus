@@ -38,14 +38,19 @@ import type { ChatMessage, ViewSnapshotRef } from "./model";
 import type { PlanItem } from "~/lib/stream/events";
 import {
   emptyLayout,
+  focusInStack,
   hasSurface,
   isEmpty,
   leaf,
   openSurface,
+  panelSurfacesOf,
+  resizeSplit,
   surfacesOf,
   toggleSurface as toggleLayout,
+  type TilingContext,
   type ViewportLayout,
 } from "./viewport/layout";
+import { panelBox, widenFor } from "./viewport/viewportWidth";
 import { createSurfaceSources } from "./viewport/surfaceSources";
 import {
   DEFAULT_VIEW_SURFACE,
@@ -84,6 +89,16 @@ export interface ChatViewport {
   available: (id: SurfaceId) => boolean;
   /** Whether a surface is currently in the layout. */
   isOpen: (id: SurfaceId) => boolean;
+  /** Bring a surface to the front of the tabbed pane it shares, and focus it. */
+  revealSurface: (id: SurfaceId) => void;
+  /** Close one surface from its own chrome. */
+  closeSurface: (id: SurfaceId) => void;
+  /** Drag a split's divider — `path` addresses it, `ratio` is `a`'s share. */
+  adjustSplit: (path: readonly ("a" | "b")[], ratio: number) => void;
+  /** Which surface the operator is working in. Surface-scoped key bindings gate on
+   *  it, and it is what a pane's chrome marks as current. */
+  focusedSurface: Accessor<SurfaceId | null>;
+  setFocusedSurface: (id: SurfaceId) => void;
   /** Put a surface on screen, or take it off. Closing the last one closes the
    *  panel, since a panel showing nothing is a panel that is shut. */
   toggleSurface: (id: SurfaceId) => void;
@@ -169,6 +184,14 @@ export function useChatViewport(
   };
   const toggle = () => (state().layout === null ? open() : close());
 
+  /** What the splitting policy divides, and how far it may divide it. Three panes
+   *  is generous at full screen and too many beside a transcript, so the cap is the
+   *  presentation's rather than a constant. */
+  const tiling = (): TilingContext => ({
+    box: panelBox(),
+    cap: state().fullscreen ? 3 : 2,
+  });
+
   const isOpen = (id: SurfaceId): boolean => {
     const layout = state().layout;
     return layout !== null && hasSurface(layout, id);
@@ -177,17 +200,51 @@ export function useChatViewport(
    *  than leaving an empty frame behind — "open with nothing in it" is a state
    *  the layout deliberately cannot express. */
   const toggleSurface = (id: SurfaceId): void => {
-    const next = toggleLayout(state().layout ?? emptyLayout(), id);
+    const next = toggleLayout(state().layout ?? emptyLayout(), id, tiling());
     if (isEmpty(next)) {
       close();
       return;
     }
+    // A surface arriving into a panel too narrow for it widens the panel once. Only
+    // on arrival, and only upward: a surface opened and closed repeatedly must not
+    // ratchet the panel wider each time.
+    widenFor(panelSurfacesOf(next));
     patch({ layout: next, lastLayout: next, focused: id });
+  };
+
+  // Which surface the operator is in. Persisted rather than held in a signal of its
+  // own: it is part of the arrangement, and a thread returned to should come back
+  // with the same pane current as when it was left.
+  const focusedSurface = (): SurfaceId | null => state().focused;
+  const setFocusedSurface = (id: SurfaceId): void => {
+    if (state().focused !== id) patch({ focused: id });
+  };
+
+  /** Bring a surface to the front of the stack it shares, and focus it. */
+  const revealSurface = (id: SurfaceId): void => {
+    const layout = state().layout;
+    if (layout === null) return;
+    patch({ layout: focusInStack(layout, id), focused: id });
+  };
+
+  /** Drag a split's divider. `path` addresses which split; `ratio` is `a`'s share. */
+  const adjustSplit = (path: readonly ("a" | "b")[], ratio: number): void => {
+    const layout = state().layout;
+    if (layout === null) return;
+    patch({ layout: resizeSplit(layout, path, ratio) });
+  };
+
+  /** Close one surface from its own chrome, rather than from the header. */
+  const closeSurface = (id: SurfaceId): void => {
+    if (isOpen(id)) toggleSurface(id);
   };
 
   // The aside's width, and the drag that changes it (see `panelResize.ts` for why the
   // live width is an override rather than a seeded copy).
-  const { liveWidth, onResize, onResizeEnd } = createPanelResize();
+  const { liveWidth, onResize, onResizeEnd } = createPanelResize(() => {
+    const layout = state().layout;
+    return layout === null ? [] : panelSurfacesOf(layout);
+  });
 
   // The newest version's key. Following it (pinnedKey null) means freshly-minted
   // versions keep advancing the view instead of leaving it stranded on a stale pick.
@@ -315,6 +372,11 @@ export function useChatViewport(
     available,
     isOpen,
     toggleSurface,
+    revealSurface,
+    closeSurface,
+    adjustSplit,
+    focusedSurface,
+    setFocusedSurface,
     hasContent,
     asideOpen,
     sheetOpen,

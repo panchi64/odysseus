@@ -12,7 +12,14 @@
  */
 
 import * as tree from "./paneTree";
-import { orderOf, shapeOf, SURFACE_BY_ID, type SurfaceId } from "./surfaces";
+import {
+  isPanelSpec,
+  orderOf,
+  shapeOf,
+  surfaceSpec,
+  SURFACE_BY_ID,
+  type SurfaceId,
+} from "./surfaces";
 
 /** The layout, over the surfaces that actually exist. */
 export type ViewportLayout = tree.Layout<SurfaceId>;
@@ -21,15 +28,54 @@ export type ViewportPane = tree.PaneNode<SurfaceId>;
 export const emptyLayout = (): ViewportLayout => tree.emptyLayout<SurfaceId>();
 export const leaf = (surface: SurfaceId): ViewportPane => tree.leaf(surface);
 
+/** Each surface's smallest legible box, from the registry. Strips are not tiled, so
+ *  they impose nothing — the panel region is the only thing being fitted. */
+const limits = (id: SurfaceId): tree.SizeLimits => {
+  const spec = surfaceSpec(id);
+  return isPanelSpec(spec)
+    ? { minWidth: spec.minWidth, minHeight: spec.minHeight }
+    : { minWidth: 0, minHeight: 0 };
+};
+
+/** How the panel region should be divided when a surface arrives: the box there is
+ *  to divide, and how many panes may share it. Omitted where nothing has measured a
+ *  box yet, in which case the arriving surface simply takes the region. */
+export interface TilingContext {
+  box: tree.Box;
+  cap: number;
+}
+
+const withLimits = (
+  tiling: TilingContext | undefined,
+): { box: tree.Box; limits: typeof limits; cap: number } | undefined =>
+  tiling ? { box: tiling.box, limits, cap: tiling.cap } : undefined;
+
 export const openSurface = (
   layout: ViewportLayout,
   id: SurfaceId,
-): ViewportLayout => tree.openSurface(layout, id, shapeOf(id), orderOf);
+  tiling?: TilingContext,
+): ViewportLayout =>
+  tree.openSurface(layout, id, shapeOf(id), orderOf, withLimits(tiling));
 
 export const toggleSurface = (
   layout: ViewportLayout,
   id: SurfaceId,
-): ViewportLayout => tree.toggleSurface(layout, id, shapeOf(id), orderOf);
+  tiling?: TilingContext,
+): ViewportLayout =>
+  hasSurface(layout, id)
+    ? tree.closeSurface(layout, id)
+    : openSurface(layout, id, tiling);
+
+export const focusInStack = (
+  layout: ViewportLayout,
+  id: SurfaceId,
+): ViewportLayout => tree.focusInStack(layout, id);
+
+export const resizeSplit = (
+  layout: ViewportLayout,
+  path: readonly ("a" | "b")[],
+  ratio: number,
+): ViewportLayout => tree.resizeSplit(layout, path, ratio);
 
 export const closeSurface = (
   layout: ViewportLayout,

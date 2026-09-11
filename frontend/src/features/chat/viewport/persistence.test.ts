@@ -1,11 +1,4 @@
-/** The viewport panel's persisted state — its width rules, and the migration into v4.
- *
- *  **Width.** The panel shares a row the shell can resize under it, which makes two rules
- *  worth pinning: a width is clamped when it is *read* rather than when it is stored, and
- *  the row's bound outranks both the ceiling and the floor. The bound is injected
- *  (`setAvailableWidth`) rather than read off `window`, which is what makes it testable
- *  here at all — and is load-bearing in the app for the same reason it is convenient
- *  here: the row is not the window.
+/** The viewport panel's persisted state, and the migration into v4.
  *
  *  **Migration.** v3 described a panel that held one thing; v4 describes one that holds a
  *  set. A thread that has sat untouched must come across with its pin, tab, font, wrap and
@@ -19,7 +12,7 @@
  *  worth pinning is the path that actually runs, storage reads and all.
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import type { ViewportLayout } from "./layout";
 
 class MemoryStorage {
@@ -45,14 +38,8 @@ const storage = new MemoryStorage();
 (globalThis as { localStorage?: unknown }).localStorage = storage;
 
 // Imported after the stub is in place — the module reads storage at module scope.
-const {
-  clampWidth,
-  panelWidth,
-  setAvailableWidth,
-  setPanelWidth,
-  useViewportPersistence,
-  resetViewportPersistence,
-} = await import("./persistence");
+const { useViewportPersistence, resetViewportPersistence } =
+  await import("./persistence");
 
 const V4_KEY = "ody.chat.viewer.v4";
 const V3_KEY = "ody.chat.viewer.v3";
@@ -75,40 +62,6 @@ function seedStorage(entries: Record<string, unknown>): void {
   }
   resetViewportPersistence();
 }
-
-describe("panel width", () => {
-  beforeEach(() => {
-    setAvailableWidth(3000); // wide enough that only the floor and the cap bind
-  });
-
-  test("a narrow request is held at the floor", () => {
-    expect(clampWidth(100)).toBe(320);
-  });
-
-  test("the ceiling is the row's, not the cap", () => {
-    // 1600 − 480 of transcript = 1120, which is *under* the 1200 cap: if the row
-    // bound were dropped, this would come back 1200.
-    setAvailableWidth(1600);
-    expect(clampWidth(5000)).toBe(1120);
-    setAvailableWidth(3000);
-    expect(clampWidth(5000)).toBe(1200);
-  });
-
-  test("a row with nothing to spare still leaves the panel its minimum", () => {
-    setAvailableWidth(500);
-    expect(clampWidth(5000)).toBe(320);
-  });
-
-  test("a stored width is clamped on read, not on store", () => {
-    setAvailableWidth(3000);
-    setPanelWidth(900);
-    setAvailableWidth(1000); // 1000 − 480 = 520
-    expect(panelWidth()).toBe(520);
-    // The preference itself survived the narrow session.
-    setAvailableWidth(3000);
-    expect(panelWidth()).toBe(900);
-  });
-});
 
 describe("v3 → v4", () => {
   const v3Record = {

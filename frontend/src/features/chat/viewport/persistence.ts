@@ -17,6 +17,9 @@
  * because text set larger in one pane and not its neighbour reads as a bug rather than a
  * preference.
  *
+ * Width is not here: it stopped being a preference the moment it became arithmetic over
+ * the open set, and lives in `viewportWidth.ts`.
+ *
  * **Reading is total, and never writes.** The record is JSON in localStorage, so it can
  * be absent, stale, hand-edited or written by a version that knew different surfaces.
  * Every read validates and prunes — an unknown surface id is dropped rather than handed
@@ -91,18 +94,6 @@ const V3_KEY = "ody.chat.viewer.v3";
 const V2_KEY = "ody.chat.viewer.v2";
 /** Legacy per-conversation open-state map (`ChatRoomScreen`'s prior `VIEWPORT_KEY`). */
 const LEGACY_OPEN_KEY = "ody.chat.viewport";
-
-/** Legacy (and still current) global panel width key. */
-const WIDTH_KEY = "ody.chat.viewport.w";
-
-const WIDTH_DEFAULT = 384;
-const WIDTH_MIN = 320;
-/** The widest the panel may be asked for. The *effective* max is also bounded by the
- *  row (see `ceiling`), so this is a preference cap rather than a layout one. */
-const WIDTH_CEILING = 1200;
-/** Room the conversation column keeps however wide the panel is dragged — below this
- *  the transcript stops being a transcript and becomes a gutter. */
-const TRANSCRIPT_MIN = 480;
 
 // ── v3, as it was ────────────────────────────────────────────────────────────
 
@@ -334,55 +325,4 @@ export function useViewportPersistence(conversationId: () => string): {
 /** Test seam: drop the in-memory copy so the next read re-seeds from storage. */
 export function resetViewportPersistence(): void {
   setV4Map(readV4Map());
-}
-
-// ── Width ────────────────────────────────────────────────────────────────────
-
-/** How much width the panel's row actually has, reactively — set by the screen that
- *  owns the row (`ChatRoomScreen`, from a `ResizeObserver` on it).
- *
- *  It has to be the **row**, not the window: by the time the layout reaches here the
- *  nav rail and the shell's padding are already spent, so clamping against
- *  `window.innerWidth` reserves a transcript that isn't there and lets the panel take
- *  ~300px more than the row can give. `Infinity` until the first measurement, so the
- *  ceiling stands alone rather than guessing at a box nobody has measured yet. */
-const [availableWidth, setAvailableWidth] = createSignal(Infinity);
-
-export { setAvailableWidth };
-
-/** The widest the panel may be right now: its own ceiling, less what the row cannot
- *  spare. */
-function ceiling(): number {
-  return Math.max(
-    WIDTH_MIN,
-    Math.min(WIDTH_CEILING, availableWidth() - TRANSCRIPT_MIN),
-  );
-}
-
-/** Clamps a candidate panel width to the draggable range — exported so a live drag
- *  (see `panelResize.ts`) can apply the same bounds per pointermove tick without
- *  persisting until the drag settles.
- *
- *  Floor and ceiling cannot fight: `ceiling()` is itself floored at `WIDTH_MIN`, so on
- *  a row too narrow to spare even that, the panel keeps its minimum and the transcript
- *  takes the squeeze — a panel clamped below the point of legibility would be a worse
- *  answer than a short transcript column. */
-export const clampWidth = (w: number): number =>
-  Math.min(ceiling(), Math.max(WIDTH_MIN, w));
-
-/** The stored *preference*, unclamped — clamping happens on read (`panelWidth`) so a
- *  width set on a wide display isn't permanently trimmed by one narrow session. */
-const [storedWidth, setStoredWidth] = createSignal(
-  Number(readLS(WIDTH_KEY)) || WIDTH_DEFAULT,
-);
-
-/** The panel's global (cross-thread) width. */
-export function panelWidth(): number {
-  return clampWidth(storedWidth());
-}
-
-export function setPanelWidth(w: number): void {
-  const clamped = clampWidth(w);
-  setStoredWidth(clamped);
-  writeLS(WIDTH_KEY, String(clamped));
 }

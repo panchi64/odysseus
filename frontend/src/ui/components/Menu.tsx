@@ -1,16 +1,8 @@
-import { For, Show, splitProps, type JSX } from "solid-js";
-import { cx } from "../cx";
-import { Text } from "../primitives/Text";
-import { Icon, type IconProps } from "../primitives/Icon";
+import { splitProps, type JSX } from "solid-js";
+import { MenuItemList, type MenuItem } from "./menuItems";
 import { Popover } from "./Popover";
 
-export interface MenuItem {
-  label: string;
-  onSelect: () => void;
-  icon?: IconProps["name"];
-  danger?: boolean;
-  disabled?: boolean;
-}
+export type { MenuItem };
 
 export interface MenuProps {
   /** The clickable trigger (e.g. a Button or icon). */
@@ -21,8 +13,11 @@ export interface MenuProps {
   class?: string;
 }
 
-/** Dropdown menu. Closes on item select, backdrop click, or Escape. Instant
- *  reveal. Built on the shared Popover shell. */
+/** Dropdown menu, anchored to its trigger. Closes on item select, backdrop click,
+ *  or Escape. Instant reveal. Built on the shared Popover shell.
+ *
+ *  Its rows live in `menuItems.tsx`, shared with `ContextMenu` — the two differ in
+ *  where they appear, not in what a menu looks like. */
 export function Menu(props: MenuProps): JSX.Element {
   const [local] = splitProps(props, ["trigger", "items", "align", "class"]);
   return (
@@ -35,37 +30,7 @@ export function Menu(props: MenuProps): JSX.Element {
           {local.trigger}
         </button>
       )}
-      panel={({ close }) => (
-        <div role="menu">
-          <For each={local.items}>
-            {(item) => (
-              <button
-                type="button"
-                role="menuitem"
-                disabled={item.disabled}
-                onClick={() => {
-                  close();
-                  item.onSelect();
-                }}
-                class={cx(
-                  "flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-raised disabled:opacity-40 disabled:cursor-not-allowed",
-                )}
-              >
-                <Show when={item.icon}>
-                  <Icon
-                    name={item.icon!}
-                    size={12}
-                    class={item.danger ? "text-alert" : "text-dim"}
-                  />
-                </Show>
-                <Text variant="label" tone={item.danger ? "alert" : "default"}>
-                  {item.label}
-                </Text>
-              </button>
-            )}
-          </For>
-        </div>
-      )}
+      panel={({ close }) => <MenuItemList items={local.items} close={close} />}
     />
   );
 }

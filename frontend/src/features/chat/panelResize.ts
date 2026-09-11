@@ -12,6 +12,11 @@
  * null means nothing was dragged, so a bare click on the splitter cannot persist a
  * row-clamped reading over a wider stored preference.
  *
+ * **A live drag outranks the derived floor.** The open set contributes a minimum width, and
+ * that minimum can move mid-gesture when a surface arrives — but re-clamping the pointer's
+ * own number against a floor that shifted under it would jump the edge away from the
+ * cursor. The drag clamps against the set it started with.
+ *
  * **The available width is measured off the row, not the window.** The nav rail and the
  * shell's padding are already spent by the time the layout reaches here, so clamping
  * against the window would reserve a transcript that isn't there and let the aside overflow
@@ -25,11 +30,12 @@ import {
   panelWidth,
   setAvailableWidth,
   setPanelWidth,
-} from "./viewport/persistence";
+} from "./viewport/viewportWidth";
+import type { SurfaceId } from "./viewport/surfaces";
 
 export interface PanelResize {
   /** The width to lay the slot out at: the live drag if one is in flight, else the
-   *  stored preference. */
+   *  stored preference clamped to what is open. */
   liveWidth: () => number;
   /** `onResize` for the splitter — `dx` is the pointer's delta, and the panel sits on
    *  the right, so a rightward drag narrows it. */
@@ -38,18 +44,27 @@ export interface PanelResize {
   onResizeEnd: () => void;
 }
 
-/** The drag controller for the viewport slot. */
-export function createPanelResize(): PanelResize {
-  const [drag, setDrag] = createSignal<number | null>(null);
+/** The drag controller for the viewport slot. `open` reports which surfaces are in the
+ *  panel now — it is what the width's floor is derived from. */
+export function createPanelResize(
+  open: () => readonly SurfaceId[],
+): PanelResize {
+  const [drag, setDrag] = createSignal<{
+    open: readonly SurfaceId[];
+    width: number;
+  } | null>(null);
 
   return {
-    liveWidth: () => drag() ?? panelWidth(),
+    liveWidth: () => drag()?.width ?? panelWidth(open()),
     onResize: (dx: number) => {
-      setDrag(clampWidth((drag() ?? panelWidth()) - dx));
+      const started = drag();
+      const set = started?.open ?? open();
+      const from = started?.width ?? panelWidth(set);
+      setDrag({ open: set, width: clampWidth(from - dx, set) });
     },
     onResizeEnd: () => {
       const settled = drag();
-      if (settled !== null) setPanelWidth(settled);
+      if (settled) setPanelWidth(settled.width, settled.open);
       setDrag(null);
     },
   };

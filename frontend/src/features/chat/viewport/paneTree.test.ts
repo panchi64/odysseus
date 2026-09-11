@@ -14,6 +14,10 @@ import { describe, expect, test } from "bun:test";
 import {
   closeSurface,
   emptyLayout,
+  fits,
+  focusInStack,
+  insertPanel,
+  resizeSplit,
   hasSurface,
   isEmpty,
   leaf,
@@ -185,5 +189,129 @@ describe("toggling", () => {
     const after = toggle(layout, "plan");
     expect(after.strips).toEqual([]);
     expect(panelSurfacesOf(after)).toEqual(["view"]);
+  });
+});
+
+describe("fitting", () => {
+  /** View-ish and Diff-ish minimums, so the arithmetic is the real arithmetic. */
+  const LIMITS: Record<Id, { minWidth: number; minHeight: number }> = {
+    plan: { minWidth: 0, minHeight: 0 },
+    agents: { minWidth: 0, minHeight: 0 },
+    view: { minWidth: 320, minHeight: 240 },
+    diff: { minWidth: 420, minHeight: 260 },
+    files: { minWidth: 320, minHeight: 240 },
+  };
+  const limits = (id: Id) => LIMITS[id];
+  const insert = (
+    node: PaneNode<Id> | null,
+    id: Id,
+    box: { width: number; height: number },
+    cap = 3,
+  ) => insertPanel(node, id, box, limits, cap);
+
+  test("a leaf fits when the box clears both minimums", () => {
+    expect(fits(leaf<Id>("view"), { width: 400, height: 300 }, limits)).toBe(
+      true,
+    );
+    expect(fits(leaf<Id>("view"), { width: 300, height: 300 }, limits)).toBe(
+      false,
+    );
+    expect(fits(leaf<Id>("view"), { width: 400, height: 200 }, limits)).toBe(
+      false,
+    );
+  });
+
+  test("the first panel just takes the region", () => {
+    expect(insert(null, "view", { width: 400, height: 800 })).toEqual(
+      leaf<Id>("view"),
+    );
+  });
+
+  test("a wide region splits into columns", () => {
+    // 1000 wide halves to 500 each — over view's 320 and diff's 420.
+    const node = insert(leaf<Id>("view"), "diff", { width: 1000, height: 800 });
+    expect(node.kind).toBe("split");
+    expect(node.kind === "split" && node.dir).toBe("col");
+  });
+
+  test("a narrow but tall region splits into rows instead", () => {
+    // 400 wide cannot carry two columns; 800 tall carries two rows of 400.
+    const node = insert(leaf<Id>("view"), "files", { width: 400, height: 800 });
+    expect(node.kind).toBe("split");
+    expect(node.kind === "split" && node.dir).toBe("row");
+  });
+
+  test("a region too small for either split falls back to tabs", () => {
+    const node = insert(leaf<Id>("view"), "diff", { width: 400, height: 400 });
+    expect(node.kind).toBe("stack");
+    expect(node.kind === "stack" && node.surfaces).toEqual(["view", "diff"]);
+    // The arriving surface is the one brought to the front.
+    expect(node.kind === "stack" && node.active).toBe("diff");
+  });
+
+  test("the cap stacks however much room there is", () => {
+    const two = insert(leaf<Id>("view"), "files", {
+      width: 4000,
+      height: 4000,
+    });
+    const three = insert(two, "diff", { width: 4000, height: 4000 }, 2);
+    expect(three.kind).toBe("stack");
+    expect(three.kind === "stack" && three.surfaces).toEqual([
+      "view",
+      "files",
+      "diff",
+    ]);
+  });
+
+  test("a stack costs its tab strip, so it is not a free escape", () => {
+    // 264 of height is over view's 240 on its own, but not once the tabs are paid.
+    const box = { width: 400, height: 264 };
+    expect(fits(leaf<Id>("view"), box, limits)).toBe(true);
+    expect(
+      fits({ kind: "stack", surfaces: ["view"], active: "view" }, box, limits),
+    ).toBe(false);
+  });
+});
+
+describe("adjusting a split", () => {
+  test("the root's ratio moves and is clamped", () => {
+    const layout: Layout<Id> = {
+      strips: [],
+      panels: split(leaf<Id>("view"), leaf<Id>("diff")),
+    };
+    expect(resizeSplit(layout, [], 0.3).panels).toMatchObject({ ratio: 0.3 });
+    // Neither side may be squeezed to nothing, however hard the handle is dragged.
+    expect(resizeSplit(layout, [], 0.01).panels).toMatchObject({ ratio: 0.15 });
+    expect(resizeSplit(layout, [], 0.99).panels).toMatchObject({ ratio: 0.85 });
+  });
+
+  test("a nested split is addressed by its path", () => {
+    const layout: Layout<Id> = {
+      strips: [],
+      panels: split(
+        leaf<Id>("view"),
+        split(leaf<Id>("diff"), leaf<Id>("files")),
+      ),
+    };
+    const after = resizeSplit(layout, ["b"], 0.25).panels;
+    expect(after).toMatchObject({ ratio: 0.5, b: { ratio: 0.25 } });
+  });
+});
+
+describe("focusing inside a stack", () => {
+  test("brings a member to the front and leaves everything else alone", () => {
+    const layout: Layout<Id> = {
+      strips: [],
+      panels: split(leaf<Id>("view"), {
+        kind: "stack",
+        surfaces: ["diff", "files"],
+        active: "diff",
+      }),
+    };
+    expect(focusInStack(layout, "files").panels).toMatchObject({
+      b: { active: "files" },
+    });
+    // A surface that is not in a stack changes nothing at all.
+    expect(focusInStack(layout, "view")).toBe(layout);
   });
 });
