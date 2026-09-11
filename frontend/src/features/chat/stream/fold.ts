@@ -112,10 +112,32 @@ export interface FoldDeps {
   patchById: PatchById;
   setMessages: SetStoreFunction<ChatMessage[]>;
   setSnapshots: (fn: (prev: ViewSnapshotRef[]) => ViewSnapshotRef[]) => void;
+  setSubagents: (fn: (prev: SubagentRun[]) => SubagentRun[]) => void;
   setPlan: (items: PlanItem[]) => void;
   setUsage: (context: ContextWindow | null) => void;
   setStats: (stats: ConversationStats | null) => void;
   setErrored: (errored: boolean) => void;
+}
+
+/** One sub-agent's row, changed in place — or the list untouched when nothing matches.
+ *
+ *  The miss is the interesting case and it is deliberately a no-op: a `Last-Event-ID`
+ *  resume replays from a seq the caller has already folded past, so a close can arrive
+ *  for a delegation whose `subagent.started` is behind the resume point. There is no
+ *  name and no task to rebuild a row from, and a row that said only "something finished"
+ *  is worse than no row. */
+function patchSubagent(
+  list: SubagentRun[],
+  id: string,
+  change: Partial<SubagentRun>,
+): SubagentRun[] {
+  let found = false;
+  const next = list.map((s) => {
+    if (s.id !== id) return s;
+    found = true;
+    return { ...s, ...change };
+  });
+  return found ? next : list;
 }
 
 export function createFolder(
@@ -318,6 +340,61 @@ export function createFolder(
         // it idempotent when the stream is replayed from an earlier seq on reconnect.
         state.planRevision += 1;
         deps.setPlan(ev.items);
+        break;
+      case "subagent.started":
+        // Conversation-scoped, like the plan and the version list above: a delegation is
+        // still the answer to "what did that worker do?" after the turn that started it
+        // has ended, so it must not be pinned to the bubble that happened to be open.
+        //
+        // The delegating call also folds onto that bubble as an ordinary tool card, with
+        // the same events flattened onto it one line at a time — that surface is the
+        // transcript's, this one is the roster's, and neither is derivable from the
+        // other because every delegation on one call flattens onto one `tool_call_id`.
+        //
+        // Deduped on `subagent_id` rather than left to the seq guard: a reattach replays
+        // a run's whole buffer (`fromSeq: 0`) over a list that may already hold the row.
+        deps.setSubagents((prev) =>
+          prev.some((s) => s.id === ev.subagent_id)
+            ? prev
+            : [
+                ...prev,
+                {
+                  id: ev.subagent_id,
+                  name: ev.agent_name,
+                  task: ev.task,
+                  toolCallId: ev.tool_call_id,
+                  status: "running",
+                },
+              ],
+        );
+        break;
+      case "subagent.progress":
+        // Latest-wins: the backend sends one line per child event, and a row says where
+        // a sub-agent has got to, not everywhere it has been.
+        deps.setSubagents((prev) =>
+          patchSubagent(prev, ev.subagent_id, { partial: ev.partial }),
+        );
+        break;
+      case "subagent.completed":
+        deps.setSubagents((prev) =>
+          patchSubagent(prev, ev.subagent_id, {
+            status: "completed",
+            summary: ev.summary,
+            durationMs: ev.duration_ms,
+            // The run is over — drop the mid-flight line, which would otherwise read as
+            // the last thing it was doing rather than as what it reported.
+            partial: undefined,
+          }),
+        );
+        break;
+      case "subagent.failed":
+        deps.setSubagents((prev) =>
+          patchSubagent(prev, ev.subagent_id, {
+            status: "failed",
+            error: ev.error,
+            partial: undefined,
+          }),
+        );
         break;
       case "approval.required": {
         // `args` is typed as always-present, but it arrives as untrusted JSON off

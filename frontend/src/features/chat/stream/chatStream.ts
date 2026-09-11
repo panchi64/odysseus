@@ -48,7 +48,7 @@ import {
   type TranscriptStore,
 } from "./branching";
 import { createRunDrive } from "./drive";
-import { createFolder, type FoldState } from "./fold";
+import { createFolder, type FoldState, type SubagentRun } from "./fold";
 import { createPatchById, nextId } from "./patch";
 import { createResumeOps } from "./resume";
 import { createSteeringOps } from "./steering";
@@ -126,6 +126,12 @@ export function createChatStream(
   // so pinning it to the turn that happened to create it would strand it. `plan.updated`
   // carries the whole list, so applying an event is a replace, never a merge.
   const [plan, setPlan] = createSignal<PlanItem[]>([]);
+  // The sub-agents this thread has delegated to, oldest first. Conversation-level for
+  // the same reason the plan is: "what did that worker end up doing?" is asked after the
+  // turn that ran it has finished, so a list pinned to a message block would strand it.
+  // The delegating tool call still folds onto its own turn as an ordinary tool card —
+  // that is the transcript's reading of the same events, and this is the roster's.
+  const [subagents, setSubagents] = createSignal<SubagentRun[]>([]);
   // The run-scoped bookkeeping the fold advances and the drive resets: the high-water
   // seq, the bubble events land on, the plan's revision counter, and the run currently
   // streaming. One object, shared by reference with the folder.
@@ -159,6 +165,7 @@ export function createChatStream(
     patchById,
     setMessages,
     setSnapshots,
+    setSubagents,
     setPlan,
     setUsage,
     setStats,
@@ -240,6 +247,12 @@ export function createChatStream(
       // saw once, in some earlier visit, before this stream instance existed.
       reattachedRunId = null;
       activeConversationId = id;
+      // A roster belongs to the thread that delegated, so it is dropped with the thread.
+      // Cleared here rather than in the binding beside the plan and the snapshots because
+      // those two are re-seeded from the conversation load; there is no REST backfill for
+      // sub-agents — the run event log replays them from `Last-Event-ID` — so the only
+      // thing to do on a switch is forget the previous thread's.
+      setSubagents([]);
     },
     supersede: drive.supersede,
     setSending,
@@ -503,6 +516,10 @@ export function createChatStream(
     usage,
     stats,
     plan,
+    /** The sub-agents this thread has delegated to, oldest first — each with what it was
+     *  asked, where it has got to, and how it ended. Conversation-scoped: the rows outlive
+     *  the turn that started them, and a reattach replays them off the run event log. */
+    subagents,
     /** The run currently streaming into this store, or null. */
     activeRunId: () => foldState.activeRunId,
     /** Highest event seq folded so far — the resume point for a reattach. */

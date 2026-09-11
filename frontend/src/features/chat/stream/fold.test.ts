@@ -7,7 +7,7 @@ import {
 } from "~/lib/stream";
 import { toast } from "~/ui";
 import type { ChatMessage, CompactionProgressBlock } from "../model";
-import { createFolder, type FoldState } from "./fold";
+import { createFolder, type FoldState, type SubagentRun } from "./fold";
 import { createPatchById } from "./patch";
 
 /**
@@ -29,17 +29,27 @@ function harness(seed: ChatMessage[] = []) {
     planRevision: 0,
     activeRunId: "run-1",
   };
+  // The conversation-scoped halves the fold writes through a setter rather than onto a
+  // message. Held as a plain box here, which is all the signal is from the fold's side.
+  let subagents: SubagentRun[] = [];
   const fold = createFolder({
     state,
     patchById: createPatchById(messages, setMessages),
     setMessages,
     setSnapshots: () => {},
+    setSubagents: (fn) => {
+      subagents = fn(subagents);
+    },
     setPlan: () => {},
     setUsage: () => {},
     setStats: () => {},
     setErrored: () => {},
   });
-  return { fold: (ev: RunEvent) => fold("a1", ev), messages };
+  return {
+    fold: (ev: RunEvent) => fold("a1", ev),
+    messages,
+    subagents: () => subagents,
+  };
 }
 
 const turn = (): ChatMessage[] => [
@@ -377,5 +387,163 @@ describe("a review's two frames", () => {
     expect(block?.kind === "review" && block.review.tier).toBeUndefined();
     expect(block?.kind === "review" && block.review.reach).toBeUndefined();
     expect(block?.kind === "review" && block.review.fenced).toBe(false);
+  });
+});
+
+describe("the roster of sub-agents a thread delegated to", () => {
+  // Scoped to this block: the module-level `started`/`completed` above belong to the
+  // compaction pair, and a delegation's frames are a different protocol entirely.
+  const opened = (
+    id: string,
+    name = "explorer",
+    task = "find the config",
+  ): RunEvent => ({
+    type: "subagent.started",
+    seq: ++seq,
+    ts: "",
+    subagent_id: id,
+    agent_name: name,
+    task,
+    tool_call_id: "call-7",
+  });
+
+  const progressed = (id: string, partial: string): RunEvent => ({
+    type: "subagent.progress",
+    seq: ++seq,
+    ts: "",
+    subagent_id: id,
+    partial,
+  });
+
+  const finished = (id: string, summary: string, ms = 4200): RunEvent => ({
+    type: "subagent.completed",
+    seq: ++seq,
+    ts: "",
+    subagent_id: id,
+    summary,
+    duration_ms: ms,
+  });
+
+  const failed = (id: string, error: string): RunEvent => ({
+    type: "subagent.failed",
+    seq: ++seq,
+    ts: "",
+    subagent_id: id,
+    error,
+  });
+
+  test("a started frame opens a row carrying what the sub-agent was asked", () => {
+    const h = harness(turn());
+    h.fold(opened("run-1:call-7:1", "worker", "add the flag"));
+    expect(h.subagents()).toEqual([
+      {
+        id: "run-1:call-7:1",
+        name: "worker",
+        task: "add the flag",
+        toolCallId: "call-7",
+        status: "running",
+      },
+    ]);
+  });
+
+  test("progress is latest-wins, not a log", () => {
+    // The backend sends a line per child event. A row says where a sub-agent has got
+    // to; accumulating them would make the roster a second transcript.
+    const h = harness(turn());
+    h.fold(opened("s1"));
+    h.fold(progressed("s1", "explorer: reading app.py"));
+    h.fold(progressed("s1", "explorer: reading settings.py"));
+    expect(h.subagents()[0].partial).toBe("explorer: reading settings.py");
+  });
+
+  test("completing settles the row and drops the mid-flight line", () => {
+    const h = harness(turn());
+    h.fold(opened("s1"));
+    h.fold(progressed("s1", "explorer: reading app.py"));
+    h.fold(finished("s1", "It lives in core/config.py", 1234));
+    const row = h.subagents()[0];
+    expect(row.status).toBe("completed");
+    expect(row.summary).toBe("It lives in core/config.py");
+    expect(row.durationMs).toBe(1234);
+    // Keeping it would show the last thing it was doing where its report belongs.
+    expect(row.partial).toBeUndefined();
+  });
+
+  test("failing settles the row too, with the reason", () => {
+    // The case the whole `finally` on the backend exists for: without this frame the
+    // row sits on "running" for the rest of the conversation.
+    const h = harness(turn());
+    h.fold(opened("s1"));
+    h.fold(failed("s1", "the fork went away"));
+    const row = h.subagents()[0];
+    expect(row.status).toBe("failed");
+    expect(row.error).toBe("the fork went away");
+    expect(row.summary).toBeUndefined();
+  });
+
+  test("a retried delegation is a second row, not the first one again", () => {
+    // Both delegations share one `tool_call_id` — the model re-issuing the same call —
+    // so the sequence in the id is the only thing keeping them apart.
+    const h = harness(turn());
+    h.fold(opened("run-1:call-7:1"));
+    h.fold(finished("run-1:call-7:1", "nothing found"));
+    h.fold(opened("run-1:call-7:2"));
+    expect(h.subagents().map((s) => s.status)).toEqual([
+      "completed",
+      "running",
+    ]);
+  });
+
+  test("a replayed started frame does not open a second row", () => {
+    // A reattach replays the run's whole buffer, so the row can already be there. The
+    // seq guard drops most of it; the id dedupe is what covers a replay onto a list
+    // that survived the run it was built from.
+    const h = harness(turn());
+    h.fold(opened("s1"));
+    h.fold(opened("s1"));
+    expect(h.subagents()).toHaveLength(1);
+  });
+
+  test("a close for a sub-agent nothing opened is ignored", () => {
+    // A `Last-Event-ID` resume can land past the `subagent.started`. There is no name
+    // and no task to build a row from, and a row saying only "something finished" is
+    // worse than none.
+    const h = harness(turn());
+    h.fold(finished("s-unknown", "done"));
+    expect(h.subagents()).toEqual([]);
+  });
+
+  test("the delegating call still folds onto the transcript as its own tool card", () => {
+    // The point of the pair: the sub-agent frames are an addition, not a migration. The
+    // transcript reads the flattened `tool.progress` line under the call that made it,
+    // and the roster reads the structured frames — neither can be rebuilt from the
+    // other, because every delegation on one call flattens onto one `tool_call_id`.
+    const h = harness(turn());
+    h.fold({
+      type: "tool.started",
+      seq: ++seq,
+      ts: "",
+      tool_call_id: "call-7",
+      name: "agents_delegate_task",
+      args: { agent_name: "explorer", task: "find the config" },
+    });
+    h.fold(opened("run-1:call-7:1"));
+    h.fold({
+      type: "tool.progress",
+      seq: ++seq,
+      ts: "",
+      tool_call_id: "call-7",
+      elapsed_s: null,
+      partial: "explorer: reading app.py",
+    });
+    h.fold(progressed("run-1:call-7:1", "explorer: reading app.py"));
+
+    const card = (h.messages.find((m) => m.id === "a1")?.blocks ?? []).find(
+      (b) => b.kind === "tool",
+    );
+    expect(card?.kind === "tool" && card.tool.progress).toBe(
+      "explorer: reading app.py",
+    );
+    expect(h.subagents()[0].partial).toBe("explorer: reading app.py");
   });
 });
