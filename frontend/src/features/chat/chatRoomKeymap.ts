@@ -48,7 +48,7 @@ export function registerChatRoomKeymap(deps: ChatRoomKeymapDeps): void {
       when: viewport.hasFocus,
       run: () =>
         viewport.requestTab(
-          viewport.state().activeTab === "preview" ? "code" : "preview",
+          viewport.viewState().activeTab === "preview" ? "code" : "preview",
         ),
     },
     { combo: "[", when: viewport.hasFocus, run: viewport.pinPrev },

@@ -121,7 +121,7 @@ export function TranscriptView(props: TranscriptViewProps): JSX.Element {
                     }}
                     onOpenInView={props.viewport.openViewTo}
                     viewItems={props.viewport.items}
-                    seenKey={() => props.viewport.state().seenKey}
+                    seenKey={() => props.viewport.state().seen.view ?? null}
                     onReattach={() => {
                       if (message.runId)
                         void props.stream.reattachRun(message.runId, {

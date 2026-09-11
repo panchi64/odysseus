@@ -25,7 +25,7 @@ import {
   panelWidth,
   setAvailableWidth,
   setPanelWidth,
-} from "./viewerPersistence";
+} from "./viewport/persistence";
 
 export interface PanelResize {
   /** The width to lay the slot out at: the live drag if one is in flight, else the

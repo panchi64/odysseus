@@ -12,7 +12,7 @@ import {
   type JSX,
 } from "solid-js";
 import { ErrorState, Lightbox, LoadingText } from "~/ui";
-import { rememberScroll } from "../../viewerPersistence";
+import { rememberScroll } from "../../scrollMemory";
 
 async function toSvgObjectUrl(blob: Blob): Promise<string> {
   const bytes = await blob.arrayBuffer();

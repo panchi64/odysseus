@@ -22,7 +22,7 @@ import {
   LoadingText,
   Text,
 } from "~/ui";
-import { rememberScroll } from "../../viewerPersistence";
+import { rememberScroll } from "../../scrollMemory";
 import { downloadBlob } from "../../viewport/downloadRegistry";
 import { fontStepClass } from "./fontStep";
 

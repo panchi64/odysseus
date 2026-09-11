@@ -23,7 +23,7 @@ import {
   LoadingText,
   Text,
 } from "~/ui";
-import { rememberScroll } from "../../viewerPersistence";
+import { rememberScroll } from "../../scrollMemory";
 import { fontStepMetrics } from "./fontStep";
 
 const MAX_BYTES = 10 * 1024 * 1024; // 10 MB

@@ -12,7 +12,7 @@ import {
   type JSX,
 } from "solid-js";
 import { cx, ErrorState, Icon, LoadingText, Text } from "~/ui";
-import { rememberScroll } from "../../viewerPersistence";
+import { rememberScroll } from "../../scrollMemory";
 import { fontStepClass } from "./fontStep";
 
 type JsonValue =

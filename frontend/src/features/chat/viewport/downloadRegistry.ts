@@ -41,7 +41,7 @@ export type DownloadSlot = (download: ActiveDownload | null) => void;
 
 /** Insertion-ordered, so the last entry is the most recently armed claim. Held in a
  *  signal and replaced rather than mutated, mirroring the persisted-map idiom in
- *  `viewerPersistence.ts` — Solid tracks the reference, not the contents. */
+ *  `viewport/persistence.ts` — Solid tracks the reference, not the contents. */
 const [claims, setClaims] = createSignal<ReadonlyMap<number, ActiveDownload>>(
   new Map(),
 );

@@ -32,7 +32,7 @@ import {
 } from "../data";
 import type { SnapshotFile, ViewSnapshotRef } from "../model";
 import { extensionOf, type PriorVersion } from "../viewport/viewItems";
-import { rememberScroll } from "../viewerPersistence";
+import { rememberScroll } from "../scrollMemory";
 import { createDownloadSlot } from "../viewport/downloadRegistry";
 
 /** "Compare vs" value for plain code (no diff). */

@@ -37,9 +37,9 @@ export function ChatViewportMounts(
   const renderPanel = (onClose: () => void) => (
     <ViewportPanel
       items={props.viewport.items()}
-      selectedKey={props.viewport.state().pinnedKey}
+      selectedKey={props.viewport.viewState().pinnedKey}
       onSelect={props.viewport.selectView}
-      activeTab={props.viewport.state().activeTab}
+      activeTab={props.viewport.viewState().activeTab}
       onSelectTab={props.viewport.requestTab}
       fontStep={props.viewport.state().fontStep}
       onFontStep={(step) => props.viewport.patch({ fontStep: step })}
