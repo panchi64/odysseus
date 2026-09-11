@@ -19,6 +19,7 @@
  */
 
 import type { JSX } from "solid-js";
+import { AgentsSurface } from "../components/AgentsSurface";
 import { DiffSurface } from "../components/DiffSurface";
 import { FilesSurface } from "../components/FilesSurface";
 import { PlanSurface } from "../components/PlanSurface";
@@ -45,6 +46,15 @@ export const SURFACE_RENDERERS: Record<
       <PlanSurface
         items={ctx.viewport.plan}
         maxRows={spec.shape === "strip" ? spec.maxRows : 8}
+      />
+    );
+  },
+  agents: (ctx) => {
+    const spec = SURFACE_BY_ID.agents;
+    return (
+      <AgentsSurface
+        runs={ctx.viewport.subagents}
+        maxRows={spec.shape === "strip" ? spec.maxRows : 6}
       />
     );
   },

@@ -71,6 +71,15 @@ export const SURFACES = [
     maxRows: 8,
   },
   {
+    id: "agents",
+    shape: "strip",
+    label: "Agents",
+    icon: "users",
+    // Six rows of delegations. Past that the agent is farming out more work than
+    // the operator can follow at a glance, and the list scrolls.
+    maxRows: 6,
+  },
+  {
     id: "diff",
     shape: "panel",
     label: "Changes",

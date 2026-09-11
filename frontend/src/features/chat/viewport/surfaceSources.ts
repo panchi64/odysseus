@@ -20,6 +20,7 @@
 
 import type { PermissionLevel } from "../model";
 import type { PlanItem } from "~/lib/stream/events";
+import type { SubagentRun } from "../stream/fold";
 import type { BranchState } from "../data";
 import type { SurfaceId } from "./surfaces";
 import type { ViewItem } from "./viewItems";
@@ -55,6 +56,7 @@ export interface SurfaceDeps {
   viewItems: () => ViewItem[];
   plan: () => PlanItem[];
   branch: () => BranchState | null | undefined;
+  subagents: () => SubagentRun[];
   /** The thread's current level. `plan` is the one that cannot act. */
   permission: () => PermissionLevel;
   /** Whether that level is still a stand-in for one in flight. Load-bearing: the
@@ -91,6 +93,15 @@ export function createSurfaceSources(
       // Keyed by the list's length, so a *revised* plan awaiting approval is a new
       // arrival and earns a fresh claim, while the same plan re-rendering does not.
       claimKey: () => `await:${deps.plan().length}`,
+    },
+    // A thread that has never delegated has no roster; one that has keeps it, since
+    // what a sub-agent reported is as much a result as a run in flight.
+    agents: {
+      available: () => deps.subagents().length > 0,
+      // A delegation is the agent getting on with the work it was already doing.
+      // The transcript narrates it; the roster is there when the operator wants it.
+      arrival: () => "announce",
+      claimKey: () => "",
     },
     // Only a code thread has a branch at all; the fetch answers 404 for every other
     // kind, which is the ordinary case rather than a failure.

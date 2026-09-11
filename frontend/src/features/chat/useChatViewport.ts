@@ -36,6 +36,7 @@ import {
 import { createPanelResize, observeAvailableWidth } from "./panelResize";
 import type { ChatMessage, PermissionLevel, ViewSnapshotRef } from "./model";
 import type { BranchState } from "./data";
+import type { SubagentRun } from "./stream/fold";
 import type { PlanItem } from "~/lib/stream/events";
 import {
   emptyLayout,
@@ -74,6 +75,8 @@ export interface ViewportSource {
   plan: Accessor<PlanItem[]>;
   branch: () => BranchState | null | undefined;
   refetchBranch: () => void;
+  /** Who this thread delegated to, for the Agents surface. */
+  subagents: Accessor<SubagentRun[]>;
   /** The thread's level — the Plan surface's arrival turns on it — and whether
    *  that level has settled yet. */
   permission: () => PermissionLevel;
@@ -95,6 +98,8 @@ export interface ChatViewport {
   /** The thread's branch, for the Diff surface. */
   branch: () => BranchState | null | undefined;
   refetchBranch: () => void;
+  /** Who this thread delegated to, for the Agents surface. */
+  subagents: Accessor<SubagentRun[]>;
   /** Whether a surface has anything to show — which header buttons exist. */
   available: (id: SurfaceId) => boolean;
   /** Whether a surface is currently in the layout. */
@@ -172,6 +177,7 @@ export function useChatViewport(
     branch: source.branch,
     permission: source.permission,
     permissionPending: source.permissionPending,
+    subagents: source.subagents,
   });
   const available = (id: SurfaceId): boolean => sources[id].available();
 
@@ -393,6 +399,7 @@ export function useChatViewport(
     plan: source.plan,
     branch: source.branch,
     refetchBranch: source.refetchBranch,
+    subagents: source.subagents,
     available,
     isOpen,
     toggleSurface,

@@ -39,6 +39,7 @@ const sources = (over: Partial<SurfaceDeps> = {}) =>
     branch: () => null,
     permission: () => "edit" as PermissionLevel,
     permissionPending: () => false,
+    subagents: () => [],
     ...over,
   });
 
