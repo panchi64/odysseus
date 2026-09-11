@@ -1,6 +1,21 @@
-import { Show, createEffect, createMemo, onCleanup, type JSX } from "solid-js";
+import {
+  Show,
+  createEffect,
+  createMemo,
+  createSignal,
+  onCleanup,
+  type JSX,
+} from "solid-js";
 import { useLocation, useNavigate } from "@solidjs/router";
-import { Button, Text, confirm, toast, type MenuItem } from "~/ui";
+import {
+  Button,
+  ContextMenu,
+  Text,
+  confirm,
+  createContextMenu,
+  toast,
+  type MenuItem,
+} from "~/ui";
 import { sessionModeSpec } from "~/lib/modes";
 import {
   activeProjectId,
@@ -15,7 +30,18 @@ import {
   setActiveSessionMode,
   setCodeProjectId,
 } from "~/lib/stores/sessionMode";
-import { mainChat, refreshSessions, useChatSessions } from "../data";
+import {
+  isPinned,
+  mainChat,
+  refreshSessions,
+  togglePin,
+  useChatSessions,
+} from "../data";
+import {
+  deleteConversationFlow,
+  retitleConversation,
+} from "../conversationActions";
+import { createRenameConversation } from "./RenameConversationModal";
 import {
   directoryLabel,
   registerAddDirectoryButton,
@@ -165,6 +191,88 @@ export function RecentsRail(): JSX.Element {
     startNew();
   };
 
+  /* ── The per-thread actions menu ────────────────────────────────────────────
+   *
+   * One instance for the whole list. Every row drives it — a right-click at the
+   * cursor, or its own "···" against the button — and the items are rebuilt for
+   * whichever row opened it. A menu per row would mount one portal, one backdrop and
+   * one Escape listener per thread in the history.
+   *
+   * Its sibling below (`actions`) is the *directory* menu, and the two stay apart on
+   * purpose: one acts on a project, this one on a conversation. */
+  const threadMenu = createContextMenu();
+
+  // The thread a rename is for, captured when the item is chosen. It cannot be read
+  // from the menu at dialog time: selecting an item closes the menu first, so the open
+  // key is already null by the time the modal asks.
+  const [renameTarget, setRenameTarget] = createSignal<{
+    id: string;
+    title: string;
+  } | null>(null);
+  const rename = createRenameConversation({
+    conversationId: () => renameTarget()?.id ?? null,
+    currentTitle: () => renameTarget()?.title,
+  });
+
+  /** What a thread's own menu offers, built per opening against the row that opened it.
+   *
+   *  Deliberately not the room header's full set: COPY CONVERSATION, FORK and COMPACT
+   *  all need the thread's messages, and the rail holds only summaries — offering them
+   *  here would mean loading a thread the operator did not ask to open, to serve a menu
+   *  they may dismiss. What is left acts on the thread by id alone. */
+  const threadActions = (): MenuItem[] => {
+    const id = threadMenu.openKey();
+    if (!id) return [];
+    // Read once and closed over: these run after the menu has closed.
+    const row = rows()?.find((s) => s.id === id);
+    const title = row?.title ?? "";
+    const pinned = isPinned(id);
+    return [
+      {
+        label: pinned ? "Unpin thread" : "Pin thread",
+        icon: "pin",
+        onSelect: () => togglePin(id),
+      },
+      {
+        label: "Rename conversation",
+        icon: "edit",
+        onSelect: () => {
+          setRenameTarget({ id, title });
+          rename.open();
+        },
+      },
+      {
+        label: "Regenerate title",
+        icon: "refresh",
+        // No refresh of our own — `regenerateTitle` already re-reads the list.
+        onSelect: () => void retitleConversation(id),
+      },
+      {
+        label: "Delete conversation",
+        icon: "trash",
+        danger: true,
+        onSelect: () => {
+          void deleteConversationFlow(id, {
+            // The same guard the room's menu applies, and it has to be here too: this
+            // menu can delete the thread the operator is *currently streaming*, and
+            // aborting the local SSE would not stop the run server-side — it would
+            // keep generating into a conversation that no longer exists. Scoped to
+            // that thread, so deleting any other row never touches a run in flight.
+            beforeDelete: async () => {
+              if (id === currentId() && stream.sending()) await stream.cancel();
+            },
+          }).then((deleted) => {
+            // Only the open thread's disappearance restages the composer. Deleting
+            // some other row must leave the operator where they were — that is the
+            // whole point of being able to act on a thread without opening it.
+            // (`deleteConversation` re-reads the list itself.)
+            if (deleted && currentId() === id) setCurrentId(null);
+          });
+        },
+      },
+    ];
+  };
+
   /** What a directory's own menu offers. Everything here acts on the *project*, which
    *  is why the list does not build it: filing and unfiling a directory is the projects
    *  seam's business, and the rail is only where the operator happens to be standing. */
@@ -278,6 +386,7 @@ export function RecentsRail(): JSX.Element {
           sessions={inMode}
           mode={mode()}
           currentId={currentId()}
+          menu={threadMenu}
           onSelect={select}
           directories={rooted() ? directories() : undefined}
           status={rooted() ? status : undefined}
@@ -289,6 +398,11 @@ export function RecentsRail(): JSX.Element {
           }
         />
       </div>
+      {/* Both render nothing where they sit — the panel is portalled and the modal
+          opens over the app — so they live at the end of the rail rather than inside
+          the scroll body they act on. */}
+      <ContextMenu api={threadMenu} items={threadActions} />
+      {rename.element}
     </div>
   );
 }
