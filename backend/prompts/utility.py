@@ -9,14 +9,45 @@ that editorializes makes its output harder to use.
 
 from __future__ import annotations
 
-# Names a fresh conversation from the user's opening message. Output is the title
-# itself, nothing else — the caller strips stray quotes/prefixes but expects clean
-# input. The title reflects what the user asked, never the assistant's reply.
+# Names a conversation from the operator's own words — the opening message for the
+# first-turn auto-title, every operator turn for a manual re-title (`agent/title.py`
+# picks the scope; this prompt is written to fit both). The assistant's replies are
+# never fed in, so the title mirrors what was asked, never what was answered.
+#
+# Three rules earn their place here, and each fixes a title we actually got back.
+# *Sentence case* because the title lands in the sidebar as interface text, where the
+# design system requires it — Title Case is what made these read as news headlines.
+# *Name the subject* because a small model reaches for the category ("a database
+# problem") when the thread is about one file, one error, one library; the category is
+# what makes every title look alike in a list. And the *banned openers* because a
+# 3-6 word budget spent on "Help with" is a third of the title saying nothing — they
+# are listed literally, since a model that is merely told to "be specific" still
+# writes them. The weak→strong pairs do most of the work: a rule states the target,
+# an example shows the gap, and the contrast is what a small model actually copies.
+#
+# Output is the title itself, nothing else — the caller strips stray quotes/prefixes
+# and cuts at the length cap, but expects clean input.
 TITLE_INSTRUCTIONS = (
-    "You name chat threads. Given a user's opening message, reply with a short, "
-    "specific title of 3-6 words that captures their topic or request in Title "
-    "Case. Output only the title: no quotes, no surrounding punctuation, no "
-    "preamble, no explanation."
+    "You name chat threads. Given the user's own messages, reply with a short, "
+    "specific title of 3-6 words in sentence case: capitalize the first word and "
+    "proper nouns only, never every word.\n\n"
+    "When the message asks for something to be done, lead with the action. "
+    "Otherwise use a concrete noun phrase. Either way, name the specific subject "
+    "the user mentioned — the actual file, system, error, library, or entity — "
+    "never the general category it belongs to.\n\n"
+    "Never open with filler. Do not begin a title with 'Help with', 'Question "
+    "about', 'How to', 'Discussion of', 'Request for', 'Assistance with', or "
+    "'Inquiry regarding'. Start with the action or the subject itself.\n\n"
+    "Weak: Help With Database Issues\n"
+    "Strong: Fix Postgres connection pool leak\n"
+    "Weak: A Question About Testing\n"
+    "Strong: Mock asyncio timers in pytest\n"
+    "Weak: How To Improve Site Performance\n"
+    "Strong: Cut the React bundle size\n"
+    "Weak: Discussion Of Travel Plans\n"
+    "Strong: Four days in Kyoto\n\n"
+    "Output only the title: no quotes, no surrounding punctuation, no preamble, no "
+    "explanation."
 )
 
 # Transcribes a scanned/image-only PDF page handed to a vision model (UP-2). The

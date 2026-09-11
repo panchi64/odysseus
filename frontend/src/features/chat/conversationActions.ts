@@ -7,6 +7,12 @@
  * conversation — the screen was carrying a third of its length in error handling for
  * actions it does not render.
  *
+ * **Two layers, and the split is which conversation is being acted on.** The exported
+ * `retitleConversation` / `deleteConversationFlow` take an id, so the rail's per-row
+ * menu can use them on a thread that isn't open. `createConversationActions` wraps them
+ * for the room, adding only what is genuinely about the room: the retitle throbber,
+ * stopping a live run, restaging the composer once the open thread is gone.
+ *
  * **A delete has to ask a second question first.** Images are shared: the same attachment
  * can be referenced from more than one place, so deleting the thread that happens to hold
  * one may strand it or may not. The backend is asked which images *this* delete would
@@ -54,6 +60,101 @@ export function buildConversationTranscript(messages: ChatMessage[]): string {
     .join("\n\n---\n\n");
 }
 
+/** Gate a delete that may strand image attachments. Probes the backend for the
+ *  images this delete would orphan; if any, raises the 3-way keep/purge prompt,
+ *  otherwise the plain confirm. Returns the chosen `purgeImages`, or null to
+ *  abort. A failed probe falls back to the plain confirm (keep images) so the
+ *  delete stays usable. */
+async function resolveDeleteChoice(
+  conversationId: string,
+  title: string,
+  baseDetail: string,
+  messageId?: string,
+): Promise<boolean | null> {
+  let orphans: string[] = [];
+  try {
+    orphans = await fetchOrphanImageAttachments(conversationId, messageId);
+  } catch {
+    // Probe failed — fall through to the plain confirm below.
+  }
+  if (orphans.length === 0) {
+    const ok = await confirm({
+      title,
+      detail: baseDetail,
+      confirmLabel: "Delete",
+      tone: "alert",
+    });
+    return ok ? false : null;
+  }
+  const n = orphans.length;
+  const choice = await confirmChoice({
+    title,
+    detail: `${baseDetail} ${n} image attachment${
+      n > 1 ? "s" : ""
+    } would be left unused — delete them too, or keep them?`,
+    confirmLabel: "Delete images",
+    secondaryLabel: "Keep images",
+    cancelLabel: "Cancel",
+    tone: "alert",
+  });
+  if (choice === "cancel") return null;
+  return choice === "primary";
+}
+
+/* ── Acting on a thread by id ─────────────────────────────────────────────────
+ *
+ * The two below take the conversation they act on as an argument, because two
+ * surfaces now reach for them: the open thread's own header, and any row in the
+ * rail's context menu. They used to read the open thread's id from the room's
+ * closure, which is exactly what made them unusable from a list — acting on a row
+ * meant opening it first.
+ *
+ * `createConversationActions` still wraps them, and keeps everything that is
+ * genuinely about *the room*: the retitle throbber, stopping a live run, restaging
+ * an empty composer. Nothing of that belongs to a row in a list. */
+
+/** Regenerate a thread's title. Resolves once the backend has answered; the caller
+ *  owns any in-flight indicator, since only it knows where to put one. */
+export async function retitleConversation(
+  conversationId: string,
+): Promise<void> {
+  try {
+    await regenerateTitle(conversationId);
+    toast.success("Title regenerated");
+  } catch {
+    toast.error("Unable to regenerate the title.");
+  }
+}
+
+/** Confirm and delete a thread. Resolves true only when it is actually gone, so a
+ *  caller can decide what to reseat *after* the operator has agreed rather than
+ *  before.
+ *
+ *  `beforeDelete` runs between the confirm and the call, for a caller that has to
+ *  settle something first — the room stops a live run there, because aborting the
+ *  local SSE does not stop the run server-side and a thread deleted mid-turn would
+ *  keep generating into a conversation that no longer exists. */
+export async function deleteConversationFlow(
+  conversationId: string,
+  opts: { beforeDelete?: () => Promise<void> } = {},
+): Promise<boolean> {
+  const purgeImages = await resolveDeleteChoice(
+    conversationId,
+    "Delete this conversation?",
+    "This permanently removes the thread and its history.",
+  );
+  if (purgeImages === null) return false;
+  try {
+    await opts.beforeDelete?.();
+    await deleteConversation(conversationId, purgeImages);
+    toast.success("Conversation deleted");
+    return true;
+  } catch {
+    toast.error("Unable to delete the conversation.");
+    return false;
+  }
+}
+
 export interface ConversationActionDeps {
   /** The open thread, or null when the composer is staging a new one. */
   conversationId: () => string | null;
@@ -86,56 +187,12 @@ export function createConversationActions(
 ): ConversationActions {
   const [retitling, setRetitling] = createSignal(false);
 
-  /** Gate a delete that may strand image attachments. Probes the backend for the
-   *  images this delete would orphan; if any, raises the 3-way keep/purge prompt,
-   *  otherwise the plain confirm. Returns the chosen `purgeImages`, or null to
-   *  abort. A failed probe falls back to the plain confirm (keep images) so the
-   *  delete stays usable. */
-  async function resolveDeleteChoice(
-    conversationId: string,
-    title: string,
-    baseDetail: string,
-    messageId?: string,
-  ): Promise<boolean | null> {
-    let orphans: string[] = [];
-    try {
-      orphans = await fetchOrphanImageAttachments(conversationId, messageId);
-    } catch {
-      // Probe failed — fall through to the plain confirm below.
-    }
-    if (orphans.length === 0) {
-      const ok = await confirm({
-        title,
-        detail: baseDetail,
-        confirmLabel: "Delete",
-        tone: "alert",
-      });
-      return ok ? false : null;
-    }
-    const n = orphans.length;
-    const choice = await confirmChoice({
-      title,
-      detail: `${baseDetail} ${n} image attachment${
-        n > 1 ? "s" : ""
-      } would be left unused — delete them too, or keep them?`,
-      confirmLabel: "Delete images",
-      secondaryLabel: "Keep images",
-      cancelLabel: "Cancel",
-      tone: "alert",
-    });
-    if (choice === "cancel") return null;
-    return choice === "primary";
-  }
-
   async function retitle(): Promise<void> {
     const id = deps.conversationId();
     if (!id || retitling()) return;
     setRetitling(true);
     try {
-      await regenerateTitle(id);
-      toast.success("Title regenerated");
-    } catch {
-      toast.error("Unable to regenerate the title.");
+      await retitleConversation(id);
     } finally {
       setRetitling(false);
     }
@@ -179,24 +236,21 @@ export function createConversationActions(
   async function removeConversation(): Promise<void> {
     const id = deps.conversationId();
     if (!id) return;
-    const purgeImages = await resolveDeleteChoice(
-      id,
-      "Delete this conversation?",
-      "This permanently removes the thread and its history.",
-    );
-    if (purgeImages === null) return;
-    try {
+    const deleted = await deleteConversationFlow(id, {
       // Deleting a thread mid-stream must stop its generation: cancel the live
       // run first (while it still exists) so the backend halts it, rather than
       // leaving it generating into a conversation that's about to be gone —
       // aborting the local SSE alone wouldn't stop the run server-side.
-      if (deps.sending()) await deps.cancel();
-      await deleteConversation(id, purgeImages);
-      deps.onDeleted();
-      toast.success("Conversation deleted");
-    } catch {
-      toast.error("Unable to delete the conversation.");
-    }
+      //
+      // `sending()` alone used to gate this, which was wrong the moment anything
+      // but the open thread could be deleted: it would cancel the operator's live
+      // run to delete some *other* conversation. The run only has to stop when the
+      // thread being removed is the one writing into it.
+      beforeDelete: async () => {
+        if (id === deps.conversationId() && deps.sending()) await deps.cancel();
+      },
+    });
+    if (deleted) deps.onDeleted();
   }
 
   async function removeMessage(messageId: string): Promise<void> {

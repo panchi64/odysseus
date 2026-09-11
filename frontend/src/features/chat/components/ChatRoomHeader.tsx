@@ -38,6 +38,8 @@ export interface ChatRoomHeaderProps {
   workspaceHint: () => string | undefined;
   /** True while the thread is being named — the auto-title or a manual retitle. */
   working: () => boolean;
+  /** What this thread is running on, or null when there is nothing to name. */
+  model: () => string | null;
   conversationId: () => string | null;
   streaming: () => boolean;
   /** Length of the transcript, which is what makes compact and copy available. */
@@ -47,19 +49,49 @@ export interface ChatRoomHeaderProps {
 }
 
 /**
- * Title only. The model this chat runs on is named on every assistant turn and picked in
- * the app top bar; a third, read-only copy here was the one that read as a control.
- * Everything else that stood in this row is in the status strip under the composer.
+ * The thread's identity: what it is called, and what it is running on.
+ *
+ * The model used to be stamped above every assistant turn instead. That wrote the same
+ * name down the whole transcript and still left "what is this thread on?" unanswered,
+ * because a turn only speaks for itself — so it is asked once, here, where it stays true
+ * as the transcript scrolls. Everything else that stood in this row is in the status
+ * strip under the composer.
+ *
+ * **The subtitle spends no colour.** Hierarchy runs size → weight → brightness (§4), and
+ * the resting palette is grey (§5) — an accent here would take the one the screen is
+ * allowed, for a label that is orientation rather than focus. The separation is made the
+ * way the system makes it: `micro` mono against a sans `readout`, which is the two-voice
+ * split (§2) doing the work colour would otherwise be asked to do. A model name is
+ * emitted by a process, so mono is also simply what it is.
  */
 export function ChatRoomHeader(props: ChatRoomHeaderProps): JSX.Element {
   return (
+    // Still `items-center`, against the title block as a whole rather than its first
+    // line. With the eyebrow present that block is two lines tall, and top-aligning
+    // would hang the session controls level with a 10px label, leaving a gap beneath.
     <header class="flex items-center justify-between gap-3 pb-3">
       <span class="flex min-w-0 flex-col">
+        {/* WHAT IT RUNS ON, above the name. Reserves no space when there is nothing
+            to name — an empty eyebrow would push the title down a line and leave two
+            adjacent threads sitting at different heights.
+
+            It reads above while the workspace hint reads below, and the split is what
+            each answers. The hint is context for a name the thread does not have yet,
+            so it follows the title; the model is true of the whole thread whether or
+            not it has been named, so it leads. The two are near-exclusive anyway —
+            the hint appears only for a staged worktree thread. */}
+        <Show when={props.model()}>
+          {(model) => (
+            <Text variant="micro" tone="dim" class="truncate">
+              {model()}
+            </Text>
+          )}
+        </Show>
         <span class="flex min-w-0 items-center gap-1.5">
           <Show
             when={props.reveal()}
             fallback={
-              <Text variant="readout" tone="bright">
+              <Text variant="readout" tone="bright" class="truncate">
                 {props.title()}
               </Text>
             }
@@ -70,6 +102,10 @@ export function ChatRoomHeader(props: ChatRoomHeaderProps): JSX.Element {
                 tone="bright"
                 text={title()}
                 speed={REVEAL_SPEED_MS}
+                // Same clamp as the static branch above. Without it a long
+                // auto-generated name overflows the row while it types itself out
+                // and then snaps to an ellipsis the moment the reveal hands over.
+                class="truncate"
               />
             )}
           </Show>

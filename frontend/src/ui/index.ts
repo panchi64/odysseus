@@ -210,6 +210,13 @@ export {
 } from "./components/FramedOverlay";
 export { useGatedMount, type GatedMount } from "./components/useGatedMount";
 export { Menu, type MenuProps, type MenuItem } from "./components/Menu";
+export {
+  ContextMenu,
+  createContextMenu,
+  type ContextMenuApi,
+  type ContextMenuProps,
+  type ContextMenuTriggerProps,
+} from "./components/ContextMenu";
 export { MetaAction, type MetaActionProps } from "./components/MetaAction";
 export {
   Popover,

@@ -36,6 +36,7 @@ import { PermissionControl } from "../components/PermissionControl";
 import { TranscriptView } from "../components/TranscriptView";
 import { ModelPicker } from "~/app/ModelPicker";
 import { createConversationActions } from "../conversationActions";
+import { conversationModel } from "../conversationModel";
 import { registerChatRoomKeymap } from "../chatRoomKeymap";
 import { useChatViewport } from "../useChatViewport";
 import { createTranscriptFollow } from "../transcriptScroll";
@@ -267,6 +268,7 @@ export function ChatRoomScreen(): JSX.Element {
           reveal={headerReveal}
           workspaceHint={workspaceHint}
           working={titleWorking}
+          model={() => conversationModel(stream.messages)}
           conversationId={currentId}
           streaming={stream.sending}
           messageCount={() => stream.messages.length}

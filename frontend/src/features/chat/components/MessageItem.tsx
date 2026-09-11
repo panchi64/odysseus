@@ -4,13 +4,13 @@ import {
   Show,
   Switch,
   createSignal,
+  onCleanup,
   onMount,
   type JSX,
 } from "solid-js";
-import { Button, Chip, Icon, Stack, Text, Textarea, cx } from "~/ui";
-import { hostLabel, relativeTime } from "~/lib/format";
+import { Button, Chip, Icon, Markdown, Stack, Text, Textarea, cx } from "~/ui";
+import { hostLabel, longTimestamp } from "~/lib/format";
 import { CONTEXT_OVERFLOW_DETAIL } from "~/lib/stream";
-import { selectedModelLabel } from "~/lib/stores/models";
 import type { ApprovalDecision, ChatMessage, Citation } from "../model";
 import { hasLayers as turnHasLayers } from "../blocks";
 import type { ViewItem } from "../viewport";
@@ -264,8 +264,26 @@ function UserText(props: { text: string }): JSX.Element {
 
   // Measured, not counted: a wrapped long line takes more rows than its newlines
   // suggest, so counting "\n" would leave a wall of text unclamped.
+  //
+  // **And measured again whenever the content resizes**, which a one-shot `onMount`
+  // could not do once this turn became rendered markdown. `Markdown` fills the node
+  // through `innerHTML` from its own effect, so at mount there is nothing inside to
+  // measure: every long turn read as 0 tall, `clampable` stayed false, and the clamp
+  // — along with SHOW MORE — silently never appeared. An observer also covers the
+  // cases a second `onMount` would still miss: a late-loading font reflowing the
+  // block, and the operator editing the turn in place.
   onMount(() => {
-    if (ref) setClampable(ref.scrollHeight > ref.clientHeight + 1);
+    if (!ref) return;
+    const measure = () => {
+      // Only meaningful while clamped — expanded, `clientHeight` grows to the full
+      // content and the comparison would clear the flag that is drawing the control
+      // the operator just used.
+      if (!expanded()) setClampable(ref!.scrollHeight > ref!.clientHeight + 1);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(ref);
+    onCleanup(() => ro.disconnect());
   });
 
   return (
@@ -283,16 +301,24 @@ function UserText(props: { text: string }): JSX.Element {
             : `calc(${USER_TURN_CLAMP_LINES} * 1.5em)`,
         }}
       >
-        {/* `reading`, not `body`: this is conversation content sitting inches
-            from a rendered answer on the prose scale. At chrome size the
-            operator's own words read as a caption on the model's. */}
-        <Text
-          variant="reading"
-          tone="bright"
-          class="whitespace-pre-wrap break-words text-left"
-        >
-          {props.text}
-        </Text>
+        {/* Rendered, not printed. The operator's turn sits inches from a rendered
+            answer, so a prompt carrying a list, a fence or a `>` quote showed its
+            own source beside prose that had been set — the asymmetry read as the
+            product taking one speaker less seriously than the other.
+
+            This is also the *stricter* reading of §4, not a relaxation of it: the
+            reading scale is `.ody-prose` only, and `variant="reading"` was the
+            system's one sanctioned use of `--prose-*` outside it. Real prose
+            retires that exception at identical size.
+
+            No `streamStable` — that path exists for the answer stream's settled-
+            block caching (§10.11), and the operator's turn arrives whole.
+
+            Colour comes from `.ody-prose` rather than a `bright` override: both
+            speakers then render identically, which is the point, and the sunken
+            ground under the bubble is already what marks the turn as theirs (§5.1
+            names it for exactly this). */}
+        <Markdown class="text-left break-words">{props.text}</Markdown>
         {/* Only while clamped, and only when there is genuinely more below. */}
         <Show when={clampable() && !expanded()}>
           <div class="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-gradient-to-t from-sunken to-transparent" />
@@ -400,10 +426,16 @@ function UserTurn(props: {
           {/* The TIME reveals; the NAME stays. The row is already there holding
               the state markers, so hiding the name buys back no space — it just
               makes the operator hover to learn who said what. It is set `dim` at
-              `label` size so it labels the turn without competing with it. */}
+              `label` size so it labels the turn without competing with it.
+
+              The stamp itself is the same written-out form the assistant's turn
+              shows permanently. It reveals here only because this row already
+              has something holding it at rest; two *formats* for one fact in one
+              transcript would be the inconsistency worth avoiding, not two
+              visibilities. */}
           <span class={cx("flex items-center gap-2", TURN_REVEAL_CLASS)}>
             <Text variant="micro" tone="dim">
-              {relativeTime(m().createdAt)}
+              {longTimestamp(m().createdAt)}
             </Text>
           </span>
           <Text variant="label" tone="dim">
@@ -541,48 +573,24 @@ function AssistantTurn(props: {
   const hasLayers = () => turnHasLayers(m().blocks);
   const toggleAll = () => setForceOpen((v) => !v);
 
-  /** Who is speaking: the model that produced the turn.
-   *
-   *  A turn records its own model, and once the run settles the backend's is
-   *  adopted, so that is the answer almost always. The gap is the *first* turn of
-   *  a session: the optimistic bubble is stamped from the `main` binding, and if
-   *  the operator types and sends before `/models/roles` has resolved there is
-   *  nothing to stamp it with — the turn streamed in labelled "Assistant" and
-   *  only became the model's name once it ended.
-   *
-   *  So a streaming turn with no recorded model falls back to the live binding,
-   *  which is *what is running* — the same fact from the same source, arriving a
-   *  beat later. A settled turn never does: an old turn whose model the backend
-   *  didn't record was not necessarily run on today's pick, and naming it would
-   *  be a guess wearing the same type as a fact.
-   *
-   *  Last resort is `LLM`, not `Assistant`. "Assistant" is the wire role, and
-   *  putting a protocol word where a model name goes reads as the product not
-   *  knowing what it is running. */
-  const modelLabel = (): string => {
-    const recorded = m().model;
-    if (recorded) return recorded;
-    return (m().streaming ? selectedModelLabel() : "") || "LLM";
-  };
-
   return (
     <div class="group px-4 py-4">
       <div class="mb-2 flex items-center gap-2">
-        {/* WHICH MODEL stays; WHEN reveals. Which model answered is the one
-            piece of turn metadata that changes between turns and changes how the
-            answer should be read, so it is worth a permanent line — and this row
-            already exists to hold the state markers, so keeping it costs no
-            space. It is `dim`, not `nominal`: the accent made a label louder
-            than the answer under it, and green here means nothing (§5 — color
-            carries meaning or stays away). */}
-        <Text variant="label" tone="dim">
-          {modelLabel()}
+        {/* WHEN, permanently — it took over from the model name, which is now
+            named once for the whole thread in the room header rather than
+            restamped above every turn. Something has to hold this row at rest:
+            with both gone it would be an empty strip that only fills when
+            pointed at, and a turn with no visible metadata at all reads as an
+            anonymous block of text.
+
+            Written out rather than `5D AGO`, because a transcript is *scrolled
+            back through*: a relative stamp answers "how long ago" for the turn
+            under the cursor and turns into arithmetic for every turn above it.
+            Still `micro` mono — a timestamp is emitted, not written (§2) —
+            which is what keeps a long stamp ambient at this size. */}
+        <Text variant="micro" tone="dim">
+          {longTimestamp(m().createdAt)}
         </Text>
-        <span class={cx("flex items-center gap-2", TURN_REVEAL_CLASS)}>
-          <Text variant="micro" tone="dim">
-            {relativeTime(m().createdAt)}
-          </Text>
-        </span>
         <PinMarker message={m()} />
         <VersionCycler message={m()} onSwitchVersion={props.onSwitchVersion} />
         <span class="ml-auto">

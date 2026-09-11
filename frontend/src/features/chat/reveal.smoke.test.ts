@@ -27,6 +27,25 @@ const PORT = 39_882;
 const ORIGIN = `http://localhost:${PORT}`;
 const FRONTEND_ROOT = join(import.meta.dir, "..", "..", "..");
 
+/**
+ * The streamed answer's prose, as a selector — quoted for use inside the page-side
+ * snippets below.
+ *
+ * This used to be `.ody-prose`, unqualified, which worked only for as long as the
+ * assistant's answer was the single piece of rendered markdown on the page. The
+ * operator's own turn renders as markdown too now, and it comes *first* in the
+ * transcript — so the bare selector started answering with the question rather than
+ * the reply, silently: the wrapper counts still looked sane, but `chars` tracked a
+ * static user message, which pinned the "the prose got shorter" exemption below shut
+ * and turned ordinary table churn into reported cuts.
+ *
+ * The distinguishing property is not position, so this does not ask for position. Only
+ * the streaming answer renders block-by-block (`Markdown`'s `streamStable` path), so
+ * only its prose has `[data-block-index]` children — which is also exactly the thing
+ * the reveal operates on.
+ */
+const ANSWER_PROSE = "'.ody-prose:has([data-block-index])'";
+
 let dev: ReturnType<typeof Bun.spawn> | undefined;
 
 async function waitFor(
@@ -111,7 +130,7 @@ test("a streamed answer leaves no reveal wrappers behind", async () => {
     // back exactly what it took: same characters, and re-joined into whole runs rather
     // than left one node per character (which is what costs the shaping).
     const text = String(
-      await wv.evaluate("document.querySelector('.ody-prose').textContent"),
+      await wv.evaluate(`document.querySelector(${ANSWER_PROSE}).textContent`),
     );
     expect(text).toContain("The fence holds the process to the declaration");
 
@@ -163,7 +182,7 @@ test("no character loses its wrapper while its fade is still running", async () 
           const t0 = performance.now();
           const tick = () => {
             const spans = document.querySelectorAll('.ody-token-in').length;
-            const prose = document.querySelector('.ody-prose');
+            const prose = document.querySelector(${ANSWER_PROSE});
             const chars = prose ? prose.textContent.length : 0;
             let running = 0;
             for (const a of document.getAnimations()) {
