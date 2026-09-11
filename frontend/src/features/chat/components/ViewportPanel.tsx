@@ -136,8 +136,9 @@ export function ViewportPanel(props: {
           }
         >
           <div class="flex h-full min-h-0 flex-col">
-            {/* Version dropdown + PREVIEW / CODE toggle. With a single version the
-                dropdown collapses to its label. */}
+            {/* Which version. With a single one the dropdown collapses to its
+                label — it now has the row to itself, so it takes the full width
+                instead of sharing it with the mode toggle. */}
             <div class="flex items-center gap-2 px-3 py-2">
               <Show
                 when={props.items.length > 1}
@@ -159,12 +160,6 @@ export function ViewportPanel(props: {
                   onChange={props.onSelect}
                 />
               </Show>
-              <Tabs
-                items={MODE_TABS}
-                value={props.activeTab}
-                onChange={(v) => props.onSelectTab(v as Mode)}
-                class="shrink-0"
-              />
             </div>
 
             <ViewTimelineRail
@@ -172,6 +167,19 @@ export function ViewportPanel(props: {
               selectedKey={selected()?.key ?? null}
               followingLatest={props.selectedKey === null}
               onSelect={props.onSelect}
+            />
+
+            {/* PREVIEW / CODE, and it is the panel's waist rather than another
+                control in its header. Sized to its labels and tucked beside the
+                version dropdown, the pair read as two buttons that happened to
+                be there; across the full width, with the header above it and the
+                stage starting immediately below, the strip *is* the line between
+                what the panel is showing and the controls for choosing it. */}
+            <Tabs
+              fill
+              items={MODE_TABS}
+              value={props.activeTab}
+              onChange={(v) => props.onSelectTab(v as Mode)}
             />
 
             <div class="min-h-0 flex-1">

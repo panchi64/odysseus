@@ -61,10 +61,16 @@ export function Tabs(props: TabsProps): JSX.Element {
               aria-selected={active()}
               onClick={() => local.onChange(tab.value)}
               class={cx(
-                "rounded-ctl px-3 py-1.5 text-body font-sans font-medium whitespace-nowrap transition-colors",
+                "rounded-ctl px-3 py-1.5 text-body font-sans whitespace-nowrap transition-colors",
+                "outline-none focus-visible:shadow-focus",
+                local.fill && "min-w-0 flex-1",
+                // Selected reads on three axes at once — raised fill, `shadow-1`'s
+                // hairline ring so it is an object rather than a tint, and the
+                // only medium weight in the strip. The fill alone was too small a
+                // step off the surface behind it to find at a glance.
                 active()
-                  ? "bg-raised text-bright"
-                  : "text-dim hover:bg-raised hover:text-text",
+                  ? "bg-raised text-bright font-medium shadow-1"
+                  : "font-normal text-dim hover:bg-raised hover:text-text",
               )}
             >
               {tab.label}
