@@ -14,12 +14,14 @@ import {
   EmptyState,
   Icon,
   Input,
+  ListGroupHeader,
   LoadingText,
   Menu,
   REVEAL_ON_GROUP_HOVER,
   Text,
   Tooltip,
   cx,
+  type ContextMenuApi,
   type MenuItem,
 } from "~/ui";
 import { createListView } from "~/lib/list";
@@ -27,14 +29,15 @@ import type { ChatSummary } from "../model";
 import {
   isPinned,
   orderSessions,
+  pinnedIds,
   setWorkspaceOpen,
   titleReveals,
-  togglePin,
   workspaceOpen,
 } from "../data";
 import {
   groupSessions,
-  type SessionGroup,
+  type DirectoryGroup,
+  type RecencyGroup,
   type WorkspaceDirectory,
 } from "../sessionGroups";
 import { SessionRow } from "./SessionRow";
@@ -57,6 +60,10 @@ export interface SessionListProps {
   /** Which mode's list this is — it decides the arrangement, not the contents.
    *  Filtering happens upstream; this only knows how to lay out what it is given. */
   mode: SessionMode;
+  /** The rail's one menu instance, shared by every row. Owned upstream because these
+   *  are the rail's actions on a thread; the list arranges rows and does not decide
+   *  what can be done to one. */
+  menu: ContextMenuApi;
   onSelect: (id: string) => void;
   /** The directories a worktree mode files threads under, or undefined while the
    *  listing is still in flight. **Undefined is not the same as empty**: a filed thread
@@ -82,12 +89,20 @@ export interface SessionListProps {
 /** Searchable, pinnable thread list shared by the desktop rail and mobile
  *  drawer. Pinned threads sort first; the rest stay newest-first.
  *
- *  The arrangement varies by mode (`sessionGroups.ts`): Normal and Research get
- *  the flat run they have always had, Code gets one collapsible section per
- *  working directory — including the directories holding nothing yet, because in
- *  code mode the directory is where work *starts*. A search collapses the difference —
- *  while a query is active the sections stay, but every one of them opens, because a
- *  match the operator cannot see is the same as no match. */
+ *  The arrangement varies by mode (`sessionGroups.ts`), and so does what a heading
+ *  *is*. Code gets one collapsible section per working directory — including the
+ *  directories holding nothing yet, because in code mode the directory is where work
+ *  *starts* — and those headings are places, with controls. Normal and Research have
+ *  no directory to file under, so they get recency captions instead: `Today`,
+ *  `Yesterday`, and so on, which say once per run what a per-row stamp used to repeat
+ *  on every row.
+ *
+ *  A search collapses the difference — while a query is active the directory sections
+ *  stay but every one of them opens, because a match the operator cannot see is the
+ *  same as no match. Captions have nothing to open.
+ *
+ *  Every row carries the same actions menu regardless of which heading it sits under,
+ *  reached by right-click or by its own "···". */
 export function SessionList(props: SessionListProps): JSX.Element {
   const view = createListView<ChatSummary>({
     source: () => props.sessions(),
@@ -103,7 +118,10 @@ export function SessionList(props: SessionListProps): JSX.Element {
     // groups without offering to add would otherwise skip it and blank the list.
     if (sessionModeSpec(props.mode).workspace === "worktree" && !dirs)
       return undefined;
-    const all = groupSessions(orderSessions(view.items()), props.mode, dirs);
+    const all = groupSessions(orderSessions(view.items()), props.mode, {
+      directories: dirs,
+      pinned: pinnedIds(),
+    });
     // A search asks "where is this thread", and a directory with no match is not an
     // answer — it is a heading in the way of one. Seeded-but-empty sections are the
     // resting state's business.
@@ -173,30 +191,44 @@ export function SessionList(props: SessionListProps): JSX.Element {
           </Show>
         }
       >
+        {/* A group's kind is fixed for the life of the object, and `<For>` mints a new
+            one whenever the grouping changes — so this branches once per section
+            rather than tracking, and each kind gets the component that actually fits
+            it instead of one component with half its props nulled out. */}
         <For each={groups()}>
-          {(group) => (
-            <SessionGroupRows
-              group={group}
-              currentId={props.currentId}
-              forceOpen={view.isFiltered()}
-              lead={group.id === leadId()}
-              // A directory match, never a null one: `Unfiled` has no project, and
-              // comparing null to the "nothing staged" null would mark it as the place
-              // the next thread lands — which is the one section it cannot be.
-              staged={
-                group.projectId !== null &&
-                group.projectId === props.stagedProjectId
-              }
-              status={
-                group.projectId ? props.status?.(group.projectId) : undefined
-              }
-              actions={
-                group.projectId ? props.actions?.(group.projectId) : undefined
-              }
-              onNewThread={props.onNewThread}
-              onSelect={props.onSelect}
-            />
-          )}
+          {(group) =>
+            group.kind === "directory" ? (
+              <DirectorySection
+                group={group}
+                currentId={props.currentId}
+                menu={props.menu}
+                forceOpen={view.isFiltered()}
+                lead={group.id === leadId()}
+                // A directory match, never a null one: `Unfiled` has no project, and
+                // comparing null to the "nothing staged" null would mark it as the
+                // place the next thread lands — the one section it cannot be.
+                staged={
+                  group.projectId !== null &&
+                  group.projectId === props.stagedProjectId
+                }
+                status={
+                  group.projectId ? props.status?.(group.projectId) : undefined
+                }
+                actions={
+                  group.projectId ? props.actions?.(group.projectId) : undefined
+                }
+                onNewThread={props.onNewThread}
+                onSelect={props.onSelect}
+              />
+            ) : (
+              <RecencySection
+                group={group}
+                currentId={props.currentId}
+                menu={props.menu}
+                onSelect={props.onSelect}
+              />
+            )
+          }
         </For>
       </Show>
     </Show>
@@ -209,6 +241,7 @@ export function SessionList(props: SessionListProps): JSX.Element {
 function SessionRows(props: {
   sessions: ChatSummary[];
   currentId: string | null;
+  menu: ContextMenuApi;
   onSelect: (id: string) => void;
 }): JSX.Element {
   return (
@@ -221,10 +254,43 @@ function SessionRows(props: {
           reveal={titleReveals[s.id]}
           activity={s.activity}
           onOpen={() => props.onSelect(s.id)}
-          onTogglePin={() => togglePin(s.id)}
+          // The thread's id is the menu's key, which is what lets one panel serve the
+          // whole list: it tells the rail which thread to build items for, and tells
+          // the row whether the open menu is its own.
+          onContextMenu={(e) => props.menu.openAt(e, s.id)}
+          menuTrigger={props.menu.triggerProps(s.id)}
+          menuOpen={props.menu.isOpen(s.id)}
         />
       )}
     </For>
+  );
+}
+
+/**
+ * A run of threads under a plain caption — the sandbox modes' recency buckets.
+ *
+ * No disclosure, and that is the whole difference from a directory section. A bucket is
+ * not somewhere the operator goes, so there is nothing to navigate to and nothing to
+ * start a thread in; and folding would put it under the stored open/closed rule, which
+ * defaults every section but one to shut — on `Today` that hides the list the operator
+ * just asked for.
+ */
+function RecencySection(props: {
+  group: RecencyGroup;
+  currentId: string | null;
+  menu: ContextMenuApi;
+  onSelect: (id: string) => void;
+}): JSX.Element {
+  return (
+    <div class="pb-1">
+      <ListGroupHeader label={props.group.label} />
+      <SessionRows
+        sessions={props.group.sessions}
+        currentId={props.currentId}
+        menu={props.menu}
+        onSelect={props.onSelect}
+      />
+    </div>
   );
 }
 
@@ -237,9 +303,10 @@ function SessionRows(props: {
  *
  *  The toggle is a whole-width trigger with its controls beside it (`Disclosure`'s
  *  `actions`), because a button inside a button is invalid HTML. */
-function SessionGroupRows(props: {
-  group: SessionGroup;
+function DirectorySection(props: {
+  group: DirectoryGroup;
   currentId: string | null;
+  menu: ContextMenuApi;
   forceOpen: boolean;
   /** The first section in the list — the most recently touched directory. */
   lead: boolean;
@@ -294,104 +361,91 @@ function SessionGroupRows(props: {
       ? setSearchClosed((c) => !c)
       : setWorkspaceOpen(props.group.id, !derived());
 
+  const label = () => props.group.label;
+
   return (
-    <Show
-      when={props.group.label}
-      fallback={
+    <div class="pb-1">
+      <Disclosure
+        label={label()}
+        marker="chevron"
+        open={open()}
+        onToggle={toggle}
+        labelNode={<WorkspaceLabel label={label()} />}
+        // A staged thread has no row of its own — it is not saved yet — so the
+        // heading is what says where it will land, in the same raised fill a
+        // selected row takes. On the whole row rather than the trigger, or the
+        // fill would stop short of the controls and mark half a heading.
+        rowClass={cx("hover:bg-raised", props.staged && "bg-raised")}
+        // No gap of its own: `cx` is a plain joiner, so a second `gap-*` here
+        // would leave the winner to stylesheet order rather than to intent.
+        triggerClass="px-3 py-1.5"
+        // The rows are the body — no top margin between them and the header.
+        class=""
+        trailing={
+          <>
+            <WorkspaceStatusMark status={props.status} />
+            {/* The count is what makes a closed section worth leaving closed —
+                    it says how much is in there without opening it. */}
+            <Text variant="micro" tone="dim" class="ml-auto pl-2">
+              {props.group.sessions.length}
+            </Text>
+          </>
+        }
+        actions={
+          <Show
+            when={props.group.projectId}
+            // `Unfiled` has no directory, so neither control means anything on
+            // it — but the gutter has to stay, or its count would sit where every
+            // other section's buttons are. Two `size-7` slots, which is why both
+            // controls below are pinned to that size rather than sized by their
+            // own contents: a gutter that tracked the label inside a button would
+            // shift the column the day that label changed.
+            fallback={<span aria-hidden class="h-7 w-14 shrink-0" />}
+          >
+            {(projectId) => (
+              <>
+                <Tooltip label={`New thread in ${label()}`} side="right">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    leading="plus"
+                    aria-label={`New thread in ${label()}`}
+                    class="size-7 shrink-0"
+                    onClick={() => props.onNewThread?.(projectId())}
+                  />
+                </Tooltip>
+                <Show when={props.actions}>
+                  {(items) => (
+                    <Menu
+                      items={items()}
+                      trigger={
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          aria-label={`${label()} actions`}
+                          // Quiet at rest — the plus is the one control this row
+                          // is for. Keyboard focus and touch still reach it.
+                          class={cx("size-7 shrink-0", REVEAL_ON_GROUP_HOVER)}
+                        >
+                          ···
+                        </Button>
+                      }
+                    />
+                  )}
+                </Show>
+              </>
+            )}
+          </Show>
+        }
+      >
         <SessionRows
           sessions={props.group.sessions}
           currentId={props.currentId}
+          menu={props.menu}
           onSelect={props.onSelect}
         />
-      }
-    >
-      {(label) => (
-        <div class="pb-1">
-          <Disclosure
-            label={label()}
-            marker="chevron"
-            open={open()}
-            onToggle={toggle}
-            labelNode={<WorkspaceLabel label={label()} />}
-            // A staged thread has no row of its own — it is not saved yet — so the
-            // heading is what says where it will land, in the same raised fill a
-            // selected row takes. On the whole row rather than the trigger, or the
-            // fill would stop short of the controls and mark half a heading.
-            rowClass={cx("hover:bg-raised", props.staged && "bg-raised")}
-            // No gap of its own: `cx` is a plain joiner, so a second `gap-*` here
-            // would leave the winner to stylesheet order rather than to intent.
-            triggerClass="px-3 py-1.5"
-            // The rows are the body — no top margin between them and the header.
-            class=""
-            trailing={
-              <>
-                <WorkspaceStatusMark status={props.status} />
-                {/* The count is what makes a closed section worth leaving closed —
-                    it says how much is in there without opening it. */}
-                <Text variant="micro" tone="dim" class="ml-auto pl-2">
-                  {props.group.sessions.length}
-                </Text>
-              </>
-            }
-            actions={
-              <Show
-                when={props.group.projectId}
-                // `Unfiled` has no directory, so neither control means anything on
-                // it — but the gutter has to stay, or its count would sit where every
-                // other section's buttons are. Two `size-7` slots, which is why both
-                // controls below are pinned to that size rather than sized by their
-                // own contents: a gutter that tracked the label inside a button would
-                // shift the column the day that label changed.
-                fallback={<span aria-hidden class="h-7 w-14 shrink-0" />}
-              >
-                {(projectId) => (
-                  <>
-                    <Tooltip label={`New thread in ${label()}`} side="right">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        leading="plus"
-                        aria-label={`New thread in ${label()}`}
-                        class="size-7 shrink-0"
-                        onClick={() => props.onNewThread?.(projectId())}
-                      />
-                    </Tooltip>
-                    <Show when={props.actions}>
-                      {(items) => (
-                        <Menu
-                          items={items()}
-                          trigger={
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              aria-label={`${label()} actions`}
-                              // Quiet at rest — the plus is the one control this row
-                              // is for. Keyboard focus and touch still reach it.
-                              class={cx(
-                                "size-7 shrink-0",
-                                REVEAL_ON_GROUP_HOVER,
-                              )}
-                            >
-                              ···
-                            </Button>
-                          }
-                        />
-                      )}
-                    </Show>
-                  </>
-                )}
-              </Show>
-            }
-          >
-            <SessionRows
-              sessions={props.group.sessions}
-              currentId={props.currentId}
-              onSelect={props.onSelect}
-            />
-          </Disclosure>
-        </div>
-      )}
-    </Show>
+      </Disclosure>
+    </div>
   );
 }
 

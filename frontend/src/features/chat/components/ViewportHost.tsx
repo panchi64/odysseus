@@ -9,12 +9,20 @@ import {
   type Accessor,
   type JSX,
 } from "solid-js";
-import { ContextMenu, ResizeHandle, Tabs, cx, type MenuItem } from "~/ui";
+import {
+  ContextMenu,
+  createContextMenu,
+  ResizeHandle,
+  Tabs,
+  cx,
+  type MenuItem,
+} from "~/ui";
 import {
   SURFACE_RENDERERS,
   type SurfaceContext,
 } from "../viewport/surfaceRenderers";
 import {
+  isSurfaceId,
   surfacesOf,
   type ViewportLayout,
   type ViewportPane,
@@ -72,6 +80,11 @@ export function ViewportHost(props: {
 }): JSX.Element {
   const vp = (): SurfaceContext["viewport"] => props.ctx.viewport;
 
+  /** One menu for every pane, keyed by the surface that opened it — the panel holds
+   *  two or three panes, and a menu each would be a backdrop and an Escape listener
+   *  each for a thing only one of them can be showing. */
+  const menu = createContextMenu();
+
   /** What right-clicking a pane offers. Built when the menu opens, so it describes
    *  the layout as it is at that moment rather than as it was at render. */
   const paneMenu = (id: SurfaceId): MenuItem[] => {
@@ -112,19 +125,23 @@ export function ViewportHost(props: {
    *
    * `focusin` rather than a click, so reaching a pane by keyboard makes it current
    * too — which is what the surface-scoped bindings gate on.
+   *
+   * The right-click goes through the one menu the host owns, keyed by surface: the
+   * deepest pane wins, which is what `stopPropagation` buys — a pane inside the
+   * panel offers its own actions and the panel behind it must not answer the same
+   * gesture.
    */
   const renderSurface = (id: Accessor<SurfaceId>): JSX.Element => (
-    <ContextMenu
+    <div
       class="flex min-h-0 min-w-0 flex-1"
-      items={() => paneMenu(id())}
+      onContextMenu={(e) => {
+        e.stopPropagation();
+        menu.openAt(e, id());
+      }}
+      onFocusIn={() => vp().setFocusedSurface(id())}
     >
-      <div
-        class="min-h-0 min-w-0 flex-1"
-        onFocusIn={() => vp().setFocusedSurface(id())}
-      >
-        {SURFACE_RENDERERS[id()](props.ctx)}
-      </div>
-    </ContextMenu>
+      {SURFACE_RENDERERS[id()](props.ctx)}
+    </div>
   );
 
   const renderStack = (node: Accessor<StackPane>): JSX.Element => (
@@ -243,6 +260,15 @@ export function ViewportHost(props: {
 
   return (
     <div class="flex h-full min-h-0 flex-col">
+      {/* Portalled, so it renders nothing where it sits. The items are read when it
+          opens, from whichever surface opened it. */}
+      <ContextMenu
+        api={menu}
+        items={() => {
+          const id = menu.openKey();
+          return id !== null && isSurfaceId(id) ? paneMenu(id) : [];
+        }}
+      />
       {/* `For`/`Show` rather than `.map` and a ternary. A ternary's guard does not
           gate its own branches in Solid — the child expression compiles to a
           computation of its own and re-runs when the layout changes, so a panel

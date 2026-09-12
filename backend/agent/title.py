@@ -54,7 +54,11 @@ _EXCERPT = 600
 # A manual re-title feeds every operator turn (not just the opening), so it needs a
 # wider budget to span the conversation's arc — still bounded so the call stays cheap.
 FULL_EXCERPT = 2400
-_MAX_TITLE_LEN = 60
+# The hard ceiling on a stored title. The prompt asks for 3-6 words, so this is the
+# backstop for a model that ignored the budget rather than the normal path — and it
+# sits at the width the sidebar can actually show, because a name that renders
+# ellipsized is a name the operator has to hover to read.
+_MAX_TITLE_LEN = 48
 
 _USER_PARTS = frozenset({"UserPromptPart"})
 
@@ -115,17 +119,38 @@ def _clean(raw: str) -> str | None:
     Models tend to wrap titles in quotes, prepend ``Title:``, or add a trailing
     period; strip those so the stored/animated name is clean. A reasoning model the
     runtime didn't keep off prepends a ``<think>…</think>`` block — drop it first so
-    the title is read from the words after it, not from the reasoning."""
+    the title is read from the words after it, not from the reasoning.
+
+    An over-long reply is cut at the last word boundary that fits rather than at the
+    character cap: a name is read at a glance in a list, and a chopped-off word reads
+    as a bug in a way a shorter name never does. A single word longer than the cap has
+    no boundary to fall back to, so that one is cut hard.
+
+    The three strips run **to a fixed point**, because they feed each other and a
+    single pass leaves the combinations behind. ``Title: "Some Thread".`` is the one
+    that showed up: the quote strip runs first and finds a ``T`` and a ``.`` at the
+    ends, the prefix strip then exposes the quotes it would have taken, and the title
+    reaches the sidebar still wearing them. Looping costs one extra pass on the
+    ordinary reply, which already has nothing to strip."""
     raw = strip_think_blocks(raw)
     line = next((ln.strip() for ln in raw.splitlines() if ln.strip()), "")
-    line = line.strip("\"'`").strip()
-    for prefix in ("title:", "title -", "thread:"):
-        if line.lower().startswith(prefix):
-            line = line[len(prefix) :].strip()
-    line = line.rstrip(".").strip()
+    while True:
+        before = line
+        line = line.strip("\"'`").strip()
+        for prefix in ("title:", "title -", "thread:"):
+            if line.lower().startswith(prefix):
+                line = line[len(prefix) :].strip()
+        line = line.rstrip(".").strip()
+        if line == before:
+            break
     if not line:
         return None
-    return line[:_MAX_TITLE_LEN].strip()
+    if len(line) <= _MAX_TITLE_LEN:
+        return line
+    # One char past the cap, so a boundary landing exactly on it still counts.
+    head = line[: _MAX_TITLE_LEN + 1]
+    cut = head.rfind(" ")
+    return (head[:cut] if cut > 0 else line[:_MAX_TITLE_LEN]).strip()
 
 
 async def generate_title(

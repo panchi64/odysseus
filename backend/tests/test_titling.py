@@ -18,6 +18,7 @@ from pydantic_ai.models.test import TestModel
 import agent.engine as engine
 from agent import build_chat_orchestrator, build_resume_orchestrator
 from agent.title import (
+    _MAX_TITLE_LEN,
     _clean,
     all_user_text,
     first_user_text,
@@ -61,6 +62,11 @@ def _bodies(run):
         ("Resetting the Vault Password.", "Resetting the Vault Password"),
         ("  Multi\nLine\nReply  ", "Multi"),
         ("`Quoted Backticks`", "Quoted Backticks"),
+        # The strips feed each other, so they run to a fixed point: here the quotes
+        # are only reachable once the prefix is gone, and the trailing period only
+        # once the closing quote is.
+        ('Title: "Mock asyncio timers in pytest".', "Mock asyncio timers in pytest"),
+        ("Thread: 'Cut the React bundle size'", "Cut the React bundle size"),
         ("   ", None),
         # A reasoning model the runtime didn't keep off inlines its thinking as a
         # <think> block; the title must come from the words after it, not the reasoning.
@@ -85,7 +91,24 @@ def test_clean_sanitizes_model_replies(raw, expected):
 
 def test_clean_caps_length():
     title = _clean("A " * 100)
-    assert title is not None and len(title) <= 60
+    assert title is not None and len(title) <= _MAX_TITLE_LEN
+
+
+def test_clean_truncates_on_a_word_boundary():
+    # A model that blew the word budget gets cut at the last whole word that fits —
+    # a name is read at a glance, and a half word reads as a bug.
+    long = "Investigating intermittent authentication failures across staging deployments"
+    title = _clean(long)
+    assert title is not None and len(title) <= _MAX_TITLE_LEN
+    assert long.startswith(title)
+    assert long[len(title)] == " "  # the cut landed between words, not inside one
+    assert title.split() == long.split()[: len(title.split())]
+
+
+def test_clean_hard_cuts_a_single_word_longer_than_the_cap():
+    # No boundary to fall back to, so the cap still holds.
+    title = _clean("x" * 200)
+    assert title == "x" * _MAX_TITLE_LEN
 
 
 # --- generation -------------------------------------------------------------

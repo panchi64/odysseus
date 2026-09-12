@@ -8,6 +8,7 @@ import {
   StatusFlag,
   ThemeToggle,
   Text,
+  cx,
 } from "~/ui";
 import { useSession } from "~/lib/stores/session";
 import {
@@ -16,7 +17,7 @@ import {
 } from "~/lib/stores/notifications";
 import { NotificationBell } from "./NotificationBell";
 import { Sidebar, useSidebarWidth } from "./sidebar";
-import { isConnectedRoute } from "./nav";
+import { isConnectedRoute, isFlushTopRoute } from "./nav";
 import { SettingsDialog } from "./settings-dialog";
 
 /** The authenticated app chrome: sidebar rail + top status bar + the routed
@@ -87,7 +88,15 @@ export function AppShell(props: { children: JSX.Element }): JSX.Element {
               without them the root blanks the shell too, taking the rail and
               the status bar with it. The path is the reset key, so navigating
               away from a broken screen clears the error. */}
-          <main class="h-full overflow-y-auto p-6">
+          <main
+            class={cx(
+              "h-full overflow-y-auto px-6 pb-6",
+              // The top inset is the one a self-framing screen takes back — see
+              // `isFlushTopRoute`. Everything else keeps the even margin its
+              // registration marks are drawn against.
+              isFlushTopRoute(location.pathname) ? "pt-0" : "pt-6",
+            )}
+          >
             <ErrorBoundary resetKey={() => location.pathname}>
               <Suspense fallback={<LoadingText label="Loading" />}>
                 {props.children}

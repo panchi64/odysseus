@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
+  OLDER_GROUP,
+  PINNED_GROUP,
   UNFILED_GROUP,
   groupSessions,
+  type SessionGroup,
   type WorkspaceDirectory,
 } from "./sessionGroups";
 import type { ChatSummary } from "./model";
@@ -21,17 +24,154 @@ function dir(id: string, label = id): WorkspaceDirectory {
   return { id, label };
 }
 
+/** The project behind each heading. Asserts the kind on the way through rather than
+ *  reaching past it: a worktree mode only ever files by directory, but the signature
+ *  covers both strategies, so a recency group turning up here is a real failure and
+ *  should read as one instead of as `undefined` in a diff. */
+function projectIds(groups: SessionGroup[]): (string | null)[] {
+  return groups.map((g) => {
+    if (g.kind !== "directory")
+      throw new Error(`expected a directory group, got ${g.kind}`);
+    return g.projectId;
+  });
+}
+
+/** A fixed vantage point. The bucket boundaries are the behaviour, so the tests have
+ *  to stand somewhere known — mid-afternoon, so "earlier today" and "24 hours ago" are
+ *  genuinely different days rather than the same one by luck. */
+const NOW = new Date(2026, 8, 10, 15, 0);
+
+/** `n` days before NOW, at noon — clear of both midnight boundaries. */
+function daysAgo(n: number): string {
+  return new Date(2026, 8, 10 - n, 12, 0).toISOString();
+}
+
 describe("groupSessions", () => {
-  test("Normal and Research are one unheaded run", () => {
-    // Their threads have no directory to be filed under, so a heading would name
-    // nothing — the list is the list.
+  test("Normal and Research file by recency", () => {
+    // Their threads have no directory to be filed under, so the only heading worth
+    // drawing is when they were last touched.
     for (const mode of ["normal", "research"] as const) {
-      const rows = [session("a", { mode }), session("b", { mode })];
-      const groups = groupSessions(rows, mode);
-      expect(groups).toHaveLength(1);
-      expect(groups[0].label).toBeNull();
-      expect(groups[0].sessions).toEqual(rows);
+      const groups = groupSessions(
+        [
+          session("a", { mode, updatedAt: daysAgo(0) }),
+          session("b", { mode, updatedAt: daysAgo(1) }),
+          session("c", { mode, updatedAt: daysAgo(3) }),
+        ],
+        mode,
+        { now: NOW },
+      );
+      expect(groups.map((g) => g.label)).toEqual([
+        "Today",
+        "Yesterday",
+        "Previous 7 days",
+      ]);
+      // Captions, not places: nothing to fold, nothing to start a thread in.
+      expect(groups.every((g) => g.kind === "recency")).toBe(true);
     }
+  });
+
+  test("recency buckets run from today out to a dated month", () => {
+    const groups = groupSessions(
+      [
+        session("today", { mode: "normal", updatedAt: daysAgo(0) }),
+        session("yesterday", { mode: "normal", updatedAt: daysAgo(1) }),
+        session("week", { mode: "normal", updatedAt: daysAgo(6) }),
+        session("month", { mode: "normal", updatedAt: daysAgo(25) }),
+        // Same calendar year: the bare month is unambiguous.
+        session("july", { mode: "normal", updatedAt: daysAgo(60) }),
+        // A previous year has to carry it, or two Julys collide.
+        session("old", {
+          mode: "normal",
+          updatedAt: new Date(2024, 2, 4, 12).toISOString(),
+        }),
+      ],
+      "normal",
+      { now: NOW },
+    );
+    expect(groups.map((g) => g.label)).toEqual([
+      "Today",
+      "Yesterday",
+      "Previous 7 days",
+      "Previous 30 days",
+      "July",
+      "March 2024",
+    ]);
+  });
+
+  test("today starts at local midnight, not 24 hours back", () => {
+    // The case the naive "now minus 24h" gets wrong: a thread from yesterday evening
+    // would read as Today every morning.
+    const groups = groupSessions(
+      [
+        session("early", {
+          mode: "normal",
+          updatedAt: new Date(2026, 8, 10, 0, 30).toISOString(),
+        }),
+        session("last-night", {
+          mode: "normal",
+          updatedAt: new Date(2026, 8, 9, 23, 30).toISOString(),
+        }),
+      ],
+      "normal",
+      { now: NOW },
+    );
+    expect(groups.map((g) => g.label)).toEqual(["Today", "Yesterday"]);
+  });
+
+  test("bucket edges land on local midnight across a DST change", () => {
+    // US DST began 2026-03-08. Standing on the 12th, the 7-day edge is midnight on the
+    // 5th — but reached by subtracting 7 × 86,400,000ms it lands at 23:00 on the 4th,
+    // which pulls a thread from just after midnight on the 5th into the wrong bucket.
+    // Only meaningful where the runner observes DST; elsewhere it simply asserts the
+    // ordinary boundary.
+    const groups = groupSessions(
+      [
+        session("edge", {
+          mode: "normal",
+          updatedAt: new Date(2026, 2, 5, 0, 30).toISOString(),
+        }),
+      ],
+      "normal",
+      { now: new Date(2026, 2, 12, 15, 0) },
+    );
+    expect(groups.map((g) => g.label)).toEqual(["Previous 7 days"]);
+  });
+
+  test("pinned threads come out into their own run, ahead of the rest", () => {
+    // `orderSessions` has already floated them, so the group is created first and leads
+    // the list. A pin that merely sorted to the top of Today was indistinguishable from
+    // anything else touched today.
+    const groups = groupSessions(
+      [
+        session("kept", { mode: "normal", updatedAt: daysAgo(40) }),
+        session("today", { mode: "normal", updatedAt: daysAgo(0) }),
+      ],
+      "normal",
+      { now: NOW, pinned: new Set(["kept"]) },
+    );
+    expect(groups.map((g) => g.label)).toEqual([PINNED_GROUP, "Today"]);
+    expect(groups[0].sessions.map((s) => s.id)).toEqual(["kept"]);
+  });
+
+  test("an unparseable stamp sorts with the oldest rather than throwing", () => {
+    const groups = groupSessions(
+      [session("bad", { mode: "normal", updatedAt: "not a date" })],
+      "normal",
+      { now: NOW },
+    );
+    expect(groups.map((g) => g.label)).toEqual([OLDER_GROUP]);
+  });
+
+  test("recency buckets never repeat or arrive empty", () => {
+    const rows = [
+      session("a", { mode: "normal", updatedAt: daysAgo(0) }),
+      session("b", { mode: "normal", updatedAt: daysAgo(0) }),
+      session("c", { mode: "normal", updatedAt: daysAgo(2) }),
+    ];
+    const groups = groupSessions(rows, "normal", { now: NOW });
+    expect(groups.map((g) => g.label)).toEqual(["Today", "Previous 7 days"]);
+    expect(groups.every((g) => g.sessions.length > 0)).toBe(true);
+    expect(groups.flatMap((g) => g.sessions)).toHaveLength(rows.length);
   });
 
   test("an empty list produces no groups at all", () => {
@@ -49,7 +189,7 @@ describe("groupSessions", () => {
         session("c", { projectId: "p1" }),
       ],
       "code",
-      [dir("p1", "acme-api"), dir("p2", "odysseus")],
+      { directories: [dir("p1", "acme-api"), dir("p2", "odysseus")] },
     );
     expect(groups.map((g) => g.label)).toEqual(["acme-api", "odysseus"]);
     expect(groups[0].sessions.map((s) => s.id)).toEqual(["a", "c"]);
@@ -63,16 +203,18 @@ describe("groupSessions", () => {
     const groups = groupSessions(
       [session("a", { projectId: "p1" }), session("b", { projectId: "p2" })],
       "code",
-      [dir("p1", "acme/frontend"), dir("p2", "beta/frontend")],
+      { directories: [dir("p1", "acme/frontend"), dir("p2", "beta/frontend")] },
     );
     expect(groups).toHaveLength(2);
-    expect(groups.map((g) => g.projectId)).toEqual(["p1", "p2"]);
+    expect(projectIds(groups)).toEqual(["p1", "p2"]);
   });
 
   test("a directory with no threads still gets a section", () => {
     // The directory comes first now — it is where a code thread is started from, so
     // an empty one is the ordinary beginning of a piece of work, not a dead row.
-    const groups = groupSessions([], "code", [dir("p1", "acme-api")]);
+    const groups = groupSessions([], "code", {
+      directories: [dir("p1", "acme-api")],
+    });
     expect(groups).toHaveLength(1);
     expect(groups[0].label).toBe("acme-api");
     expect(groups[0].sessions).toEqual([]);
@@ -85,7 +227,7 @@ describe("groupSessions", () => {
       [session("a", { projectId: "p2" })],
       "code",
       // Listing order deliberately puts the empty one first — the rule has to beat it.
-      [dir("p1", "empty"), dir("p2", "worked-in")],
+      { directories: [dir("p1", "empty"), dir("p2", "worked-in")] },
     );
     expect(groups.map((g) => g.label)).toEqual(["worked-in", "empty"]);
   });
@@ -102,7 +244,7 @@ describe("groupSessions", () => {
       ],
       "code",
       // Listing order is the opposite, so declaration order cannot be what passes this.
-      [dir("p2", "busy-repo"), dir("p1", "quiet-repo")],
+      { directories: [dir("p2", "busy-repo"), dir("p1", "quiet-repo")] },
     );
     expect(groups.map((g) => g.label)).toEqual(["quiet-repo", "busy-repo"]);
   });
@@ -113,11 +255,10 @@ describe("groupSessions", () => {
     const groups = groupSessions(
       [session("a"), session("b", { projectId: "p1" })],
       "code",
-      [dir("p1", "acme-api")],
+      { directories: [dir("p1", "acme-api")] },
     );
     expect(groups.map((g) => g.label)).toEqual([UNFILED_GROUP, "acme-api"]);
-    expect(groups[0].projectId).toBeNull();
-    expect(groups[1].projectId).toBe("p1");
+    expect(projectIds(groups)).toEqual([null, "p1"]);
   });
 
   test("a thread whose directory is not listed is left out, not unfiled", () => {
@@ -127,7 +268,7 @@ describe("groupSessions", () => {
     const groups = groupSessions(
       [session("archived", { projectId: "gone" }), session("kept")],
       "code",
-      [],
+      { directories: [] },
     );
     expect(groups.map((g) => g.label)).toEqual([UNFILED_GROUP]);
     expect(groups[0].sessions.map((s) => s.id)).toEqual(["kept"]);
@@ -140,9 +281,9 @@ describe("groupSessions", () => {
     const groups = groupSessions(
       [session("a"), session("b", { projectId: "p1" })],
       "code",
-      [dir("p1")],
+      { directories: [dir("p1")] },
     );
-    expect(groups.map((g) => g.projectId)).toEqual([null, "p1"]);
+    expect(projectIds(groups)).toEqual([null, "p1"]);
   });
 
   test("every listed thread survives the partition", () => {
@@ -152,10 +293,9 @@ describe("groupSessions", () => {
       session("c", { projectId: "p2" }),
       session("d", { projectId: "p1" }),
     ];
-    const flattened = groupSessions(rows, "code", [
-      dir("p1"),
-      dir("p2"),
-    ]).flatMap((g) => g.sessions);
+    const flattened = groupSessions(rows, "code", {
+      directories: [dir("p1"), dir("p2")],
+    }).flatMap((g) => g.sessions);
     expect(flattened).toHaveLength(rows.length);
     expect(new Set(flattened.map((s) => s.id)).size).toBe(rows.length);
   });

@@ -91,6 +91,75 @@ export function date(iso: string): string {
   return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}`;
 }
 
+/** Month names as a reader writes them, not as `Intl` abbreviates them.
+ *
+ *  `Intl`'s `short` month gives `Sep`; the convention this product writes is `Sept`,
+ *  which is also the only abbreviation in the set that isn't simply the first three
+ *  letters. Spelling the table out is what makes that deliberate rather than a locale
+ *  accident — and it pins the output to one language, which matters for a stamp that
+ *  sits in a fixed-width mono column beside eleven others. */
+const MONTHS_SHORT = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "June",
+  "July",
+  "Aug",
+  "Sept",
+  "Oct",
+  "Nov",
+  "Dec",
+];
+
+const DAYS_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/** English ordinal suffix for a day of the month — 1st, 2nd, 3rd, 11th, 21st. */
+function ordinal(day: number): string {
+  // The teens are the exception the naive mod-10 rule gets wrong: 11/12/13 take `th`
+  // despite ending in 1/2/3.
+  if (day >= 11 && day <= 13) return "th";
+  switch (day % 10) {
+    case 1:
+      return "st";
+    case 2:
+      return "nd";
+    case 3:
+      return "rd";
+    default:
+      return "th";
+  }
+}
+
+/** A turn's wall-clock stamp, written out — `Thu, Sept 10th 2026 @ 9:03PM`.
+ *
+ *  **Local time, unlike `timestamp()` above.** That one is a UTC readout for machine
+ *  records, where a single absolute frame is the point. This one sits on a message in a
+ *  conversation the operator had, so the useful question is "when was I here", and the
+ *  answer has to be in the clock they were reading at the time.
+ *
+ *  Written out rather than relative (`5D AGO`), because a transcript is scrolled back
+ *  through: a relative stamp answers "how long ago" for the turn under the cursor and
+ *  becomes arithmetic for every turn above it, while a date answers the same question
+ *  once and then stays true. It is still mono (§2 — a timestamp is emitted, not
+ *  written), which is what keeps a long stamp ambient at `micro`. */
+export function longTimestamp(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const hours24 = d.getHours();
+  // Midnight and noon are the two the modulo gets wrong — both land on 0, and a stamp
+  // reading "0:03AM" is the kind of thing that makes the rest of the readout suspect.
+  const hour = hours24 % 12 === 0 ? 12 : hours24 % 12;
+  const minute = d.getMinutes().toString().padStart(2, "0");
+  const meridiem = hours24 < 12 ? "AM" : "PM";
+  const day = d.getDate();
+  return (
+    `${DAYS_SHORT[d.getDay()]}, ${MONTHS_SHORT[d.getMonth()]} ${day}${ordinal(day)} ` +
+    `${d.getFullYear()} @ ${hour}:${minute}${meridiem}`
+  );
+}
+
 /** Coarse relative time (e.g. 3M AGO, 2H AGO, 5D AGO). Uppercase for labels. */
 export function relativeTime(iso: string, now: Date = new Date()): string {
   const then = new Date(iso).getTime();

@@ -122,6 +122,28 @@ export function isConnectedRoute(
   );
 }
 
+/**
+ * Routes handed the content region flush at the top, rather than inset like a page.
+ *
+ * Nearly every surface here is a **document**: it scrolls inside the shell's `main`,
+ * wants an even margin around it, and its `PageHeader` registration marks frame the
+ * header row against that margin (§9). The chat room is not. It is a full-height
+ * application surface — its own header, its own scroll container, a composer docked to
+ * the bottom — so it already spaces itself, and the shell's top inset lands as empty
+ * ground above a header that needed none, pushing the transcript down by a row of text
+ * on every screen size. The sides and the bottom still hold the column off the rail and
+ * off the status bar, so only the top gives way.
+ *
+ * A list rather than a flag on `NavItem`: this is the shell deciding how to hand over
+ * its region, which is not something a nav entry knows or should carry.
+ */
+const FLUSH_TOP_ROUTES = ["/chat"];
+
+/** Whether this route frames itself and should not be inset at the top. */
+export function isFlushTopRoute(pathname: string): boolean {
+  return FLUSH_TOP_ROUTES.some((href) => matchesHref(pathname, href));
+}
+
 /** Search across every area — label first, then description, so a surface is
  *  findable by what it does. The fast jump: a keystroke beats expanding a
  *  section and scanning its rows. */

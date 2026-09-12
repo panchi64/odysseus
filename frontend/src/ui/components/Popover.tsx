@@ -8,7 +8,11 @@ import {
 } from "solid-js";
 import { Portal } from "solid-js/web";
 import { cx } from "../cx";
-import { computePlacement, type Placement } from "./popoverPlacement";
+import {
+  computePlacement,
+  type Placement,
+  type Rect,
+} from "./popoverPlacement";
 
 export interface PopoverApi {
   /** Reactive open-state accessor — call it (`open()`) in the trigger. */
@@ -40,26 +44,6 @@ export interface PopoverProps {
   class?: string;
 }
 
-/** The dropdown shell shared by Menu, Select and Combobox: an anchored trigger, a
- *  click-out backdrop, and a floating panel. Owns open state and closes on backdrop
- *  click or Escape — the single home for that behavior.
- *
- *  **The panel is portalled to `document.body` and positioned `fixed`.** It used to be
- *  an `absolute` child of the trigger, which had two failure modes that looked like
- *  one: near the bottom of the window it ran off-screen, and inside any scroll
- *  container — the chat transcript, a modal body, the viewport panel — it was *clipped*
- *  by that ancestor's `overflow`, which no amount of `align` tuning could fix. A portal
- *  escapes every ancestor's overflow and stacking context; fixed coordinates measured
- *  from the trigger keep it anchored.
- *
- *  Placement flips above the trigger when there is more room there, and shifts
- *  horizontally to stay inside the viewport. It is recomputed on scroll (capture phase,
- *  so scroll containers fire it too, not just the window), on resize, and **whenever the
- *  panel's own content changes size** — a disclosure opening inside it, a list filtering
- *  down. That last one is not a refinement: a placement measured once is wrong in the
- *  one direction that hurts, since a panel placed below a trigger with just enough room
- *  keeps growing *downward* off the bottom of the window, and the clamp that would have
- *  made it scroll was decided when it was still small. */
 /** Whether two placements would paint identically — the panel is positioned entirely
  *  from these four numbers. */
 function samePlacement(a: Placement | null, b: Placement): boolean {
@@ -72,26 +56,62 @@ function samePlacement(a: Placement | null, b: Placement): boolean {
   );
 }
 
-export function Popover(props: PopoverProps): JSX.Element {
-  const [open, setOpen] = createSignal(false);
-  const close = () => setOpen(false);
+export interface FloatingPanelProps {
+  /** Whether the panel is showing. Owned by the caller rather than here, because the
+   *  two callers keep it in different places: `Popover` has its own signal, a context
+   *  menu derives it from whether it has an anchor at all. */
+  open: () => boolean;
+  /** Dismissal. Backdrop click and Escape both route through this. */
+  onClose: () => void;
+  /** The rect to place against, in viewport coordinates, **re-read on every pass** —
+   *  that is what keeps a panel anchored to an element pinned to it through a scroll.
+   *  Null means there is nothing to measure against yet and the pass is skipped.
+   *
+   *  Taking a rect rather than reading a trigger element is the one thing that makes
+   *  this reusable: a *point* is a legal anchor. A zero-size rect at the cursor flips
+   *  and clamps through exactly the same geometry as a button-sized one, so a context
+   *  menu needs no arithmetic of its own. */
+  anchor: () => Rect | null;
+  /** The panel's contents, built lazily — a closed panel must not construct (or run
+   *  the effects of) anything it isn't showing. */
+  panel: () => JSX.Element;
+  align?: "left" | "right";
+  block?: boolean;
+  panelClass?: string;
+  bare?: boolean;
+  /** Right-click on the backdrop. Left unset it does nothing, which is what the
+   *  dropdowns want; a context menu passes a handler that closes, so the operator's
+   *  next right-click reaches the row underneath instead of the backdrop. */
+  onBackdropContextMenu?: (e: MouseEvent) => void;
+}
 
-  // The open edge, fired from the state change rather than the trigger's click
-  // handler — the trigger is only one of the ways this opens, and a caller asking
-  // "refresh when the panel appears" means whenever it appears.
-  let wasOpen = false;
-  createEffect(() => {
-    const isOpen = open();
-    if (isOpen && !wasOpen) props.onOpen?.();
-    wasOpen = isOpen;
-  });
-
-  let triggerRef: HTMLDivElement | undefined;
+/** The floating half of every overlay in the system: portal, click-out backdrop,
+ *  Escape, and a panel kept placed against a moving anchor. `Popover` wraps it with a
+ *  trigger and open state; `ContextMenu` drives it from a cursor point.
+ *
+ *  **The panel is portalled to `document.body` and positioned `fixed`.** It used to be
+ *  an `absolute` child of the trigger, which had two failure modes that looked like
+ *  one: near the bottom of the window it ran off-screen, and inside any scroll
+ *  container — the chat transcript, a modal body, the viewport panel — it was *clipped*
+ *  by that ancestor's `overflow`, which no amount of `align` tuning could fix. A portal
+ *  escapes every ancestor's overflow and stacking context; fixed coordinates measured
+ *  from the anchor keep it in place.
+ *
+ *  Placement flips above the anchor when there is more room there, and shifts
+ *  horizontally to stay inside the viewport. It is recomputed on scroll (capture phase,
+ *  so scroll containers fire it too, not just the window), on resize, and **whenever the
+ *  panel's own content changes size** — a disclosure opening inside it, a list filtering
+ *  down. That last one is not a refinement: a placement measured once is wrong in the
+ *  one direction that hurts, since a panel placed below an anchor with just enough room
+ *  keeps growing *downward* off the bottom of the window, and the clamp that would have
+ *  made it scroll was decided when it was still small. */
+export function FloatingPanel(props: FloatingPanelProps): JSX.Element {
   let panelRef: HTMLDivElement | undefined;
   const [placement, setPlacement] = createSignal<Placement | null>(null);
 
   const measure = (): void => {
-    if (!triggerRef) return;
+    const anchor = props.anchor();
+    if (!anchor) return;
     // Before the panel has rendered there is no height to flip on, so the first pass
     // places it below and a second (from the panel's own onMount) corrects it.
     //
@@ -110,7 +130,7 @@ export function Popover(props: PopoverProps): JSX.Element {
       panelRef.style.maxHeight = restore;
     }
     const next = computePlacement({
-      anchor: triggerRef.getBoundingClientRect(),
+      anchor,
       panel,
       viewport: { width: window.innerWidth, height: window.innerHeight },
       align: props.align,
@@ -124,7 +144,7 @@ export function Popover(props: PopoverProps): JSX.Element {
   };
 
   createEffect(() => {
-    if (!open()) {
+    if (!props.open()) {
       setPlacement(null);
       return;
     }
@@ -141,13 +161,57 @@ export function Popover(props: PopoverProps): JSX.Element {
 
   // Escape closes while open (the backdrop handles outside clicks).
   createEffect(() => {
-    if (!open()) return;
+    if (!props.open()) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close();
+      if (e.key === "Escape") props.onClose();
     };
     document.addEventListener("keydown", onKey);
     onCleanup(() => document.removeEventListener("keydown", onKey));
   });
+
+  return (
+    <Show when={props.open()}>
+      <Portal>
+        <div
+          class="fixed inset-0 z-40"
+          onClick={() => props.onClose()}
+          onContextMenu={(e) => props.onBackdropContextMenu?.(e)}
+        />
+        <PopoverPanel
+          ref={(el) => {
+            panelRef = el;
+          }}
+          placement={placement()}
+          panelClass={props.panelClass}
+          bare={props.bare}
+          onMeasure={measure}
+        >
+          {props.panel()}
+        </PopoverPanel>
+      </Portal>
+    </Show>
+  );
+}
+
+/** The dropdown shell shared by Menu, Select and Combobox: an anchored trigger plus a
+ *  `FloatingPanel`. Owns nothing but the open state and the trigger box — everything
+ *  about the floating half (portal, backdrop, Escape, placement) lives above, so a
+ *  caller anchoring to something other than a trigger gets identical behavior. */
+export function Popover(props: PopoverProps): JSX.Element {
+  const [open, setOpen] = createSignal(false);
+  const close = () => setOpen(false);
+
+  // The open edge, fired from the state change rather than the trigger's click
+  // handler — the trigger is only one of the ways this opens, and a caller asking
+  // "refresh when the panel appears" means whenever it appears.
+  let wasOpen = false;
+  createEffect(() => {
+    const isOpen = open();
+    if (isOpen && !wasOpen) props.onOpen?.();
+    wasOpen = isOpen;
+  });
+
+  let triggerRef: HTMLDivElement | undefined;
 
   return (
     <div
@@ -158,22 +222,16 @@ export function Popover(props: PopoverProps): JSX.Element {
       )}
     >
       {props.trigger({ open, setOpen, close })}
-      <Show when={open()}>
-        <Portal>
-          <div class="fixed inset-0 z-40" onClick={close} />
-          <PopoverPanel
-            ref={(el) => {
-              panelRef = el;
-            }}
-            placement={placement()}
-            panelClass={props.panelClass}
-            bare={props.bare}
-            onMeasure={measure}
-          >
-            {props.panel({ close })}
-          </PopoverPanel>
-        </Portal>
-      </Show>
+      <FloatingPanel
+        open={open}
+        onClose={close}
+        anchor={() => triggerRef?.getBoundingClientRect() ?? null}
+        align={props.align}
+        block={props.block}
+        panelClass={props.panelClass}
+        bare={props.bare}
+        panel={() => props.panel({ close })}
+      />
     </div>
   );
 }

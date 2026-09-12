@@ -1,11 +1,13 @@
 import { Show, type JSX } from "solid-js";
 import {
   Button,
+  Icon,
   LedEdge,
   REVEAL_ON_GROUP_HOVER,
   Text,
   TypewriterText,
   cx,
+  type ContextMenuTriggerProps,
   type LedTone,
 } from "~/ui";
 import { REVEAL_SPEED_MS } from "../data";
@@ -22,7 +24,13 @@ export interface SessionRowProps {
    *  accent edge; absent leaves the row at rest. */
   activity?: ChatActivity;
   onOpen: () => void;
-  onTogglePin: () => void;
+  /** Open this row's menu at the cursor. The whole row is the target. */
+  onContextMenu: (e: MouseEvent) => void;
+  /** ARIA and click wiring for the "···". Spread it rather than rebuilding it, so the
+   *  expanded state travels with the handler that changes it. */
+  menuTrigger: ContextMenuTriggerProps;
+  /** True while *this* row's menu is showing. */
+  menuOpen?: boolean;
 }
 
 /** The activity → LED tone mapping, matching the nav rail's split (§4 — color
@@ -47,9 +55,23 @@ const activityLabel: Record<ChatActivity, string> = {
 };
 
 /**
- * A selectable session row with an independent pin toggle. The label and the
- * pin are sibling buttons (not nested) so neither swallows the other's click.
- * The pin is revealed on hover/focus unless the row is already pinned.
+ * A selectable session row with its own actions menu.
+ *
+ * **Two ways into one menu.** A right-click anywhere on the row opens it at the cursor;
+ * the "···" opens the same menu against the button. Right-click is the faster gesture
+ * and the one a list invites, but it is invisible and unreachable from a keyboard, so
+ * the button is what makes the actions discoverable and operable. Neither alone is the
+ * whole control.
+ *
+ * The row used to carry a pin toggle and a `3D AGO` stamp. Pinning moved into the menu
+ * and the stamp into the heading above the run — it answered "when" once per row, in a
+ * column the eye had to visit for all of them, to separate threads mostly from the same
+ * week. What is left of the pin is a **marker, not a control**: in a sandbox mode the
+ * `Pinned` heading already says it, but a code thread is filed under its directory and
+ * would otherwise float to the top of its section for no visible reason.
+ *
+ * The label and the "···" are sibling buttons (not nested) so neither swallows the
+ * other's click.
  *
  * A thread whose run is live lights its leading edge, and the light falls
  * *inward* — across the row, under the title — so the row itself reads as the
@@ -65,6 +87,11 @@ export function SessionRow(props: SessionRowProps): JSX.Element {
       spill="in"
       unlit="clear"
       reach={LED_REACH}
+      // On the row's own element, not the label button: the target is the whole row,
+      // including the strip the "···" sits on and the padding around it. A right-click
+      // that lands two pixels off the label and does nothing reads as the menu being
+      // broken rather than as having missed.
+      onContextMenu={(e) => props.onContextMenu(e)}
       class={cx(
         // No rule between rows (§7) — the hover fill and the rhythm are what
         // make this read as a list, and the leading edge shows only when there
@@ -110,16 +137,26 @@ export function SessionRow(props: SessionRowProps): JSX.Element {
           )}
         </Show>
       </button>
+      {/* Marker, not a control — inside the row's own gutter so it cannot be
+          mistaken for the button beside it. `sr-only` text because the glyph is
+          the only thing carrying the state (§12). */}
+      <Show when={props.pinned}>
+        <Icon name="pin" size={12} class="shrink-0 text-dim" />
+        <span class="sr-only">pinned</span>
+      </Show>
       <Button
+        {...props.menuTrigger}
         variant="ghost"
         size="sm"
-        leading="pin"
-        active={props.pinned}
-        aria-label={props.pinned ? "Unpin thread" : "Pin thread"}
-        aria-pressed={props.pinned}
-        onClick={() => props.onTogglePin()}
-        class={cx("shrink-0", !props.pinned && REVEAL_ON_GROUP_HOVER)}
-      />
+        aria-label="Thread actions"
+        // Held visible while this row's own menu is open. `REVEAL_ON_GROUP_HOVER`
+        // covers hover, focus and touch, but the panel is portalled to the body — so
+        // the moment it opens, focus leaves the row, `focus-within` stops holding, and
+        // the trigger fades out from under the menu it just opened.
+        class={cx("shrink-0", !props.menuOpen && REVEAL_ON_GROUP_HOVER)}
+      >
+        ···
+      </Button>
     </LedEdge>
   );
 }

@@ -1,6 +1,6 @@
 import { splitProps, type JSX } from "solid-js";
-import { MenuItemList, type MenuItem } from "./menuItems";
 import { Popover } from "./Popover";
+import { MenuItems, type MenuItem } from "./menuItems";
 
 export type { MenuItem };
 
@@ -13,11 +13,9 @@ export interface MenuProps {
   class?: string;
 }
 
-/** Dropdown menu, anchored to its trigger. Closes on item select, backdrop click,
- *  or Escape. Instant reveal. Built on the shared Popover shell.
- *
- *  Its rows live in `menuItems.tsx`, shared with `ContextMenu` — the two differ in
- *  where they appear, not in what a menu looks like. */
+/** Dropdown menu. Closes on item select, backdrop click, or Escape. Instant
+ *  reveal. Built on the shared Popover shell, with the rows from `MenuItems` so it
+ *  and `ContextMenu` cannot look like two different menus. */
 export function Menu(props: MenuProps): JSX.Element {
   const [local] = splitProps(props, ["trigger", "items", "align", "class"]);
   return (
@@ -25,12 +23,18 @@ export function Menu(props: MenuProps): JSX.Element {
       class={local.class}
       align={local.align ?? "right"}
       panelClass="min-w-40 py-1"
-      trigger={({ setOpen }) => (
-        <button type="button" onClick={() => setOpen(true)} class="inline-flex">
+      trigger={({ open, setOpen }) => (
+        <button
+          type="button"
+          aria-haspopup="menu"
+          aria-expanded={open()}
+          onClick={() => setOpen(true)}
+          class="inline-flex"
+        >
           {local.trigger}
         </button>
       )}
-      panel={({ close }) => <MenuItemList items={local.items} close={close} />}
+      panel={({ close }) => <MenuItems items={local.items} close={close} />}
     />
   );
 }

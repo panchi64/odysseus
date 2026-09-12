@@ -155,6 +155,46 @@ describe("block mode", () => {
   });
 });
 
+describe("cursor anchor — a zero-size rect at a point", () => {
+  // What a context menu anchors to. It gets the flip and the clamp for free only if a
+  // degenerate rect flows through the same rules as a real trigger, so these three
+  // guard the "no new geometry" part of that as much as the geometry itself.
+  function cursorAt(x: number, y: number): Rect {
+    return { top: y, bottom: y, left: x, right: x, width: 0, height: 0 };
+  }
+
+  test("drops below and to the right of the cursor in open space", () => {
+    const p = computePlacement({
+      anchor: cursorAt(400, 100),
+      panel: PANEL,
+      viewport: VIEWPORT,
+    });
+    expect(p.top).toBe(100 + GAP);
+    expect(p.left).toBe(400);
+  });
+
+  test("flips above when the cursor is near the bottom edge", () => {
+    // 780 of 800: a 200px panel cannot hang below a right-click down there.
+    const p = computePlacement({
+      anchor: cursorAt(400, 780),
+      panel: PANEL,
+      viewport: VIEWPORT,
+    });
+    expect(p.top).toBe(780 - GAP - PANEL.height);
+    expect(p.clampHeight).toBeNull();
+  });
+
+  test("clamps back inside the right edge", () => {
+    const p = computePlacement({
+      anchor: cursorAt(990, 100),
+      panel: PANEL,
+      viewport: VIEWPORT,
+    });
+    expect(p.left).toBe(VIEWPORT.width - PANEL.width - EDGE);
+    expect(p.left + PANEL.width).toBeLessThanOrEqual(VIEWPORT.width - EDGE);
+  });
+});
+
 describe("first pass, before the panel has rendered", () => {
   test("places below without flipping on a zero-height panel", () => {
     const anchor = anchorAt(700);
