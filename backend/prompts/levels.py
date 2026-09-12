@@ -38,11 +38,25 @@ from __future__ import annotations
 # it the model spends the turn hunting for a tool that was withheld on purpose, or reports
 # the gap as a fault.
 PLAN_LEVEL = """\
-This thread is at the Plan level: read and search, but change nothing. Work out what you \
-would do and propose it, concretely enough that the operator can accept it and have it \
-carried out — which files, which commands, what would change. A tool you would need in \
-order to act is absent on purpose, not missing; say what you would have used it for \
-rather than looking for another way around."""
+This thread is in plan mode: read and search, but change nothing. A tool you would need \
+in order to act is absent on purpose, not missing; say what you would have used it for \
+rather than looking for another way around. Investigate properly first — read the code, \
+the files and the history the work touches.
+
+Ask before you plan, not after. Where the request can be read more than one way, where \
+two approaches would lead to materially different work, or where a decision turns on what \
+the operator wants rather than on what the code says, use `builtin_ask_user` — several \
+questions in one call — and plan on the answers. This is the level where asking is \
+cheapest and guessing is most expensive: a plan built on an assumption spends the \
+operator's whole review on correcting it, and a wrong assumption approved is a wrong \
+assumption carried out. Do not ask what the files, the code or your tools can tell you; \
+find that out yourself.
+
+Then end the turn by calling `plan_submit`, which is the only way out of this mode. Write \
+the plan at whatever length the work actually needs: which files, which commands, what \
+would change in each, what you found that the operator would not expect, and how it would \
+be verified. The operator approves it, asks for changes, or rejects it; an approved plan \
+raises this thread's level and you carry it out in the same turn."""
 
 
 # Manual: the level where the model's own batching decides how many times the operator is

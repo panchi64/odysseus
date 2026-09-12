@@ -27,8 +27,9 @@ import { createEffect, createSignal } from "solid-js";
 import { createStore, produce, reconcile } from "solid-js/store";
 import { api, isApiError } from "~/lib/api";
 import { effectiveSelection, type ModelSelection } from "~/lib/stores/models";
-import type { PlanItem } from "~/lib/stream";
+import type { TaskItem } from "~/lib/stream";
 import type { SessionMode } from "~/lib/modes";
+import type { PlanDocument } from "../model";
 import { toast } from "~/ui";
 import { CONTINUE_PROMPT } from "../data/constants";
 import type { ChatCreatedDTO, ConversationDetailDTO } from "../data/wire";
@@ -75,6 +76,11 @@ export interface ChatStreamOptions {
    *  switching it mid-thread is a plain message rather than a separate call, and the
    *  backend persists whatever the last send named. */
   permission?: () => PermissionLevel;
+  /** Fired when the **run** moved the level — `plan_enter` narrowing it, or an approved
+   *  plan raising it. Necessary rather than informational: the level above is sent back
+   *  on every message, so a caller that did not hear this would write the stale one over
+   *  the change on the operator's next send. */
+  onPermissionChanged?: (level: PermissionLevel) => void;
   /** The loaded conversation's context-window state, seeded alongside its history
    *  so an existing thread shows window fullness before its next turn runs. */
   initialContext?: () => ContextUsage | null | undefined;
@@ -123,21 +129,27 @@ export function createChatStream(
   const [stats, setStats] = createSignal<ConversationStats | null>(null);
   // The agent's task list for this thread. Conversation-level rather than a message
   // block: one list belongs to the thread and is rewritten in place as work proceeds,
-  // so pinning it to the turn that happened to create it would strand it. `plan.updated`
-  // carries the whole list, so applying an event is a replace, never a merge.
-  const [plan, setPlan] = createSignal<PlanItem[]>([]);
+  // so pinning it to the turn that happened to create it would strand it.
+  // `tasks.updated` carries the whole list, so applying an event is a replace, never a
+  // merge.
+  const [tasks, setTasks] = createSignal<TaskItem[]>([]);
+  // The written plan this thread is working to, when it has one. One per thread and
+  // replaced on every revision, so — like the list above — it is a signal rather than
+  // anything pinned to a message.
+  const [plan, setPlan] = createSignal<PlanDocument | null>(null);
   // The sub-agents this thread has delegated to, oldest first. Conversation-level for
-  // the same reason the plan is: "what did that worker end up doing?" is asked after the
+  // the same reason the tasks are: "what did that worker end up doing?" is asked after the
   // turn that ran it has finished, so a list pinned to a message block would strand it.
   // The delegating tool call still folds onto its own turn as an ordinary tool card —
   // that is the transcript's reading of the same events, and this is the roster's.
   const [subagents, setSubagents] = createSignal<SubagentRun[]>([]);
   // The run-scoped bookkeeping the fold advances and the drive resets: the high-water
-  // seq, the bubble events land on, the plan's revision counter, and the run currently
-  // streaming. One object, shared by reference with the folder.
+  // seq, the bubble events land on, the two backfill-race counters, and the run
+  // currently streaming. One object, shared by reference with the folder.
   const foldState: FoldState = {
     maxFoldedSeq: 0,
     foldTarget: null,
+    tasksRevision: 0,
     planRevision: 0,
     activeRunId: null,
   };
@@ -166,7 +178,12 @@ export function createChatStream(
     setMessages,
     setSnapshots,
     setSubagents,
+    setTasks,
     setPlan,
+    // The one fact the run can change that the client also holds and sends back, so
+    // the caller has to hear about it — see `FoldDeps.setPermission`. Absent for a
+    // caller with no level of its own (the compare pane), where a no-op is right.
+    setPermission: (level) => options.onPermissionChanged?.(level),
     setUsage,
     setStats,
     setErrored,
@@ -261,6 +278,7 @@ export function createChatStream(
     setUsage,
     setStats,
     setSnapshots,
+    setTasks,
     setPlan,
     initialContext: options.initialContext,
     initialStats: options.initialStats,
@@ -515,6 +533,10 @@ export function createChatStream(
     reattaching: drive.reattaching,
     usage,
     stats,
+    /** The agent's running checklist for this thread. */
+    tasks,
+    /** The written plan it is working to, when there is one — the document the operator
+     *  approves, which is a different thing from the list above. */
     plan,
     /** The sub-agents this thread has delegated to, oldest first — each with what it was
      *  asked, where it has got to, and how it ended. Conversation-scoped: the rows outlive

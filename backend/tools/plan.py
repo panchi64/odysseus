@@ -1,189 +1,180 @@
-"""The agent's own task list — the plan the operator watches it work through.
+"""Plan mode's three tools — enter it, read the plan, submit one for approval.
 
-``pydantic_ai_harness.Planning`` owns the tools and their model-facing wording; we supply
-the storage (``services/plans`` — sealed, per-conversation) and the surface.
+The counterpart to ``tools/tasks.py``. That one is the running checklist the agent keeps
+for itself at every level; this is the written document a Plan-level turn produces for the
+operator to say yes to. They were one word and one feature once, which is why neither
+module now uses the other's.
 
-**Registered as a toolset, not as a capability, on purpose.** The capability form also
-injects the plan as a tail reminder through its own model-request hook. Taking it whole
-would have put the tools outside the one thing every other tool passes through: the
-namespaced, operator-toggleable catalog (``tools/catalog.py``) whose promise is that the
-settings list and the agent's actual stack cannot diverge. So the toolset comes from the
-capability and the reminder is re-delivered through the seam this codebase already has for
-exactly this — a ``PromptContextProvider``, which lands at the *tail* of the turn's prompt
-for the same prompt-cache reason the harness places it there.
+**The level moves from inside the run, and takes effect inside the turn.** Both
+``plan_enter`` and an approved ``plan_submit`` change what the thread may do, and both do it
+by writing the conversation row *and* by editing ``ctx.deps`` in place. The second half is
+what makes it real immediately: ``RunDeps`` is a plain dataclass, and both gates in
+``tools/toolsets.py`` re-read it on every model request, so the narrowed — or widened —
+catalog lands on the very next request rather than next turn. Without it, ``plan_enter``
+would be an announcement the model could ignore for the rest of the turn, and an approved
+plan would be an agreement the model had no tools to carry out.
 
-**Three tools, not six.** ``write_plan`` already replaces the whole list, so
-``add_task``/``remove_task`` are the same edit spelled longer, and
-``update_task_statuses`` covers ``update_task_status`` with a list of one. Each dropped
-tool cost a name, a description and a JSON schema on every request to buy the model a
-second way to do something it could already do — and a second way is a decision it has to
-make. The wording is ours for the same reason: the harness writes for its full surface,
-and the three that survive should read as if they were the surface.
+**``plan_submit`` raises ``ApprovalRequired`` from inside the call** rather than carrying
+``requires_approval=True``, and the difference is load-bearing. The static marking defers
+the call *before* the body runs, and the body is what records the plan — so the panel would
+have nothing to render while the operator decided, and a reload mid-decision would find no
+document. Raising from inside means the first invocation writes and announces the plan and
+*then* parks; the re-invocation after an approval (``ctx.tool_call_approved``) is the one
+that accepts it. The name is declared in ``GATED_TOOLS`` for the same reason every other
+tool that gates this way declares itself: a name missing from that union is missing from the
+operator's approval-scope vocabulary.
+
+**All three are exempt from the level gate** (``services/permissions.PLANNING_TOOLS``).
+``plan_enter`` only ever narrows, ``plan_read`` reaches nothing, and ``plan_submit`` is held
+by its own approval rather than by the level — which it has to be, since the level it would
+be held by is the one it exists to end.
 """
 
 from __future__ import annotations
 
-from collections import OrderedDict
-from typing import Any
+from typing import Annotated
 
-from pydantic_ai import AbstractToolset, RunContext, ToolsetTool
-from pydantic_ai_harness.planning import (
-    InMemoryPlanStore,
-    Planning,
-    PlanStore,
-    render_plan,
-)
+from pydantic import Field
+from pydantic_ai import FunctionToolset, RunContext
+from pydantic_ai.exceptions import ApprovalRequired
 
-from core.container import ServiceContainer
-from services.plans import ConversationPlans, ConversationPlanStore
+from services.plan_mode import ACTING_LEVEL, PLAN_SUBMIT_TOOL, PLANNING_LEVEL, PlanMode
+from services.tool_policy import permission_disabled_tools
 
 from .deps import RunDeps
 
-# Rendered above the plan at the tail of the turn. Short and fixed: the block's *content*
-# changes constantly, so anything static about it belongs here rather than in the churn.
-_PREAMBLE = (
-    "Your current task list for this conversation. Keep it accurate as you work — "
-    "mark a task in_progress when you start it and completed when it is done."
+#: The conditionally-gated name this category contributes — it raises ``ApprovalRequired``
+#: from inside the call, which no amount of inspection can discover.
+GATED_TOOLS: frozenset[str] = frozenset({PLAN_SUBMIT_TOOL})
+
+#: What a tool here returns when plan mode is not wired (a stateless run, or a turn with no
+#: conversation to key on). Plan mode is a property of a thread; a run without one cannot
+#: enter it, and saying so plainly is better than a park nobody can answer.
+NO_THREAD = (
+    "Plan mode is not available in this run — it belongs to a conversation, and this "
+    "one has none. Carry on and decide with your best judgment."
 )
 
 
-# One bound toolset per conversation, kept because building one registers the tools and
-# generates their schemas. Bounded so a long-lived process doesn't retain an entry for
-# every thread ever opened.
-_MAX_BOUND = 64
+def _retarget(ctx: RunContext[RunDeps], level: str) -> None:
+    """Point this run's deps at ``level``, so the change binds for the rest of the turn.
 
-#: The surface we offer, in the order the model most often needs it. The harness validates
-#: both this allowlist and the description keys against the tools it registers, so a
-#: rename upstream fails loudly here instead of silently offering more than we intended.
-_TOOLS = ("write_plan", "update_task_statuses", "read_plan")
-
-_DESCRIPTIONS = {
-    "write_plan": (
-        "Create or replace the whole task list. Pass every step each time, including the "
-        "unchanged and the finished, and keep exactly one in_progress. Call it first for "
-        "multi-step work."
-    ),
-    "update_task_statuses": (
-        "Change one or more steps' status by id. Entries apply in order, so complete a "
-        "prerequisite before starting its dependent."
-    ),
-    "read_plan": "The current list — every step's id, content and status, and a progress line.",
-}
-
-
-def _planning(store: PlanStore) -> Planning[RunDeps]:
-    """A ``Planning`` over ``store``, narrowed to the three tools we offer."""
-    return Planning[RunDeps](
-        store_resolver=lambda _ctx: store, tools=_TOOLS, descriptions=_DESCRIPTIONS
-    )
-
-
-def _store_for(ctx: RunContext[RunDeps]) -> PlanStore:
-    """The store this run's plan lives in — sealed and per-conversation where there is
-    one, in memory for the life of the run where there isn't."""
-    plans = ctx.deps.caps.get_optional(ConversationPlans)
-    conversation_id = ctx.deps.conversation_id
-    if plans is None or conversation_id is None:
-        # No conversation to key on (a one-off run), or no store wired: plan in memory.
-        # Planning still works; it simply doesn't outlive the run.
-        return InMemoryPlanStore()
-    return ConversationPlanStore(
-        plans,
-        owner_id=ctx.deps.run.owner_id,
-        conversation_id=conversation_id,
-        run=ctx.deps.run,
-    )
-
-
-class _ConversationPlanToolset(AbstractToolset[RunDeps]):
-    """The ``plan`` category, rebound to whichever conversation is asking.
-
-    **The rebinding is the whole point.** ``Planning.resolve_store`` memoises its store on
-    the capability instance the first time it is asked, and a category object is built once
-    for the whole app — so a single shared capability would hand *every* conversation the
-    first one's plan: thread B would read and overwrite thread A's tasks. Registering the
-    capability's toolset directly is only safe under ``for_run()``, the per-run clone hook
-    that a toolset registration never reaches. So each conversation gets its own capability
-    (hence its own memoised store), resolved here.
-
-    Shaped like ``tools/files.py``: ``get_tools`` answers from a template, because a tool's
-    definition doesn't depend on whose plan it will touch — which keeps the offered set,
-    the operator catalog and the enabled gate identical for every thread.
+    The conversation row is the durable half and the next turn reads it; this is the half
+    that matters *now*. ``disabled_tools`` is rebuilt rather than added to, because the
+    union it carries has six other sources (``services/tool_policy.py``) and the level's
+    contribution is the only one this may touch: subtracting the old level's withheld set
+    and adding the new one's is the one edit that leaves the other five alone.
     """
+    previous = permission_disabled_tools(ctx.deps.permission)
+    ctx.deps.permission = level  # type: ignore[assignment]
+    ctx.deps.disabled_tools = (ctx.deps.disabled_tools - previous) | permission_disabled_tools(
+        level
+    )
 
-    def __init__(self, template: AbstractToolset[RunDeps]) -> None:
-        self._template = template
-        self._bound: OrderedDict[str, tuple[AbstractToolset[RunDeps], PlanStore]] = (
-            OrderedDict()
+
+def plan_toolset() -> FunctionToolset[RunDeps]:
+    toolset: FunctionToolset[RunDeps] = FunctionToolset()
+
+    @toolset.tool(name="enter")
+    async def enter(ctx: RunContext[RunDeps], reason: str) -> str:
+        """Switch this conversation into plan mode and stop acting.
+
+        For work that is large, ambiguous, or expensive to get wrong — a change across
+        several files, anything that rewrites or deletes what the operator has, a request
+        you can read more than one way. Not for work you can simply do.
+
+        Every tool that changes anything leaves your catalog until the operator approves
+        a plan. Investigate by reading, then call `plan_submit`.
+
+        `reason`: one line on why this needs a plan. The operator reads it.
+        """
+        plans = ctx.deps.caps.get_optional(PlanMode)
+        conversation_id = ctx.deps.conversation_id
+        if plans is None or conversation_id is None:
+            return NO_THREAD
+        await plans.enter(conversation_id, reason=reason, run=ctx.deps.run)
+        _retarget(ctx, PLANNING_LEVEL)
+        return (
+            "This conversation is now in plan mode: nothing you call can change anything. "
+            "Investigate by reading, and ask the operator with `builtin_ask_user` wherever "
+            "the request is open to more than one reading or a choice is theirs to make — "
+            "planning on a guess is what makes a plan need rewriting. Then submit with "
+            "`plan_submit`."
         )
 
-    @property
-    def id(self) -> str:
-        return "plan"
+    @toolset.tool(name="read")
+    async def read(ctx: RunContext[RunDeps]) -> str:
+        """The plan this conversation agreed to, in full. Read it while carrying one out
+        when you want the reasoning behind a step: the task list holds the steps, this
+        holds why they are the steps."""
+        plans = ctx.deps.caps.get_optional(PlanMode)
+        conversation_id = ctx.deps.conversation_id
+        if plans is None or conversation_id is None:
+            return "There is no plan for this run."
+        plan = await plans.current(ctx.deps.run.owner_id, conversation_id)
+        if plan is None:
+            return "This conversation has no plan."
+        steps = "\n".join(f"{i}. {step}" for i, step in enumerate(plan.steps, start=1))
+        return f"# {plan.title}\n\n({plan.status})\n\n{plan.body}\n\n## Steps\n\n{steps}"
 
-    @property
-    def tools(self) -> dict[str, Any]:
-        """The static registry ``tools/catalog.py`` enumerates for the settings surface."""
-        return getattr(self._template, "tools", {})
-
-    async def get_tools(self, ctx: RunContext[RunDeps]) -> dict[str, ToolsetTool[RunDeps]]:
-        return await self._template.get_tools(ctx)
-
-    async def call_tool(
-        self,
-        name: str,
-        tool_args: dict[str, Any],
+    @toolset.tool(name="submit")
+    async def submit(
         ctx: RunContext[RunDeps],
-        tool: ToolsetTool[RunDeps],
-    ) -> Any:
-        bound, store = self._for(ctx)
-        # The store is cached with the toolset, but the run it emits on is per turn — point
-        # it at the live one, or the second turn's updates stream onto a dead run.
-        if isinstance(store, ConversationPlanStore):
-            store.bind_run(ctx.deps.run)
-        # Re-resolve against the bound toolset: the tool handed in carries the template's
-        # function, which is wired to the template's (unbound) store.
-        return await bound.call_tool(name, tool_args, ctx, (await bound.get_tools(ctx))[name])
+        title: Annotated[str, Field(description="One line naming what this plan does.")],
+        body: Annotated[
+            str,
+            Field(
+                description=(
+                    "The plan, in markdown: why, the approach, which files you would "
+                    "touch and what changes in each, what you found that the operator "
+                    "would not expect, how it would be verified. As long as the work "
+                    "requires — the operator decides on this alone, and shortening it "
+                    "is the one way to make it useless."
+                )
+            ),
+        ],
+        steps: Annotated[
+            list[str],
+            Field(
+                min_length=1,
+                description=(
+                    "The ordered, concrete steps. They become the conversation's task "
+                    "list on approval, so write each as the piece of work it is."
+                ),
+            ),
+        ],
+    ) -> str:
+        """Submit this plan for the operator's approval, and pause until they answer.
 
-    def _for(self, ctx: RunContext[RunDeps]) -> tuple[AbstractToolset[RunDeps], PlanStore]:
-        # Keyed by conversation where there is one, else by run: a conversation's plan
-        # outlives its turns, a one-off run's does not.
-        key = ctx.deps.conversation_id or f"run:{ctx.deps.run.id}"
-        entry = self._bound.pop(key, None)
-        if entry is None:
-            store = _store_for(ctx)
-            entry = (_planning(store).get_toolset(), store)
-            if len(self._bound) >= _MAX_BOUND:
-                self._bound.popitem(last=False)
-        self._bound[key] = entry
-        return entry
+        How a plan-mode turn ends. They approve, ask for changes, or reject. On approval
+        the conversation moves to the Auto level, the steps become its task list, and you
+        carry the plan out in this same turn — do not stop to ask whether to begin. On a
+        request for changes, revise and submit again; the conversation stays in plan mode
+        until they agree.
+        """
+        plans = ctx.deps.caps.get_optional(PlanMode)
+        conversation_id = ctx.deps.conversation_id
+        if plans is None or conversation_id is None:
+            return NO_THREAD
+        owner_id = ctx.deps.run.owner_id
+        if not ctx.tool_call_approved:
+            # Record and announce first, *then* park: the panel renders the plan the
+            # operator is being asked about, and it has to exist before they are asked.
+            await plans.submit(
+                owner_id,
+                conversation_id,
+                title=title,
+                body=body,
+                steps=list(steps),
+                run=ctx.deps.run,
+            )
+            raise ApprovalRequired()
+        _, level = await plans.approve(owner_id, conversation_id, run=ctx.deps.run)
+        _retarget(ctx, ACTING_LEVEL)
+        return (
+            f"The operator approved this plan. The conversation is now at the {level} "
+            "level and its task list holds your steps. Carry the plan out now, marking "
+            "each task in_progress as you start it and completed as you finish it."
+        )
 
-
-def plan_toolset() -> AbstractToolset[RunDeps]:
-    """The ``plan`` category — the model's read/write access to its own task list."""
-    # The template's store is never read or written: only `call_tool` acts, and it always
-    # rebinds first. It exists to carry the tool definitions.
-    return _ConversationPlanToolset(_planning(InMemoryPlanStore()).get_toolset())
-
-
-async def plan_context(
-    caps: ServiceContainer, owner_id: str, conversation_id: str | None
-) -> str:
-    """The current task list, for the tail of this turn's prompt.
-
-    Delivered per turn rather than written into history: the list changes on nearly every
-    step, and a changing block at the head of the request would invalidate the inference
-    engine's prompt-prefix cache for the whole conversation behind it.
-    """
-    plans = caps.get_optional(ConversationPlans)
-    if plans is None or conversation_id is None:
-        return ""
-    items = await plans.items(owner_id, conversation_id)
-    # No plan, no block. This is also what keeps an operator who disabled the `plan`
-    # category from being told to "keep it accurate" with no tools registered to do so:
-    # with the tools gone nothing can create a task, so there is nothing to render. A
-    # plan left over from before they disabled it still shows — it describes outstanding
-    # work, and hiding it would be the more surprising of the two.
-    if not items:
-        return ""
-    return f"{_PREAMBLE}\n\n{render_plan(items)}"
+    return toolset

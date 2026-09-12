@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 from agent.summarize import compact_conversation
 from agent.title import title_from_history
@@ -34,13 +34,13 @@ from services.conversations import (
     last_request_usage,
 )
 from services.modes import DEFAULT_MODE, mode_spec
-from services.permissions import ACTING_PERMISSIONS, DEFAULT_PERMISSION, PermissionLevel
-from services.plans import accepted_plan_prompt, plan_payload
+from services.permissions import DEFAULT_PERMISSION
 from services.settings_store import (
     get_auto_compact,
     get_context_thresholds,
     resolve_compaction_enabled,
 )
+from services.task_list import tasks_payload
 from services.workspace_history import SnapshotView, snapshot_id_from_result
 
 logger = logging.getLogger(__name__)
@@ -632,9 +632,10 @@ async def delete_conversation(
         # Drop the conversation's View history (snapshots + any blob no other snapshot
         # needs), so the work doesn't linger encrypted on disk after the thread is gone.
         await deps.workspace_history(request).delete_for_conversation(OPERATOR_ID, conversation_id)
-        # Same reasoning for the agent's task list: it restates what was asked for, so it
-        # must not outlive the thread.
-        await deps.conversation_plans(request).delete_for_conversation(OPERATOR_ID, conversation_id)
+        # Same reasoning for the agent's task list and the plan it was working from: both
+        # restate what was asked for, so neither must outlive the thread.
+        await deps.conversation_tasks(request).delete_for_conversation(OPERATOR_ID, conversation_id)
+        await deps.plan_mode(request).delete_for_conversation(OPERATOR_ID, conversation_id)
         # Delete the conversation's sandbox too (its workspace + sealed archive),
         # otherwise it lingers on disk keyed to a thread that no longer exists. The DB
         # delete above is the authoritative action, so a purge failure must not fail it.
@@ -831,82 +832,48 @@ async def list_grants(conversation_id: str, request: Request) -> list[ApprovalGr
     ]
 
 
-class PlanItemOut(BaseModel):
+class TaskOut(BaseModel):
     id: str
     content: str
     status: str
     active_form: str | None = None
 
 
-@router.get("/{conversation_id}/plan", response_model=list[PlanItemOut])
-async def read_plan(conversation_id: str, request: Request) -> list[PlanItemOut]:
+@router.get("/{conversation_id}/tasks", response_model=list[TaskOut])
+async def read_tasks(conversation_id: str, request: Request) -> list[TaskOut]:
     """The agent's current task list for this thread.
 
-    The list is streamed as it changes (``plan.updated``), but a client that opens or
+    The list is streamed as it changes (``tasks.updated``), but a client that opens or
     reloads a conversation has no stream to replay — this is how it starts from the
     truth rather than from an empty panel that only fills on the next mutation.
     """
     await _require_owned(request, conversation_id)
-    items = await deps.conversation_plans(request).items(OPERATOR_ID, conversation_id)
-    return [PlanItemOut(**row) for row in plan_payload(items)]
+    items = await deps.conversation_tasks(request).items(OPERATOR_ID, conversation_id)
+    return [TaskOut(**row) for row in tasks_payload(items)]
 
 
-class PlanAccept(BaseModel):
-    """Which level to raise the thread to. Only one that can act: accepting a plan and
-    staying read-only is a no-op with extra steps, and dropping to Manual is a downgrade
-    the composer's own control already offers.
+class PlanOut(BaseModel):
+    """The plan this thread produced, if it has produced one."""
 
-    *Which* levels those are is the permission registry's answer, not a pair spelled out
-    here — a fifth preset is a row in ``services/permissions/levels.py`` and nothing in
-    this route moves."""
-
-    level: PermissionLevel = DEFAULT_PERMISSION
-
-    @field_validator("level")
-    @classmethod
-    def _must_be_able_to_act(cls, value: PermissionLevel) -> PermissionLevel:
-        if value not in ACTING_PERMISSIONS:
-            raise ValueError(
-                f"level must be one of {', '.join(sorted(ACTING_PERMISSIONS))} — "
-                "the levels a thread can act at"
-            )
-        return value
+    title: str
+    body: str
+    steps: list[str]
+    status: str
+    revision: int
 
 
-class PlanAccepted(BaseModel):
-    """What the thread is now, and the message that starts the turn which acts on it.
+@router.get("/{conversation_id}/plan", response_model=PlanOut | None)
+async def read_plan(conversation_id: str, request: Request) -> PlanOut | None:
+    """The written plan for this thread, or ``null`` where there is none.
 
-    The prompt is handed back rather than sent, because sending is a turn: it goes
-    through ``POST /chat`` like every other message, with that route's claim, its bounds
-    and its place in the transcript. Accepting only clears the way."""
-
-    permission_level: str
-    prompt: str
-
-
-@router.post("/{conversation_id}/plan/accept", response_model=PlanAccepted)
-async def accept_plan(
-    conversation_id: str, request: Request, body: PlanAccept | None = None
-) -> PlanAccepted:
-    """Accept the plan this thread produced and let it act.
-
-    The closing half of the Plan level's contract. A Plan turn is offered no tool that
-    changes anything, so the only way it can end is by writing down what it would do; this
-    is the operator reading that and saying yes. It raises the thread's level — nothing
-    else about the thread moves — and returns the plan as the message to send next.
-
-    ``409`` when there is no plan to accept: a thread with an empty task list has produced
-    nothing to agree to, and raising the level on the strength of it would be granting on
-    the basis of a document that does not exist. (A locked vault also reads as no plan;
-    the level stays where it is, which is the right way for that to fail.)
+    The backfill half of ``plan.updated``, and the same reasoning as the task list above:
+    a reload has no stream to replay, and a plan awaiting approval is the last thing that
+    should disappear because the operator refreshed the page. ``null`` rather than a 404 —
+    "this thread has no plan" is the ordinary state of nearly every thread, not a miss.
     """
     await _require_owned(request, conversation_id)
-    items = await deps.conversation_plans(request).items(OPERATOR_ID, conversation_id)
-    if not items:
-        raise HTTPException(status_code=409, detail="there is no plan to accept")
-    level = (body or PlanAccept()).level
-    stored = await deps.store(request).set_permission_level(conversation_id, level)
-    return PlanAccepted(permission_level=stored, prompt=accepted_plan_prompt(items))
+    plan = await deps.plan_mode(request).current(OPERATOR_ID, conversation_id)
+    return PlanOut(**plan.payload()) if plan is not None else None
 
 
 @router.delete("/{conversation_id}/grants/{tool_name}", status_code=204)

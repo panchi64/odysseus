@@ -1,0 +1,250 @@
+"""The agent's task list: sealed per-conversation persistence, an event on every mutation
+— including the bulk replace the harness's own stores leave silent — and the rename that
+keeps the harness's word for it out of the model's catalog.
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+from pydantic_ai_harness.planning import PlanItem as TaskItem
+from pydantic_ai_harness.planning import TaskStatus
+
+from core.db import init_db, make_engine
+from core.vault import Vault
+from models.task_list import ConversationTaskList
+from runs import Run, RunStream, TasksUpdated
+from services.task_list import ConversationTasks, ConversationTaskStore
+
+OWNER = "operator"
+
+
+@pytest.fixture
+async def tasks(tmp_path):
+    vault = Vault(tmp_path / "keyfile.json")
+    await vault.setup("correct horse battery staple")
+    engine = make_engine("sqlite:///:memory:")
+    init_db(engine)
+    return ConversationTasks(engine, vault)
+
+
+def _store(tasks: ConversationTasks, run: Run | None = None) -> ConversationTaskStore:
+    return ConversationTaskStore(tasks, owner_id=OWNER, conversation_id="conv-1", run=run)
+
+
+def _items(*contents: str) -> list[TaskItem]:
+    return [
+        TaskItem(id=f"t{i}", content=c, status=TaskStatus.pending) for i, c in enumerate(contents)
+    ]
+
+
+def _bodies(run: Run) -> list:
+    return [e.body for e in run.stream.replay()]
+
+
+async def _toolset_ctx(tasks: ConversationTasks | None, conversation_id: str | None):
+    """One built toolset plus a run context over it — the shape every tool test here
+    needs, and built the way the app builds it (once, shared) rather than per call."""
+    from pydantic_ai import RunContext
+    from pydantic_ai.models.test import TestModel
+    from pydantic_ai.usage import RunUsage
+
+    from core.container import ServiceContainer
+    from tools import RunDeps, build_agent_toolsets
+    from tools.tasks import tasks_toolset
+
+    toolset = build_agent_toolsets({"tasks": tasks_toolset()})[0]
+    run = Run(id=f"r-{conversation_id or 'solo'}", kind="chat", owner_id=OWNER, stream=RunStream())
+    caps = ServiceContainer()
+    if tasks is not None:
+        caps.add(tasks, as_type=ConversationTasks)
+    deps = RunDeps(run=run, owner_id=OWNER, caps=caps, conversation_id=conversation_id)
+    ctx = RunContext(deps=deps, model=TestModel(), usage=RunUsage())
+    return toolset, ctx
+
+
+async def test_tasks_round_trip_across_stores(tasks):
+    await _store(tasks).set_items(_items("read the file", "fix the bug"))
+
+    # A second store object is what a later turn (or a reload) gets — the list has to
+    # come back from storage, not from anything held in memory.
+    reloaded = await _store(tasks).get_items()
+    assert [i.content for i in reloaded] == ["read the file", "fix the bug"]
+
+
+async def test_the_bulk_replace_emits_too(tasks):
+    run = Run(id="r", kind="chat", owner_id=OWNER, stream=RunStream())
+    await _store(tasks, run).set_items(_items("one", "two"))
+
+    # `write` is the tool a model reaches for first and is event-silent in the harness's
+    # own stores; a panel built on events alone would sit empty through it.
+    events = [b for b in _bodies(run) if isinstance(b, TasksUpdated)]
+    assert len(events) == 1
+    assert [i["content"] for i in events[0].items] == ["one", "two"]
+
+
+async def test_each_granular_mutation_emits_the_whole_list(tasks):
+    run = Run(id="r", kind="chat", owner_id=OWNER, stream=RunStream())
+    store = _store(tasks, run)
+    await store.set_items(_items("one", "two"))
+    await store.update_item("t0", status=TaskStatus.completed)
+    await store.remove_item("t1")
+
+    events = [b for b in _bodies(run) if isinstance(b, TasksUpdated)]
+    assert len(events) == 3
+    # Full state every time, so applying an event on SSE replay is idempotent.
+    assert [i["status"] for i in events[1].items] == ["completed", "pending"]
+    assert [i["content"] for i in events[2].items] == ["one"]
+
+
+async def test_concurrent_updates_do_not_lose_one(tasks):
+    store = _store(tasks)
+    await store.set_items(_items("one", "two", "three"))
+
+    # A model can emit several task calls in one response, which Pydantic AI runs
+    # concurrently. Each is a read-modify-write of the whole list, so without
+    # serialization the later writer overwrites the earlier one's change.
+    await asyncio.gather(
+        store.update_item("t0", status=TaskStatus.completed),
+        store.update_item("t1", status=TaskStatus.in_progress),
+        store.update_item("t2", status=TaskStatus.cancelled),
+    )
+
+    final = {i.id: i.status for i in await store.get_items()}
+    assert final == {
+        "t0": TaskStatus.completed,
+        "t1": TaskStatus.in_progress,
+        "t2": TaskStatus.cancelled,
+    }
+
+
+async def test_seeding_replaces_the_list_and_announces_it(tasks):
+    """An approved plan's steps become the task list. It replaces rather than appends —
+    the plan supersedes whatever the thread was tracking — and it goes out on the same
+    event as a written one, so the panel cannot tell the two apart."""
+    run = Run(id="r-seed", kind="chat", owner_id=OWNER, stream=RunStream())
+    await _store(tasks).set_items(_items("stale", "older still"))
+
+    seeded = await tasks.seed(OWNER, "conv-1", ["first step", "second step"], run=run)
+
+    assert [i.content for i in seeded] == ["first step", "second step"]
+    assert all(i.status is TaskStatus.pending for i in seeded)
+    assert [i.content for i in await _store(tasks).get_items()] == ["first step", "second step"]
+    events = [b for b in _bodies(run) if isinstance(b, TasksUpdated)]
+    assert len(events) == 1
+
+
+async def test_one_shared_category_keeps_conversations_apart(tasks):
+    """The category object is built **once** for the whole app and shared by every
+    conversation, while each conversation owns its own list. The capability memoises its
+    store on first use, so a single shared capability hands thread B thread A's tasks."""
+    toolset, _ = await _toolset_ctx(tasks, "conv-a")
+
+    async def write(conversation_id: str, task: str) -> None:
+        _, ctx = await _toolset_ctx(tasks, conversation_id)
+        tools = await toolset.get_tools(ctx)
+        await toolset.call_tool(
+            "tasks_write", {"items": [TaskItem(content=task)]}, ctx, tools["tasks_write"]
+        )
+
+    await write("conv-a", "alpha task")
+    await write("conv-b", "beta task")
+
+    a = await ConversationTaskStore(tasks, owner_id=OWNER, conversation_id="conv-a").get_items()
+    b = await ConversationTaskStore(tasks, owner_id=OWNER, conversation_id="conv-b").get_items()
+    assert [i.content for i in a] == ["alpha task"]
+    assert [i.content for i in b] == ["beta task"]
+
+
+async def test_a_run_without_a_conversation_keeps_one_list():
+    """A run with no conversation still gets *one* list for its lifetime — a store rebuilt
+    per call would hand every call an empty list and nothing would accumulate."""
+    toolset, ctx = await _toolset_ctx(None, None)
+    tools = await toolset.get_tools(ctx)
+
+    await toolset.call_tool(
+        "tasks_write", {"items": [TaskItem(content="only task")]}, ctx, tools["tasks_write"]
+    )
+    read = await toolset.call_tool("tasks_read", {}, ctx, tools["tasks_read"])
+    assert "only task" in str(read)
+
+
+async def test_a_duplicate_id_is_refused(tasks):
+    store = _store(tasks)
+    await store.set_items(_items("one"))
+    # Two items sharing an id would shadow each other and make later updates land on
+    # one of them at random — the protocol requires this to raise.
+    with pytest.raises(ValueError):
+        await store.add_item(TaskItem(id="t0", content="again", status=TaskStatus.pending))
+
+
+async def test_updating_a_missing_task_reports_rather_than_writing(tasks):
+    store = _store(tasks)
+    await store.set_items(_items("one"))
+    assert await store.update_item("nope", status=TaskStatus.completed) is None
+    assert await store.remove_item("nope") is False
+    assert [i.content for i in await store.get_items()] == ["one"]
+
+
+async def test_the_task_list_is_sealed_at_rest(tasks):
+    from sqlmodel import Session, select
+
+    await _store(tasks).set_items(_items("something private"))
+
+    with Session(tasks._db) as session:  # noqa: SLF001 - asserting the stored bytes
+        row = session.exec(select(ConversationTaskList)).one()
+    # The list describes what the operator asked for, so it is content, not policy.
+    assert "something private" not in row.items_enc
+
+
+async def test_a_locked_vault_degrades_to_no_tasks(tasks):
+    tasks._vault.lock()  # noqa: SLF001 - simulating the locked state
+    store = _store(tasks)
+    # The list aids the turn; it is not the turn. A run that cannot read it carries on
+    # without one rather than failing.
+    assert await store.get_items() == []
+    await store.set_items(_items("dropped"))
+
+
+async def test_the_offered_surface_is_three_tools_under_our_own_names():
+    """The harness registers six under its own vocabulary; we offer three under ours. The
+    narrowing is an allowlist the harness validates by name, so a rename upstream must fail
+    loudly rather than quietly widening the surface again — and the renaming is what keeps
+    the word "plan" out of the one place the model actually reads."""
+    toolset, ctx = await _toolset_ctx(None, None)
+
+    tools = await toolset.get_tools(ctx)
+    assert set(tools) == {"tasks_write", "tasks_update_statuses", "tasks_read"}
+    # The definition carries the new name too, not just the key: the model is offered
+    # whatever `tool_def.name` says, and a key-only rename would be invisible to it.
+    assert {t.tool_def.name for t in tools.values()} == set(tools)
+    # Ours, not the harness's: its wording is written for the surface we just dropped and
+    # cross-references tools this catalog never offers.
+    descriptions = {name: tool.tool_def.description or "" for name, tool in tools.items()}
+    assert "add_task" not in " ".join(descriptions.values())
+    assert descriptions["tasks_read"].startswith("The current list")
+
+
+async def test_the_catalog_lists_the_same_names_the_model_is_offered(tasks):
+    """The operator's settings list is derived from the toolset's static `tools` registry,
+    and the enabled gate matches on the offered name. If the two spelled the category
+    differently, switching a tool off in settings would withhold nothing."""
+    from tools.tasks import tasks_toolset
+
+    toolset = tasks_toolset()
+    _, ctx = await _toolset_ctx(tasks, "conv-catalog")
+    offered = await toolset.get_tools(ctx)
+    assert set(toolset.tools) == set(offered)
+
+
+def test_the_rename_map_is_a_bijection_over_the_allowlist():
+    """A description keyed to a tool we no longer offer would be silently ignored, and a
+    tool offered without one would fall back to the harness's wording — so the sets are
+    asserted equal rather than each being checked alone. The inverse map is checked too:
+    a duplicate value there would make one of our names undispatchable."""
+    from tools.tasks import _DESCRIPTIONS, _LOCAL, _UPSTREAM
+
+    assert set(_DESCRIPTIONS) == set(_UPSTREAM.values())
+    assert len(_LOCAL) == len(_UPSTREAM)
+    assert {_LOCAL[upstream] for upstream in _UPSTREAM.values()} == set(_UPSTREAM)

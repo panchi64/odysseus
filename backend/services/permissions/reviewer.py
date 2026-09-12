@@ -264,7 +264,7 @@ def _prompt_text(part: UserPromptPart) -> str:
     with everything the chassis appended to it behind: attachment markers, image bytes, and
     the per-turn tail context (``agent/prelude.py``). That last one is the reason this is a
     positional read rather than a join. The tail context includes the agent's **own** task
-    list, written by the model through ``plan_write_plan``, and joining the list would hand
+    list, written by the model through ``tasks_write``, and joining the list would hand
     it to the reviewer inside the entry labelled ``operator`` — the exact forgery the JSON
     roles exist to prevent, except with the chassis supplying the label, so nothing would
     have to be forged. A task the model wrote after reading a poisoned page would then read

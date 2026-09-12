@@ -54,7 +54,7 @@ from .emit import ChassisEvent
 def contributor_id(provider: Callable[..., Any]) -> str:
     """The slug a provider's contribution is filed under — its own name, minus the
     suffix the convention gives it (``skill_catalog_instructions`` → ``skill_catalog``,
-    ``plan_context`` → ``plan``).
+    ``tasks_context`` → ``tasks``).
 
     Handed to ``agent.instructions(name=…)``, so it becomes the name the library stamps
     on the part this provider resolves to, the row ``agent/overhead.py`` reports, and the

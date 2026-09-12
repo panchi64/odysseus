@@ -449,10 +449,10 @@ export interface MessageInjected extends Base {
   type: "message.injected";
   message_id: string;
 }
-/** One task on the agent's plan for this conversation. `blocked` only occurs when the
- *  backend enables subtasks/dependencies; it is carried here so a future flip of that
- *  switch is a rendering choice rather than a crash. */
-export interface PlanItem {
+/** One task on the agent's running list for this conversation. `blocked` only occurs
+ *  when the backend enables subtasks/dependencies; it is carried here so a future flip
+ *  of that switch is a rendering choice rather than a crash. */
+export interface TaskItem {
   id: string;
   content: string;
   status: "pending" | "in_progress" | "completed" | "cancelled" | "blocked";
@@ -461,9 +461,36 @@ export interface PlanItem {
 }
 /** The agent's task list changed. Carries the whole list rather than a delta, so
  *  applying it is idempotent on replay and needs no ordering rules. */
+export interface TasksUpdated extends Base {
+  type: "tasks.updated";
+  items: TaskItem[];
+}
+/** The written plan a plan-mode turn produced, or its status changing.
+ *
+ *  The other half of the pair above, and a different thing entirely: that one is the
+ *  checklist the agent works through, this is the document the operator is being asked
+ *  to approve. `revision` counts up on every resubmission, which is what lets the panel
+ *  treat a revised plan as a new arrival rather than a redraw of the old one. */
 export interface PlanUpdated extends Base {
   type: "plan.updated";
-  items: PlanItem[];
+  title: string;
+  body: string;
+  steps: string[];
+  status: PlanStatus;
+  revision: number;
+}
+export type PlanStatus = "pending" | "approved" | "revising" | "denied";
+/** The thread's permission level changed from inside the run — `plan_enter` narrowing
+ *  it, or an approved plan raising it.
+ *
+ *  Load-bearing rather than informational. The client both holds the level and sends it
+ *  back on every message, so without this it would write the stale one straight over a
+ *  level the agent just moved. */
+export interface PermissionChanged extends Base {
+  type: "permission.changed";
+  level: string;
+  /** Why, in one line, for the transcript — "entering plan mode", "plan approved". */
+  reason: string;
 }
 /** A sub-agent was handed a piece of work.
  *
@@ -576,7 +603,9 @@ export type RunEvent =
   | MessageEdited
   | MessageWithdrawn
   | MessageInjected
+  | TasksUpdated
   | PlanUpdated
+  | PermissionChanged
   | SubagentStarted
   | SubagentProgress
   | SubagentCompleted

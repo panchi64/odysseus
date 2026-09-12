@@ -10,8 +10,10 @@ export {
   type ContextSegment,
   type ContextWindow,
   type LastRequestUsage,
-  type PlanItem,
+  type PlanStatus,
+  type PlanUpdated,
   type RunEvent,
+  type TaskItem,
   type RunMetrics,
 } from "./events";
 export {

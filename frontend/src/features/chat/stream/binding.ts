@@ -28,12 +28,13 @@
 
 import { createEffect } from "solid-js";
 import { reconcile, type SetStoreFunction } from "solid-js/store";
-import type { PlanItem } from "~/lib/stream";
-import { fetchPlan } from "../data/conversations";
+import type { TaskItem } from "~/lib/stream";
+import { fetchPlan, fetchTasks } from "../data/conversations";
 import type {
   ChatMessage,
   ContextUsage,
   ConversationStats,
+  PlanDocument,
   ViewSnapshotRef,
 } from "../model";
 import type { FoldState } from "./fold";
@@ -62,7 +63,8 @@ export interface BindingDeps {
   setUsage: (usage: ContextUsage | null) => void;
   setStats: (stats: ConversationStats | null) => void;
   setSnapshots: (snapshots: ViewSnapshotRef[]) => void;
-  setPlan: (items: PlanItem[]) => void;
+  setTasks: (items: TaskItem[]) => void;
+  setPlan: (plan: PlanDocument | null) => void;
   /** The loaded thread's reconstructed window/readout/snapshot state, if the caller
    *  has any — a new conversation has none. */
   initialContext?: () => ContextUsage | null | undefined;
@@ -113,25 +115,48 @@ export function createThreadBinding(deps: BindingDeps): void {
     // Seed the git-style snapshot history from the loaded thread (empty for a new
     // conversation); the live `view.snapshot` event appends to it from here.
     deps.setSnapshots(k === null ? [] : (deps.initialSnapshots?.() ?? []));
-    // The plan is owned by the backend and survives reloads, so a thread switch clears
-    // the old one and refetches rather than carrying the previous thread's list over.
-    deps.setPlan([]);
+    // Both are owned by the backend and survive reloads, so a thread switch clears the
+    // old thread's and refetches rather than carrying either over.
+    deps.setTasks([]);
+    deps.setPlan(null);
     if (k === null) return;
-    // Snapshot the live-update counter: opening a thread whose run is mid-turn races
-    // the backfill against `plan.updated`, and the fetch answers with pre-mutation
-    // state. Without this the slower fetch wins and the panel goes stale until the
-    // next mutation — which may never come.
-    const seenAtRequest = deps.state.planRevision;
-    void fetchPlan(k)
-      .then((items) => {
-        // Drop it if the operator has since left the thread, or the stream already
-        // said something newer.
-        if (deps.key() === k && deps.state.planRevision === seenAtRequest)
-          deps.setPlan(items);
-      })
-      .catch(() => {
-        // The panel is an aid, not the transcript — a failed backfill leaves it
-        // empty and the next `plan.updated` fills it in.
-      });
+    backfill(deps, k, "tasksRevision", fetchTasks, deps.setTasks);
+    backfill(deps, k, "planRevision", fetchPlan, deps.setPlan);
   }
+}
+
+/** Re-seed one backend-owned surface from REST, unless the stream got there first.
+ *
+ * The counter snapshot is the whole of it. Opening a thread whose run is mid-turn races
+ * the backfill against the live event, and the fetch answers with pre-mutation state —
+ * without this the slower answer wins and the panel is stale until a mutation that may
+ * never come. Each surface counts its own updates (`FoldState`), so a plan arriving does
+ * not make the task-list backfill think it had been overtaken.
+ *
+ * Generic because there are two of these and they differ only in which counter, which
+ * fetch and which setter — and a second hand-written copy of a race guard is a race guard
+ * that will be fixed in one place and not the other.
+ */
+function backfill<T>(
+  deps: BindingDeps,
+  conversationId: string,
+  counter: "tasksRevision" | "planRevision",
+  fetch: (id: string) => Promise<T>,
+  apply: (value: T) => void,
+): void {
+  const seenAtRequest = deps.state[counter];
+  void fetch(conversationId)
+    .then((value) => {
+      // Drop it if the operator has since left the thread, or the stream already said
+      // something newer.
+      if (
+        deps.key() === conversationId &&
+        deps.state[counter] === seenAtRequest
+      )
+        apply(value);
+    })
+    .catch(() => {
+      // The panel is an aid, not the transcript — a failed backfill leaves it empty and
+      // the next event fills it in.
+    });
 }

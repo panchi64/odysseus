@@ -40,9 +40,10 @@ nothing in them to weigh. It is the one place where a level's delegation resolve
 a model, and the review row says so in those words rather than reporting it as a review.
 
 There is exactly one exemption in the other direction, and it is here rather than at a
-call site because both halves of the enforcement need it: the model's own task list is
-writable at every level (:data:`PLANNING_TOOLS`), since a read-only turn whose only
-possible ending is a written plan cannot be made to ask permission to write one.
+call site because both halves of the enforcement need it: the model's own task list and the
+tools that move a thread in and out of plan mode are reachable at every level
+(:data:`PLANNING_TOOLS`), since a read-only turn whose only possible ending is a submitted
+plan cannot be made to ask permission to reach the tool that submits one.
 """
 
 from __future__ import annotations
@@ -220,20 +221,29 @@ def stricter_permission(a: str, b: str) -> PermissionLevel:
     )
 
 
-# The Planning toolset — permitted at every level, whatever its ceiling says. A read-only
-# turn exists to end in a plan, so a level that made the model ask before recording what it
-# had decided would leave it no way to finish; and a level that asks before *acting* has no
-# business interrupting the model's own scratchpad. The whole surviving surface is listed
-# rather than the writes alone, so the exemption reads as "the task list" and a reader does
-# not have to work out which half of it needed naming. The names are literals for the
-# reason every other tool-name set in `services/` is (`tools/` sits above it in the
-# dependency order), and `tests/test_tool_sensitivity.py` pins them against the live
-# catalog.
+# The two planning surfaces — permitted at every level, whatever their ceiling says.
+#
+# The **task list** is the model's own scratchpad: a level that asks before *acting* has no
+# business interrupting it, and a read-only turn that could not record what it had worked
+# out would have no way to finish. The **plan tools** are how a Plan-level turn ends at all:
+# `plan_enter` only ever narrows what the thread may do, `plan_read` reaches nothing, and
+# `plan_submit` — the one that raises the level — is held by its own `requires_approval`
+# marking rather than by this gate, so the operator still decides. Withholding it here
+# instead would leave Plan with no exit and the exemption is what makes the mode work.
+#
+# The whole surviving surface is listed rather than the writes alone, so the exemption reads
+# as "the two planning surfaces" and a reader does not have to work out which half of it
+# needed naming. The names are literals for the reason every other tool-name set in
+# `services/` is (`tools/` sits above it in the dependency order), and
+# `tests/test_tool_sensitivity.py` pins them against the live catalog.
 PLANNING_TOOLS = frozenset(
     {
-        "plan_read_plan",
-        "plan_update_task_statuses",
-        "plan_write_plan",
+        "plan_enter",
+        "plan_read",
+        "plan_submit",
+        "tasks_read",
+        "tasks_update_statuses",
+        "tasks_write",
     }
 )
 

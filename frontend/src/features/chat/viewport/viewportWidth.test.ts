@@ -82,7 +82,7 @@ describe("the floor the open set imposes", () => {
   });
 
   test("a strip imposes nothing — only panels are tiled", () => {
-    expect(floorFor(["plan"])).toBe(320);
+    expect(floorFor(["tasks"])).toBe(320);
   });
 
   test("the widest open panel sets it", () => {

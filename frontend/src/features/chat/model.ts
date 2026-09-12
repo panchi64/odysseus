@@ -612,7 +612,7 @@ export const PERMISSION_LEVELS: readonly PermissionLevelSpec[] = [
   {
     id: "plan",
     label: "Plan",
-    description: "Read only. Ends in a plan for you to accept.",
+    description: "Read only. Ends in a plan for you to approve.",
   },
   {
     id: "manual",
@@ -691,7 +691,29 @@ export interface ApprovalDecision {
    *  re-prompted for the rest of the conversation; "once" (default) is this
    *  call only. Only acted on by the backend when `approved` is true. */
   scope?: "once" | "conversation";
+  /** Which kind of no. Read only when `approved` is false, and it changes nothing about
+   *  what runs — both stop the call — only what the model is told happened: "deny" is a
+   *  refusal, "revise" (default "deny") is a request for a different version of the same
+   *  act. Generic rather than plan-specific, though a submitted plan is where it earns
+   *  its keep. */
+  intent?: "deny" | "revise";
 }
+
+/** The written plan a plan-mode turn submitted — the document, not the checklist.
+ *
+ *  `revision` counts up on every resubmission, which is how the panel tells a revised
+ *  plan (a fresh arrival, worth opening for) from the same plan re-rendering. */
+export interface PlanDocument {
+  title: string;
+  body: string;
+  steps: string[];
+  status: PlanStatus;
+  revision: number;
+}
+
+/** Where a plan stands. `pending` is the only one waiting on the operator; `revising`
+ *  means they asked for changes and the agent is writing the next version. */
+export type PlanStatus = "pending" | "approved" | "revising" | "denied";
 
 /** A live conversation-scoped auto-approval grant — the operator's visible + revocable
  *  record of what auto-approves for the rest of the thread. The TTL is backend-owned and

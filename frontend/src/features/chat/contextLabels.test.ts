@@ -40,6 +40,6 @@ describe("a slug becomes a label without a registry to maintain", () => {
     // to work out that "Skills · ~4k" in the popover and the injected block on the rail
     // are the same block seen from two distances.
     expect(segmentLabel("skill_catalog")).toBe("Skills");
-    expect(segmentLabel("plan")).toBe("Plan reminder");
+    expect(segmentLabel("tasks")).toBe("Task list");
   });
 });

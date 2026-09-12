@@ -97,17 +97,30 @@ export const isSurfaceId = (id: string): id is SurfaceId =>
   Object.prototype.hasOwnProperty.call(SURFACE_BY_ID, id);
 
 /**
- * Drop surfaces a persisted layout names that the registry no longer has.
+ * Drop surfaces a persisted layout names that the registry no longer files the same way.
  *
- * A layout outlives the code that wrote it — it lives in localStorage, and a surface
- * can be renamed or removed between one session and the next. Reading one back has to
- * be total: an unknown id is dropped rather than rendered as a pane with no renderer,
- * which is the one failure a build cannot see.
+ * A layout outlives the code that wrote it — it lives in localStorage, and a surface can
+ * be renamed, removed, or **reshaped** between one session and the next. Reading one back
+ * has to be total: an unknown id is dropped rather than rendered as a pane with no
+ * renderer, which is the one failure a build cannot see.
+ *
+ * The shape check is the second half of that, and it is not hypothetical: `plan` was a
+ * strip and is now a panel, so every layout written before that names it in the strip
+ * list. Rendering a document in a row of an eight-row strip is not a crash, which is
+ * exactly why it needs catching here — it would simply look broken. Dropped rather than
+ * moved, because a surface the operator had open is one they can reopen, and guessing
+ * where in the panel region it should land is a worse answer than the header button.
  */
 export function pruneLayout(layout: ViewportLayout): ViewportLayout {
   let next = layout;
   for (const id of tree.surfacesOf(layout)) {
-    if (!isSurfaceId(id)) next = tree.closeSurface(next, id);
+    if (!isSurfaceId(id)) {
+      next = tree.closeSurface(next, id);
+      continue;
+    }
+    const filedAsStrip = layout.strips.includes(id);
+    if (filedAsStrip !== (shapeOf(id) === "strip"))
+      next = tree.closeSurface(next, id);
   }
   return next;
 }

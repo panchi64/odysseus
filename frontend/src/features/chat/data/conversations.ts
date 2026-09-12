@@ -13,12 +13,13 @@
 import { createResource, createSignal, type Resource } from "solid-js";
 import { api } from "~/lib/api";
 import { sessionMode } from "~/lib/modes";
-import type { PlanItem } from "~/lib/stream";
+import type { TaskItem } from "~/lib/stream";
 import {
   permissionLevel,
   type ApprovalGrant,
   type ChatSession,
   type CompactionState,
+  type PlanDocument,
 } from "../model";
 import {
   deriveTitle,
@@ -154,12 +155,24 @@ export async function fetchGrants(
 
 /** The agent's task list for a thread.
  *
- *  The list also arrives live on `plan.updated`, but a client opening or reloading a
+ *  The list also arrives live on `tasks.updated`, but a client opening or reloading a
  *  conversation has no stream to replay — this is how the panel starts from the truth
  *  instead of staying empty until the next mutation.
  */
-export async function fetchPlan(conversationId: string): Promise<PlanItem[]> {
-  return api.get<PlanItem[]>(`/conversations/${conversationId}/plan`);
+export async function fetchTasks(conversationId: string): Promise<TaskItem[]> {
+  return api.get<TaskItem[]>(`/conversations/${conversationId}/tasks`);
+}
+
+/** The written plan a thread is working to, or null where it has none.
+ *
+ *  The backfill half of `plan.updated`, for the same reason as the list above — and
+ *  `null` rather than a 404, because having no plan is the ordinary state of nearly
+ *  every thread rather than a miss.
+ */
+export async function fetchPlan(
+  conversationId: string,
+): Promise<PlanDocument | null> {
+  return api.get<PlanDocument | null>(`/conversations/${conversationId}/plan`);
 }
 
 /** Open (or bring forward) this thread's agent browser — a real Chromium window on the

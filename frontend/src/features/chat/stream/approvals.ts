@@ -49,12 +49,25 @@ export interface ApprovalDeps {
   reconcileStaleDecision: () => Promise<void>;
 }
 
+/** The tool whose approval is a submitted plan. Answered in the plan panel rather than
+ *  the dock — a document is read at the width of a panel, not in the composer's slot —
+ *  so it is split out of `approvals` below and rejoins the same single submission. */
+export const PLAN_SUBMIT_TOOL = "plan_submit";
+
 /** What the live turn is parked on, for the dock that takes over the composer. `null`
  *  when nothing is — which is what puts the composer back. */
 export interface Park {
   /** The message the park belongs to; every submit is addressed to its run. */
   messageId: string;
   approvals: Approval[];
+  /** A submitted plan awaiting an answer, held apart from `approvals` because a
+   *  different surface renders it. Everything else about it is identical — same park,
+   *  same single resume — and the dock still refuses to submit until it is decided,
+   *  because the run resumes on one body covering every parked call.
+   *
+   *  In practice it is never accompanied: plan mode withholds every tool that could
+   *  defer, so a park holding this holds nothing else. The code does not rely on that. */
+  planApproval: Approval | null;
   questions: QuestionBlock["question"][];
   /** True once a submitted decision for this park 409'd. The dock stays up, inert and
    *  explained, until the refetch reconciles — putting the composer back on a 409 would
@@ -107,18 +120,25 @@ export function createApprovalOps(deps: ApprovalDeps): ApprovalOps {
     if (!live) return null;
     const approvals: Approval[] = [];
     const questions: QuestionBlock["question"][] = [];
+    let planApproval: Approval | null = null;
     for (const b of live.blocks ?? []) {
-      if (b.kind === "approval") approvals.push(b.approval);
+      if (b.kind === "approval")
+        if (b.approval.name === PLAN_SUBMIT_TOOL) planApproval = b.approval;
+        else approvals.push(b.approval);
       else if (b.kind === "question") questions.push(b.question);
     }
-    if (!approvals.length && !questions.length) return null;
+    if (!approvals.length && !questions.length && !planApproval) return null;
     return {
       messageId: live.id,
       approvals,
+      planApproval,
       questions,
       // One flag for the park, not one per call: the whole batch resumes on one
       // submission, so a 409 stales all of it at once.
-      stale: approvals.some((a) => a.stale) || questions.some((q) => q.stale),
+      stale:
+        approvals.some((a) => a.stale) ||
+        questions.some((q) => q.stale) ||
+        Boolean(planApproval?.stale),
     };
   });
 

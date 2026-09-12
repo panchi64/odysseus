@@ -40,7 +40,7 @@ from services.modes import DEFAULT_MODE
 from services.notifications import NotificationService
 from services.offline import OfflineModeService
 from services.permissions import DEFAULT_PERMISSION
-from services.plans import ConversationPlans
+from services.plan_mode import PlanMode
 from services.projects import ProjectStore, WorktreeManager, visible_project_ids
 from services.registry import ModelRegistry
 from services.reindex import EmbeddingReindexer
@@ -51,6 +51,7 @@ from services.searxng import ManagedSearxng
 from services.secret_vault import SecretVaultService
 from services.settings_store import SettingsStore
 from services.skills import SkillStore
+from services.task_list import ConversationTasks
 from services.tool_policy import CategoryAvailability, effective_disabled_tools
 from services.uploads import UploadStore
 from services.webfetch import BrowserFetcher, ManagedBrowser
@@ -176,8 +177,12 @@ def notifications(request: Request) -> NotificationService:
     return request.app.state.notifications
 
 
-def conversation_plans(request: Request) -> ConversationPlans:
-    return request.app.state.conversation_plans
+def conversation_tasks(request: Request) -> ConversationTasks:
+    return request.app.state.conversation_tasks
+
+
+def plan_mode(request: Request) -> PlanMode:
+    return request.app.state.plan_mode
 
 
 def approval_grants(request: Request) -> ApprovalGrantStore:

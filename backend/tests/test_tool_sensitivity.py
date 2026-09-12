@@ -156,12 +156,16 @@ class TestPlanNarrowsTheCatalog:
         withheld = permission_disabled_tools("plan")
         assert not withheld & SENSITIVITY_CLASSES[Sensitivity.READ]
 
-    def test_plan_keeps_the_plan_writes_it_ends_with(self):
+    def test_plan_keeps_the_two_surfaces_it_ends_with(self):
         # The one exemption. A read-only turn that could not record what it decided would
-        # have no way to end.
+        # have no way to end — and one that could not reach `plan_submit` would have no
+        # way *out*, since that call is the only thing that ends this level.
         withheld = permission_disabled_tools("plan")
         assert not withheld & PLANNING_TOOLS
-        assert "plan_read_plan" not in withheld
+        # Named rather than left to the set alone: a rename that emptied `PLANNING_TOOLS`
+        # would satisfy the line above while withholding everything it protects.
+        assert "plan_submit" not in withheld
+        assert "tasks_write" not in withheld
 
     def test_the_exemption_is_not_a_no_op(self):
         # The set names the whole task list, and its writes are what the rank rule would
@@ -186,12 +190,20 @@ class TestPlanNarrowsTheCatalog:
 
 
 class TestWhatAPlanTurnActuallySees:
-    async def test_the_agent_is_offered_reads_and_the_plan_and_nothing_else(self):
+    async def test_the_agent_is_offered_reads_and_both_planning_surfaces(self):
         # Through the composed toolset stack a real run resolves, not a re-derivation of
         # the rule: a withheld tool is one the model can neither see nor invoke.
         visible = await _agent_visible(permission_disabled_tools("plan"))
         assert {"files_read_file", "web_search", "corpus_retrieve"} <= visible
-        assert {"plan_write_plan", "plan_read_plan"} <= visible
+        # Its own scratchpad, and the way out of the level. `plan_submit` above all: a
+        # Plan turn that could not reach it would have no ending at all.
+        assert {"tasks_write", "tasks_read"} <= visible
+        assert {"plan_enter", "plan_read", "plan_submit"} <= visible
+        # And the question. The Plan-level brief tells the model to ask rather than assume
+        # where a request is ambiguous (`prompts/levels.py`) — this is the level where
+        # asking is cheapest and a guess is most expensive — so the tool it is told to
+        # reach for has to survive the narrowing that defines the level.
+        assert "builtin_ask_user" in visible
         assert not {"files_write_file", "code_execute", "mail_send"} & visible
 
     async def test_a_plan_turn_carries_fewer_schemas_than_a_full_one(self):

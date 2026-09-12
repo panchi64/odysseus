@@ -127,6 +127,15 @@ export function mainChat(): MainChat {
         projectId: codeProjectId,
         // Read on every send — the level is the one binding fact that moves.
         permission,
+        // ...and it can now move from the *other* end too: `plan_enter` narrows it and
+        // an approved plan raises it, both from inside the run. Seating it here is what
+        // stops the next send from writing the level the control was still holding back
+        // over the one the thread is actually at. Never provisional — this is the thread
+        // saying so, not a placeholder for a value still in flight.
+        onPermissionChanged: (level) => {
+          setPermission(level);
+          setPermissionPending(false);
+        },
       },
     );
     // Opening a thread points the client at what that thread *is*: its mode moves the

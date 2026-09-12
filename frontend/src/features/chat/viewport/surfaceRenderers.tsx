@@ -23,6 +23,7 @@ import { AgentsSurface } from "../components/AgentsSurface";
 import { DiffSurface } from "../components/DiffSurface";
 import { FilesSurface } from "../components/FilesSurface";
 import { PlanSurface } from "../components/PlanSurface";
+import { TasksSurface } from "../components/TasksSurface";
 import { ViewportPanel } from "../components/ViewportPanel";
 import type { ChatViewport } from "../useChatViewport";
 import { SURFACE_BY_ID, type SurfaceId } from "./surfaces";
@@ -40,15 +41,22 @@ export const SURFACE_RENDERERS: Record<
   SurfaceId,
   (ctx: SurfaceContext) => JSX.Element
 > = {
-  plan: (ctx) => {
-    const spec = SURFACE_BY_ID.plan;
+  tasks: (ctx) => {
+    const spec = SURFACE_BY_ID.tasks;
     return (
-      <PlanSurface
-        items={ctx.viewport.plan}
+      <TasksSurface
+        items={ctx.viewport.tasks}
         maxRows={spec.shape === "strip" ? spec.maxRows : 8}
       />
     );
   },
+  plan: (ctx) => (
+    <PlanSurface
+      plan={ctx.viewport.plan}
+      park={ctx.viewport.park}
+      onSubmit={ctx.viewport.resolvePlan}
+    />
+  ),
   agents: (ctx) => {
     const spec = SURFACE_BY_ID.agents;
     return (

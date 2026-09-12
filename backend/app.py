@@ -50,12 +50,13 @@ from services.conversations import ConversationStore
 from services.credential_store import CredentialStore
 from services.egress import EgressPolicy
 from services.embeddings import RegistryEmbedder
-from services.plans import ConversationPlans
+from services.plan_mode import PlanMode
 from services.registry import ModelRegistry
 from services.sandbox import SandboxSessionManager, detect_sandbox, shutdown_confinement
 from services.sandbox.names import ContainerNames
 from services.sealing import seal_legacy_column
 from services.settings_store import SettingsStore
+from services.task_list import ConversationTasks
 from services.tool_policy import AvailabilityCheck, CategoryAvailability
 from tools import (
     CORE_GATED_TOOLS,
@@ -64,8 +65,8 @@ from tools import (
     core_categories,
 )
 from tools.describe import category_names
-from tools.plan import plan_context
 from tools.repo import repo_instructions
+from tools.tasks import tasks_context
 
 logger = logging.getLogger(__name__)
 
@@ -315,11 +316,22 @@ async def _wire(app: FastAPI, settings: Settings, lifecycle: LifecycleRegistry) 
     # `resolve_background` rule titling and verification use, so a delegate is cheap by
     # construction rather than by a second policy.
     agent_capabilities.add(app.state.models)
-    # The agent's task list: core-owned like the sandbox, because the `plan` category is a
+    # The agent's task list: core-owned like the sandbox, because the `tasks` category is a
     # core category rather than a feature manifest's.
-    app.state.conversation_plans = ConversationPlans(engine, vault)
-    container.add(app.state.conversation_plans)
-    agent_capabilities.add(app.state.conversation_plans)
+    app.state.conversation_tasks = ConversationTasks(engine, vault)
+    container.add(app.state.conversation_tasks)
+    agent_capabilities.add(app.state.conversation_tasks)
+    # Plan mode, beside it and for the same reason. It is handed the conversation store and
+    # the task list rather than the tools reaching for either: approving a plan moves the
+    # thread's permission level and seeds its tasks, and this is the only seam through which
+    # a tool may do either. The whole `ConversationStore` deliberately stays out of the
+    # agent's capability bag — a tool that could read every thread is not a capability
+    # anything here needs.
+    app.state.plan_mode = PlanMode(
+        engine, vault, conversations=app.state.conversations, tasks=app.state.conversation_tasks
+    )
+    container.add(app.state.plan_mode)
+    agent_capabilities.add(app.state.plan_mode)
 
     # Feature manifests build last, in dependency (`after`) order — everything
     # hand-wired above is the core they resolve from the container. What a build
@@ -423,13 +435,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # registers, because availability is a fact about the service rather than about one
     # group of verbs over it.
     availability_claims: list[tuple[str, AvailabilityCheck]] = []
-    # `repo_instructions` is core, not a manifest's, for the same reason the plan reminder
-    # below is: the categories it belongs to ship with the harness core ones. It returns ""
-    # outside a worktree mode, so a sandbox thread pays nothing for it.
+    # `repo_instructions` is core, not a manifest's, for the same reason the task-list
+    # reminder below is: the categories it belongs to ship with the harness core ones. It
+    # returns "" outside a worktree mode, so a sandbox thread pays nothing for it.
     instruction_providers: list[InstructionProvider] = [repo_instructions]
-    # The plan reminder is core, not a manifest's: the `plan` category ships with the
+    # The task-list reminder is core, not a manifest's: the `tasks` category ships with the
     # harness core categories, so its tail context has to be seeded here alongside them.
-    prompt_context_providers: list[PromptContextProvider] = [plan_context]
+    prompt_context_providers: list[PromptContextProvider] = [tasks_context]
     for manifest in enabled_manifests:
         for category, factory in manifest.toolsets:
             if category in tool_categories:

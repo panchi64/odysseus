@@ -20,9 +20,30 @@ from agent.gating import GrantApproved
 from routes import deps
 from runs import Run, RunStatus, parse_last_event_id, sse_response
 from services.approval_grants import ONCE_ONLY_TOOLS, covered_by_grant, grant_scopes
+from services.plan_mode import PLAN_SUBMIT_TOOL
 from services.settings_store import get_inactivity_timeout, get_wall_clock_timeout
 
 router = APIRouter(prefix="/runs", tags=["runs"])
+
+
+def refusal_message(intent: str, written: str | None) -> str:
+    """What the model is told in place of the result, when the operator said no.
+
+    The two are not the same instruction and a model handed the wrong one wastes the turn:
+    a denial that read as "try again" produces a second attempt at something already
+    refused, and a revision request that read as a flat no produces an apology and a stop.
+    The operator's own words are quoted where they wrote any; the framing around them is
+    what the intent decides.
+    """
+    if intent == "revise":
+        detail = f": {written}" if written else ", without saying what to change"
+        return (
+            f"The operator did not approve this and asked for a different version of it"
+            f"{detail}. Revise it and propose again — do not carry on as though it had "
+            "been approved, and do not abandon the work."
+        )
+    detail = f" {written}" if written else ""
+    return f"The operator denied this action.{detail}"
 
 
 class RunView(BaseModel):
@@ -171,6 +192,14 @@ class ApprovalDecision(BaseModel):
     # "conversation" records an auto-approval grant for this tool so the same call
     # isn't re-prompted for the rest of the conversation; "once" is this call only.
     scope: Literal["once", "conversation"] = "once"
+    # Which kind of no this is. Read only when `approved` is False, and it changes nothing
+    # about what runs — both stop the call — only what the model is told happened. "deny"
+    # is the operator refusing the act; "revise" is them asking for a different version of
+    # it, which is a materially different instruction and the one a model most often gets
+    # wrong on a bare refusal. Generic rather than plan-specific: any deferred call can be
+    # sent back for another attempt, and the surface that most needs it (a submitted plan)
+    # is only the first to offer it.
+    intent: Literal["deny", "revise"] = "deny"
 
 
 class QuestionReply(BaseModel):
@@ -353,8 +382,22 @@ async def approve_run(
                         to_grant.append((granted_call.tool_name, scope))
         else:
             decisions[decision.tool_call_id] = ToolDenied(
-                message=decision.message or "The operator denied this action."
+                message=refusal_message(decision.intent, decision.message)
             )
+            # A refused plan is the one refusal that leaves a record behind: the document
+            # is still on screen, and it must not go on saying it is waiting for an answer
+            # that has arrived. The status is all that moves — the plan itself stays, since
+            # a revision is written against it and a rejection is worth still being able to
+            # read.
+            if call_by_id[decision.tool_call_id].tool_name == PLAN_SUBMIT_TOOL and (
+                conversation := parked.conversation_id
+            ):
+                await deps.plan_mode(request).settle(
+                    deps.OPERATOR_ID,
+                    conversation,
+                    "revising" if decision.intent == "revise" else "denied",
+                    run=run,
+                )
 
     # The approval is decided now, one way or another (approved, denied, or already
     # grant-covered) — resolve the park's notification here rather than waiting for the

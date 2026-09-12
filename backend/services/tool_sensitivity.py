@@ -127,7 +127,9 @@ SENSITIVITY_CLASSES: Mapping[Sensitivity, frozenset[str]] = {
             "mail_list_messages",
             "mail_read",
             "memory_recall",
-            "plan_read_plan",
+            # The plan this thread is working from — a record we wrote and the operator
+            # already read. Reading it reaches nothing.
+            "plan_read",
             "project_active",
             "project_list",
             "repo_inventory_agent_context",
@@ -136,6 +138,7 @@ SENSITIVITY_CLASSES: Mapping[Sensitivity, frozenset[str]] = {
             # and stopping one are execution; asking what it printed is not.
             "shell_check_command",
             "skills_open",
+            "tasks_read",
             # Retrieval over the network. The operator's machine and every service on it
             # are exactly as they were afterwards.
             "web_fetch",
@@ -153,10 +156,16 @@ SENSITIVITY_CLASSES: Mapping[Sensitivity, frozenset[str]] = {
             # it over `mail_reply`.
             "mail_draft_reply",
             "memory_remember",
-            "plan_update_task_statuses",
-            "plan_write_plan",
+            # Moving the thread's own permission level, and recording the plan that moves
+            # it. Both change a row this installation owns and the operator watches; what
+            # stops `plan_submit` raising the level unasked is its own approval marking,
+            # not this class (`tools/plan.py`).
+            "plan_enter",
+            "plan_submit",
             "skills_create",
             "skills_edit",
+            "tasks_update_statuses",
+            "tasks_write",
             # Killing a process this thread started. Nothing new runs and nothing outside
             # the workspace changes — the reach is the reach of the command that was
             # already approved into existence, and asking again to *end* it is asking the

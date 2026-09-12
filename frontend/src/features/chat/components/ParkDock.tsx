@@ -42,6 +42,12 @@ export function ParkDock(props: {
     answers?: QuestionAnswer[];
   }) => void | Promise<void>;
   onStop: () => void;
+  /** Whether a Plan panel is on screen to answer a submitted plan in. Set by the chat
+   *  room, which has one; **left unset by every host that does not** — a compare pane
+   *  has no viewport, and deferring to a panel that does not exist would leave the
+   *  operator a plan they can only Stop. Where it is unset the plan is decided here,
+   *  as an ordinary approval. */
+  planInPanel?: boolean;
 }): JSX.Element {
   const [decisions, setDecisions] = createSignal<ApprovalDecision[]>([]);
   const [allDecided, setAllDecided] = createSignal(false);
@@ -50,8 +56,28 @@ export function ParkDock(props: {
   );
   const [submitting, setSubmitting] = createSignal(false);
 
-  const hasApprovals = () => props.park.approvals.length > 0;
+  /** A submitted plan is answered in the Plan panel where there is one, because a
+   *  document is read at a panel's width and a decision docked at the far end of the
+   *  window from its subject puts the question in two places. */
+  const deferToPanel = () =>
+    Boolean(props.planInPanel) && Boolean(props.park.planApproval);
+
+  /** What this dock decides. The plan rejoins the list wherever no panel is holding
+   *  it — the park is one park either way, and it resumes on one body. */
+  const approvals = createMemo(() => {
+    const plan = props.park.planApproval;
+    return plan && !deferToPanel()
+      ? [...props.park.approvals, plan]
+      : props.park.approvals;
+  });
+
+  const hasApprovals = () => approvals().length > 0;
   const hasQuestions = () => props.park.questions.length > 0;
+  /** Nothing left for the dock to ask: the panel has the only decision in the park —
+   *  which is every time in practice, since plan mode withholds every other tool that
+   *  could defer. It stands down to its Stop control and points at the panel rather
+   *  than putting a second, emptier copy of the question under it. */
+  const planOnly = () => deferToPanel() && !hasApprovals() && !hasQuestions();
 
   /** Every question in the park answered — each with a selection or something written.
    *  The backend refuses a question answered with neither, so the button refuses first
@@ -104,6 +130,12 @@ export function ParkDock(props: {
             </Text>
           }
         >
+          <Show when={planOnly()}>
+            <Text variant="body" tone="bright">
+              A plan is waiting for you in the Plan panel.
+            </Text>
+          </Show>
+
           <Show when={hasQuestions()}>
             <Stack gap={4}>
               <For each={props.park.questions}>
@@ -124,7 +156,11 @@ export function ParkDock(props: {
 
           <Show when={hasApprovals()}>
             <ApprovalPanel
-              approvals={props.park.approvals}
+              approvals={approvals()}
+              // A plan decided in the dock is still a plan: the same three answers,
+              // and still no recurring act for a standing grant to stand for.
+              revisable={Boolean(props.park.planApproval)}
+              hideGrant={Boolean(props.park.planApproval)}
               onChange={(given, decided) => {
                 setDecisions(given);
                 setAllDecided(decided);
@@ -143,13 +179,17 @@ export function ParkDock(props: {
             >
               Stop
             </Button>
-            <Button
-              variant="primary"
-              disabled={!ready() || submitting()}
-              onClick={submit}
-            >
-              {submitting() ? "Sending…" : label()}
-            </Button>
+            {/* Nothing to submit when the panel owns the decision — a disabled button
+                beside a question asked somewhere else reads as a dead end. */}
+            <Show when={!planOnly()}>
+              <Button
+                variant="primary"
+                disabled={!ready() || submitting()}
+                onClick={submit}
+              >
+                {submitting() ? "Sending…" : label()}
+              </Button>
+            </Show>
           </Row>
         </Show>
       </Stack>

@@ -23,7 +23,7 @@ const LABELS: Record<string, string> = {
   external: "MCP & connectors",
   repo: "Project instructions",
   skill_catalog: "Skills",
-  plan: "Plan reminder",
+  tasks: "Task list",
   date: "Today's date",
   mode: "Mode posture",
   // The thread's second axis beside its mode, and the pair reads as a pair only if the

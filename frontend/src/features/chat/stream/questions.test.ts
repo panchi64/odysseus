@@ -135,6 +135,7 @@ describe("folding question.asked", () => {
       state: {
         maxFoldedSeq: 0,
         foldTarget: null,
+        tasksRevision: 0,
         planRevision: 0,
         activeRunId: null,
       },
@@ -142,7 +143,9 @@ describe("folding question.asked", () => {
       setMessages: (() => {}) as never,
       setSnapshots: () => {},
       setSubagents: () => {},
+      setTasks: () => {},
       setPlan: () => {},
+      setPermission: () => {},
       setUsage: () => {},
       setStats: () => {},
       setErrored: () => {},

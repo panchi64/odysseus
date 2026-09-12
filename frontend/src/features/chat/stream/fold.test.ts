@@ -26,6 +26,7 @@ function harness(seed: ChatMessage[] = []) {
   const state: FoldState = {
     maxFoldedSeq: 0,
     foldTarget: null,
+    tasksRevision: 0,
     planRevision: 0,
     activeRunId: "run-1",
   };
@@ -40,7 +41,9 @@ function harness(seed: ChatMessage[] = []) {
     setSubagents: (fn) => {
       subagents = fn(subagents);
     },
+    setTasks: () => {},
     setPlan: () => {},
+    setPermission: () => {},
     setUsage: () => {},
     setStats: () => {},
     setErrored: () => {},

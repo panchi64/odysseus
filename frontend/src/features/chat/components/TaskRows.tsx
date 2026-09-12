@@ -1,6 +1,6 @@
 import { createMemo, createSignal, For, Show, type JSX } from "solid-js";
 import { cx, Icon, Text } from "~/ui";
-import type { PlanItem } from "~/lib/stream";
+import type { TaskItem } from "~/lib/stream";
 
 /** Compact window: the readout shows at most this many rows — enough to see
  *  where work is and what comes next without pushing the transcript off screen. */
@@ -9,7 +9,7 @@ const WINDOW = 5;
 /** Status square (§6.7 list row, §4 semantic color): filled = done (nominal
  *  green) or running (info blue); empty + bordered = not started. Fill vs border
  *  carries the state in shape, so hue is never the only signal (§9). */
-const SQUARE: Record<PlanItem["status"], string> = {
+const SQUARE: Record<TaskItem["status"], string> = {
   completed: "bg-nominal",
   in_progress: "bg-info",
   pending: "border border-dim",
@@ -17,7 +17,7 @@ const SQUARE: Record<PlanItem["status"], string> = {
   blocked: "border border-alert",
 };
 
-const TONE: Record<PlanItem["status"], "dim" | "default" | "bright" | "alert"> =
+const TONE: Record<TaskItem["status"], "dim" | "default" | "bright" | "alert"> =
   {
     completed: "default",
     in_progress: "bright",
@@ -38,14 +38,14 @@ const fade = (distance: number) =>
         ? "opacity-50"
         : "opacity-30";
 
-/** The plan's headline numbers, derived once here and read by both the status
+/** The task list's headline numbers, derived once here and read by both the status
  *  strip (which shows them) and the rows below it. Cancelled tasks leave the
  *  denominator: the question the count answers is "how much is left to do", and a
  *  cancelled task is not left to do. */
-export function planSummary(items: PlanItem[]): {
+export function taskSummary(items: TaskItem[]): {
   done: number;
   total: number;
-  active: PlanItem | undefined;
+  active: TaskItem | undefined;
 } {
   return {
     done: items.filter((i) => i.status === "completed").length,
@@ -57,9 +57,9 @@ export function planSummary(items: PlanItem[]): {
 /** The agent's task list for this thread, as rows.
  *
  *  Shows a compact window around the frontier — the running task, else the next pending
- *  one, else the last item of a finished plan — so progress is legible at a glance with
+ *  one, else the last item of a finished list — so progress is legible at a glance with
  *  no click: green squares for done, blue for running, empty bordered squares for what's
- *  left. Longer plans fold to the window behind an explicit +N MORE control; expanding
+ *  left. Longer lists fold to the window behind an explicit +N MORE control; expanding
  *  lists every row.
  *
  *  The done/total count and the ACTIVE flag are *not* here — they live in the
@@ -67,16 +67,16 @@ export function planSummary(items: PlanItem[]): {
  *  what the strip's one-line summary can't say.
  *
  *  Presentation only: the backend owns the list and nothing here can change it. There is
- *  deliberately no edit affordance — the plan is the agent's account of its own work, and
+ *  deliberately no edit affordance — the list is the agent's account of its own work, and
  *  an operator edit would silently disagree with what the model reads back.
  */
-export function PlanRows(props: { items: () => PlanItem[] }): JSX.Element {
+export function TaskRows(props: { items: () => TaskItem[] }): JSX.Element {
   const [expanded, setExpanded] = createSignal(false);
 
   const items = () => props.items();
 
   // Where the work currently is: the running task, else the next pending one,
-  // else the last item (a finished plan reads from its end).
+  // else the last item (a finished list reads from its end).
   const frontier = createMemo(() => {
     const list = items();
     if (list.length === 0) return -1;

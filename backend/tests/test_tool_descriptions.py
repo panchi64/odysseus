@@ -98,7 +98,7 @@ async def test_no_schema_leaks_the_harnesss_subtasks_mode():
 
 
 async def test_the_plan_schema_offers_only_what_the_store_accepts():
-    write_plan = (await _offered())["plan_write_plan"].parameters_json_schema
+    write_plan = (await _offered())["tasks_write"].parameters_json_schema
     item = write_plan["$defs"]["PlanItem"]["properties"]
     assert "parent_id" not in item
     assert "depends_on" not in item
@@ -123,9 +123,11 @@ async def test_the_explanation_rule_is_stated_once_in_the_standing_brief():
 
 
 async def test_every_tool_named_as_leaking_is_one_the_catalog_offers():
-    """The strip is keyed by name, so a plan tool the allowlist stops registering leaves
-    a dead entry behind — and a dead entry is a test asserting over a tool no model will
-    ever see, which reads as coverage and is not."""
+    """The strip is keyed by name, so a task-list tool the allowlist stops registering
+    leaves a dead entry behind — and a dead entry is a test asserting over a tool no model
+    will ever see, which reads as coverage and is not. It is keyed by the name *we* give
+    the tool, not the harness's, so the rename in ``tools/tasks.py`` has to have reached
+    here too."""
     offered = await _offered()
     assert _SUBTASKS_LEAKED <= set(offered)
 
@@ -133,7 +135,7 @@ async def test_every_tool_named_as_leaking_is_one_the_catalog_offers():
 async def test_the_plan_schema_says_each_thing_once():
     """Every byte here ships on every request while the plan tools are loaded, and the
     def sits directly above the property it would be repeating."""
-    write_plan = (await _offered())["plan_write_plan"].parameters_json_schema
+    write_plan = (await _offered())["tasks_write"].parameters_json_schema
     item = write_plan["$defs"]["PlanItem"]
     assert "auto" not in item["description"].lower()
     assert "Auto-generated" in item["properties"]["id"]["description"]
@@ -193,7 +195,7 @@ _XML_DOCSTRING = (
 
 NAMES = {
     "browse": frozenset({"snapshot", "click", "tabs", "press_key"}),
-    "plan": frozenset({"write_plan", "read_plan"}),
+    "files": frozenset({"read_file", "find_files"}),
     "corpus": frozenset({"retrieve"}),
     "project": frozenset({"list"}),
 }
@@ -261,8 +263,8 @@ def test_prefix_references_rewrites_backticked_and_compound_names():
     )
     # Unbackticked, but compound: a snake_case identifier cannot be a word of English.
     assert (
-        prefix_references("Prefer this over write_plan.", NAMES, "plan")
-        == "Prefer this over plan_write_plan."
+        prefix_references("Prefer this over read_file.", NAMES, "files")
+        == "Prefer this over files_read_file."
     )
 
 
@@ -285,7 +287,7 @@ def test_prefix_references_rewrites_a_dotted_name_from_any_category():
 def test_prefix_references_is_idempotent():
     for text, category in (
         ("pass one back to `click`", "browse"),
-        ("Prefer this over write_plan.", "plan"),
+        ("Prefer this over read_file.", "files"),
         ("prefer ``corpus.retrieve``", "attachments"),
     ):
         once = prefix_references(text, NAMES, category)
@@ -305,9 +307,9 @@ def test_category_of_reads_the_namespaced_name():
 
 def test_strip_schema_leaks_only_touches_the_tools_it_names():
     schema = {"$defs": {"TaskStatus": {"enum": ["pending", "blocked"], "title": "TaskStatus"}}}
-    assert strip_schema_leaks("plan_update_task_statuses", schema)["$defs"]["TaskStatus"] == {
+    assert strip_schema_leaks("tasks_update_statuses", schema)["$defs"]["TaskStatus"] == {
         "enum": ["pending"],
-        "description": "Lifecycle status of a plan step.",
+        "description": "Lifecycle status of a task.",
     }
     assert strip_schema_leaks("browse_click", schema) == schema
     # The caller's schema is copied, never edited.

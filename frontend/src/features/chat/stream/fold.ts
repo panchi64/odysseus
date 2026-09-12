@@ -30,7 +30,8 @@
 import type { SetStoreFunction } from "solid-js/store";
 import { produce } from "solid-js/store";
 import { CONTEXT_OVERFLOW_AFTER_FOLD_DETAIL } from "~/lib/stream";
-import type { ContextWindow, PlanItem, RunEvent } from "~/lib/stream";
+import type { ContextWindow, RunEvent, TaskItem } from "~/lib/stream";
+import type { PermissionLevel, PlanDocument } from "../model";
 import { toast } from "~/ui";
 import {
   formatArgs,
@@ -68,8 +69,12 @@ export interface FoldState {
   /** The assistant message events currently fold onto — normally the placeholder the
    *  drive was started with, until a `message.injected` boundary retargets it. */
   foldTarget: string | null;
-  /** Bumped on every `plan.updated`. Plain counter, not a signal: its only job is to
+  /** Bumped on every `tasks.updated`. Plain counter, not a signal: its only job is to
    *  let an in-flight REST backfill notice the stream overtook it. */
+  tasksRevision: number;
+  /** The same, for `plan.updated`. Separate from the counter above because the two
+   *  arrive independently — one shared counter would make each backfill conclude the
+   *  stream had overtaken it whenever the *other* one moved. */
   planRevision: number;
   /** The run currently streaming, if any — stamped onto a bubble this fold opens. */
   activeRunId: string | null;
@@ -113,7 +118,12 @@ export interface FoldDeps {
   setMessages: SetStoreFunction<ChatMessage[]>;
   setSnapshots: (fn: (prev: ViewSnapshotRef[]) => ViewSnapshotRef[]) => void;
   setSubagents: (fn: (prev: SubagentRun[]) => SubagentRun[]) => void;
-  setPlan: (items: PlanItem[]) => void;
+  setTasks: (items: TaskItem[]) => void;
+  setPlan: (plan: PlanDocument | null) => void;
+  /** Re-seat the thread's level after the run moved it. Only `permission.changed` calls
+   *  this — an operator-chosen level never comes back through the fold, because the
+   *  client is where it came from. */
+  setPermission: (level: PermissionLevel) => void;
   setUsage: (context: ContextWindow | null) => void;
   setStats: (stats: ConversationStats | null) => void;
   setErrored: (errored: boolean) => void;
@@ -335,11 +345,30 @@ export function createFolder(
           b.review.correctness = ev.correctness ?? undefined;
         });
         break;
-      case "plan.updated":
+      case "tasks.updated":
         // Whole-list replace, not a merge: the event is full state, which is what makes
         // it idempotent when the stream is replayed from an earlier seq on reconnect.
+        state.tasksRevision += 1;
+        deps.setTasks(ev.items);
+        break;
+      case "plan.updated":
+        // The document, not the checklist. Same full-state reasoning; the counter is
+        // separate because the two arrive independently and a shared one would make each
+        // backfill think the other had overtaken it.
         state.planRevision += 1;
-        deps.setPlan(ev.items);
+        deps.setPlan({
+          title: ev.title,
+          body: ev.body,
+          steps: ev.steps,
+          status: ev.status,
+          revision: ev.revision,
+        });
+        break;
+      case "permission.changed":
+        // The level moved from inside the run. Seated as though it had been read off the
+        // thread, because that is what it now is: the row says so, and the composer must
+        // send this level rather than the one it was holding.
+        deps.setPermission(ev.level as PermissionLevel);
         break;
       case "subagent.started":
         // Conversation-scoped, like the plan and the version list above: a delegation is

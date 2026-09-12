@@ -1,12 +1,12 @@
 import { createMemo, createSignal, Show, type JSX } from "solid-js";
 import { compactCount, duration, pct } from "~/lib/format";
 import { MetaAction, Text, Tooltip } from "~/ui";
-import type { PlanItem } from "~/lib/stream";
+import type { TaskItem } from "~/lib/stream";
 import type { ConversationStats } from "../model";
 import { ConversationCompactionToggle } from "./ConversationCompactionToggle";
 import { ConversationGrants } from "./ConversationGrants";
 import { MetaSep } from "./MetaSep";
-import { planSummary, PlanRows } from "./PlanRows";
+import { taskSummary, TaskRows } from "./TaskRows";
 
 const tokens = (n: number) => n.toLocaleString("en-US");
 
@@ -27,8 +27,8 @@ function Segment(props: { hint: string; children: JSX.Element }): JSX.Element {
 }
 
 /** What the thread has cost, in one quiet line **under the composer**, plus how far the
- *  agent's plan has got, which tools it may call without asking again, and the thread's
- *  auto-compaction setting.
+ *  agent's task list has got, which tools it may call without asking again, and the
+ *  thread's auto-compaction setting.
  *
  *  It does **not** report what the stream is doing. It used to lead with a transport
  *  word — Streaming, Idle, Resyncing — and that was the line's worst inch: the
@@ -62,7 +62,7 @@ function Segment(props: { hint: string; children: JSX.Element }): JSX.Element {
  *  nobody reported that figure (an endpoint that sends no cache tokens, turns recorded
  *  before the stopwatch existed), and a `0%` cache hit would read as a broken cache
  *  rather than an unreported one. Same rule as the segments that resolve their own
- *  presence: the meter below its threshold, the plan with no tasks, the grants with none.
+ *  presence: the meter below its threshold, the empty task list, the grants with none.
  *
  *  Presentation only — every value is the backend's, rendered, never derived here. The
  *  averages and rates arrive already computed for exactly that reason. */
@@ -78,12 +78,12 @@ export function ConversationStatusStrip(props: {
   /** What the thread has cost — cumulative, backend-derived. */
   stats: () => ConversationStats | null | undefined;
   /** The agent's task list for this thread (backend-owned, read-only). */
-  plan: () => PlanItem[];
+  tasks: () => TaskItem[];
   /** Ticks when a grant may have changed, so the chips refetch. */
   grantsRevalidate: () => unknown;
 }): JSX.Element {
-  const [planOpen, setPlanOpen] = createSignal(false);
-  const summary = createMemo(() => planSummary(props.plan()));
+  const [tasksOpen, setTasksOpen] = createSignal(false);
+  const summary = createMemo(() => taskSummary(props.tasks()));
   // A thread that has run at all has counted at least one step. Guarding on the
   // object alone would render a row of zeroes for the beat before the first frame.
   const stats = createMemo(() => {
@@ -206,16 +206,16 @@ export function ConversationStatusStrip(props: {
 
         {/* The count and the ACTIVE state answer "how far along" on their own; the
             task text is what the operator opens when the answer is "not far". */}
-        <Show when={props.plan().length > 0}>
+        <Show when={props.tasks().length > 0}>
           <MetaSep />
           <MetaAction
-            active={planOpen()}
-            aria-expanded={planOpen()}
-            aria-label={planOpen() ? "Hide the plan" : "Show the plan"}
-            onClick={() => setPlanOpen((v) => !v)}
+            active={tasksOpen()}
+            aria-expanded={tasksOpen()}
+            aria-label={tasksOpen() ? "Hide the tasks" : "Show the tasks"}
+            onClick={() => setTasksOpen((v) => !v)}
             class="tabular-nums"
           >
-            Plan {summary().done}/{summary().total}
+            Tasks {summary().done}/{summary().total}
             {/* Info blue, not warn amber: a running task is live data — the same
                 meaning STREAMING carries at the head of the line. */}
             <Show when={summary().active}>
@@ -236,11 +236,11 @@ export function ConversationStatusStrip(props: {
       </div>
 
       {/* The rows open downward from the segment that discloses them. They sit
-          inside the same sticky dock, so opening the plan grows the dock rather
+          inside the same sticky dock, so opening the list grows the dock rather
           than scrolling the transcript out from under it. */}
-      <Show when={planOpen() && props.plan().length > 0}>
+      <Show when={tasksOpen() && props.tasks().length > 0}>
         <div class="pt-2">
-          <PlanRows items={props.plan} />
+          <TaskRows items={props.tasks} />
         </div>
       </Show>
     </Show>

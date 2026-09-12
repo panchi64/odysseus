@@ -73,12 +73,12 @@ _SUBTASK_STATUS = "blocked"
 #: rendered ``Attributes:`` blocks that duplicate the per-property descriptions beside
 #: them and sentences about the flag that would turn subtasks on.
 _PLAN_DEF_TEXT: Mapping[str, str] = {
-    "PlanItem": "One step in the plan.",
-    "TaskStatus": "Lifecycle status of a plan step.",
+    "PlanItem": "One task in the list.",
+    "TaskStatus": "Lifecycle status of a task.",
     "PlanStatusUpdate": "One status change in the batch.",
 }
 _PLAN_PROPERTY_TEXT: Mapping[tuple[str, str], str] = {
-    ("PlanItem", "status"): "Current status of this step.",
+    ("PlanItem", "status"): "Current status of this task.",
     ("PlanStatusUpdate", "status"): "New status.",
 }
 
@@ -229,12 +229,14 @@ def category_of(name: str, names_by_category: Mapping[str, frozenset[str]]) -> s
     return max(candidates, key=len) if candidates else None
 
 
-#: The plan tools whose schema carries the harness's subtasks vocabulary.
-_SUBTASKS_LEAKED = frozenset({"plan_write_plan", "plan_update_task_statuses"})
+#: The task-list tools whose schema carries the harness's subtasks vocabulary. Their names
+#: are ours rather than the harness's — ``tools/tasks.py`` renames them before they reach
+#: any gate, and this one runs last of all.
+_SUBTASKS_LEAKED = frozenset({"tasks_write", "tasks_update_statuses"})
 
 
 def _strip_subtasks(schema: dict[str, Any]) -> None:
-    """Edit one already-copied plan schema in place."""
+    """Edit one already-copied task-list schema in place."""
     defs = schema.get("$defs")
     if not isinstance(defs, dict):
         return
@@ -323,9 +325,9 @@ def _alternation(names: Iterable[str]) -> re.Pattern[str] | None:
     """A pattern matching any of ``names`` standing alone as an identifier.
 
     The lookarounds are what make the rewrite idempotent: an already-prefixed
-    ``plan_write_plan`` has a word character before ``write_plan``, so the second pass
-    finds nothing to do. Longest first, so ``update_task_statuses`` is not half-matched
-    by ``update_task_status``.
+    ``files_read_file`` has a word character before ``read_file``, so the second pass
+    finds nothing to do. Longest first, so a name that another name is a prefix of is
+    matched whole rather than half-matched by its shorter neighbour.
     """
     ordered = sorted(names, key=len, reverse=True)
     if not ordered:

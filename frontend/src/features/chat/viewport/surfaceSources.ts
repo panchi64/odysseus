@@ -18,8 +18,8 @@
  * error rather than a button that never appears.
  */
 
-import type { PermissionLevel } from "../model";
-import type { PlanItem } from "~/lib/stream/events";
+import type { PlanDocument } from "../model";
+import type { TaskItem } from "~/lib/stream/events";
 import type { SubagentRun } from "../stream/fold";
 import type { BranchState } from "../data";
 import type { SurfaceId } from "./surfaces";
@@ -35,7 +35,7 @@ import type { ViewItem } from "./viewItems";
  *
  * It is a **predicate, not a field on the registry**, because at least one surface's
  * answer depends on the moment rather than on what kind of surface it is: a plan that
- * needs approving is an interruption, and the same plan ticking along is not.
+ * needs approving is an interruption, and the same plan once it has been answered is not.
  */
 export type Arrival = "steal" | "announce" | "silent";
 
@@ -51,48 +51,49 @@ export interface SurfaceSource {
   claimKey: () => string;
 }
 
-/** What the sources read. Accessors, never stores — see the module note. */
+/** What the sources read. Accessors, never stores — see the module note.
+ *
+ *  The thread's permission level used to be here, read by the plan source to work out
+ *  whether a plan was awaiting approval. It is gone because the plan now carries its own
+ *  status, which is the fact that question was always really asking about — and reading
+ *  it directly removed the stand-in guard the inference needed. */
 export interface SurfaceDeps {
   viewItems: () => ViewItem[];
-  plan: () => PlanItem[];
+  tasks: () => TaskItem[];
+  plan: () => PlanDocument | null;
   branch: () => BranchState | null | undefined;
   subagents: () => SubagentRun[];
-  /** The thread's current level. `plan` is the one that cannot act. */
-  permission: () => PermissionLevel;
-  /** Whether that level is still a stand-in for one in flight. Load-bearing: the
-   *  stand-in is the *strictest* level, which is `plan` — so a level that has not
-   *  settled yet looks exactly like a thread awaiting approval. */
-  permissionPending: () => boolean;
 }
 
 export function createSurfaceSources(
   deps: SurfaceDeps,
 ): Record<SurfaceId, SurfaceSource> {
   return {
-    // An empty task list is not a plan. The agent writes one the moment it has
-    // something to write, so "no rows" and "no plan" are the same state.
+    // An empty list is not a list. The agent writes one the moment it has something
+    // to write, so "no rows" and "no tasks" are the same state.
+    tasks: {
+      available: () => deps.tasks().length > 0,
+      // Work in progress, narrated by the transcript beside it. A panel that opened
+      // itself every time a task ticked over is a panel the operator learns to close.
+      arrival: () => "announce",
+      claimKey: () => "",
+    },
+    // **A plan interrupts exactly when it is waiting on a yes**, and it can now say so
+    // itself. The thread is blocked on an operator who does not know it — the one state
+    // worth putting on screen uninvited. Approved, denied, or being revised, it is a
+    // record rather than a question, and a record badges.
+    //
+    // This used to be inferred from `permission() === "plan"`, which needed a guard
+    // against the seat's not-yet-loaded stand-in (the stand-in *is* `plan`, so every
+    // thread that had ever written a plan popped the panel open for the width of a
+    // fetch and spent its one-shot claim). Reading the plan's own status needs no such
+    // guard: a plan that has not arrived has no status to be pending.
     plan: {
-      available: () => deps.plan().length > 0,
-      // **A plan interrupts only when it is waiting on a yes.** A thread at `plan`
-      // level has been offered no tool that changes anything, so the only way its
-      // turn can end is by writing down what it *would* do — and then it is blocked
-      // on the operator, who does not know it. That is the one state worth putting
-      // on screen uninvited. A plan that merely changed while the thread can already
-      // act is progress, and progress badges.
-      // The pending check is not defensive noise. While a thread's real level is
-      // loading the seat shows the strictest one as a stand-in, and the strictest
-      // one *is* `plan` — so without this every thread that has ever written a plan
-      // would pop the panel open for the width of a fetch, spend its one-shot claim,
-      // and leave the strip sitting there after the true level arrived.
-      arrival: () =>
-        !deps.permissionPending() &&
-        deps.permission() === "plan" &&
-        deps.plan().length > 0
-          ? "steal"
-          : "announce",
-      // Keyed by the list's length, so a *revised* plan awaiting approval is a new
-      // arrival and earns a fresh claim, while the same plan re-rendering does not.
-      claimKey: () => `await:${deps.plan().length}`,
+      available: () => deps.plan() !== null,
+      arrival: () => (deps.plan()?.status === "pending" ? "steal" : "announce"),
+      // Keyed by the revision, so a plan resubmitted after feedback is a new arrival
+      // and earns a fresh claim, while the same plan re-rendering does not.
+      claimKey: () => `plan:${deps.plan()?.revision ?? 0}`,
     },
     // A thread that has never delegated has no roster; one that has keeps it, since
     // what a sub-agent reported is as much a result as a run in flight.

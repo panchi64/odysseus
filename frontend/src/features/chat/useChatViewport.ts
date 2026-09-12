@@ -34,10 +34,16 @@ import {
   type Accessor,
 } from "solid-js";
 import { createPanelResize, observeAvailableWidth } from "./panelResize";
-import type { ChatMessage, PermissionLevel, ViewSnapshotRef } from "./model";
+import type {
+  ApprovalDecision,
+  ChatMessage,
+  PlanDocument,
+  ViewSnapshotRef,
+} from "./model";
 import type { BranchState } from "./data";
 import type { SubagentRun } from "./stream/fold";
-import type { PlanItem } from "~/lib/stream/events";
+import type { Park } from "./stream/approvals";
+import type { TaskItem } from "~/lib/stream/events";
 import {
   emptyLayout,
   focusInStack,
@@ -72,15 +78,18 @@ import {
 export interface ViewportSource {
   messages: ChatMessage[];
   snapshots: Accessor<ViewSnapshotRef[]>;
-  plan: Accessor<PlanItem[]>;
+  tasks: Accessor<TaskItem[]>;
+  plan: Accessor<PlanDocument | null>;
   branch: () => BranchState | null | undefined;
   refetchBranch: () => void;
   /** Who this thread delegated to, for the Agents surface. */
   subagents: Accessor<SubagentRun[]>;
-  /** The thread's level — the Plan surface's arrival turns on it — and whether
-   *  that level has settled yet. */
-  permission: () => PermissionLevel;
-  permissionPending: () => boolean;
+  /** What the live turn is parked on, and how to settle it. The Plan surface holds
+   *  the decision for a submitted plan — a document is answered where it is read, not
+   *  in the composer's slot — so the panel needs both. Everything else about that
+   *  approval is ordinary: same park, same single resume. */
+  park: Accessor<Park | null>;
+  resolvePlan: (decisions: ApprovalDecision[]) => void | Promise<void>;
   toggleSnapshotKeeper: (snapshotId: string, keeper: boolean) => Promise<void>;
 }
 
@@ -93,8 +102,13 @@ export interface ChatViewport {
   viewState: () => ViewSurfaceState;
   patchView: (next: Partial<ViewSurfaceState>) => void;
   items: Accessor<ViewItem[]>;
-  /** The thread's task list, for the Plan surface. */
-  plan: Accessor<PlanItem[]>;
+  /** The thread's task list, for the Tasks surface. */
+  tasks: Accessor<TaskItem[]>;
+  /** The plan it is working to, for the Plan surface — with the park and the settle
+   *  that surface answers it through. */
+  plan: Accessor<PlanDocument | null>;
+  park: Accessor<Park | null>;
+  resolvePlan: (decisions: ApprovalDecision[]) => void | Promise<void>;
   /** The thread's branch, for the Diff surface. */
   branch: () => BranchState | null | undefined;
   refetchBranch: () => void;
@@ -176,10 +190,9 @@ export function useChatViewport(
   );
   const sources = createSurfaceSources({
     viewItems: items,
+    tasks: source.tasks,
     plan: source.plan,
     branch: source.branch,
-    permission: source.permission,
-    permissionPending: source.permissionPending,
     subagents: source.subagents,
   });
   const available = (id: SurfaceId): boolean => sources[id].available();
@@ -436,7 +449,10 @@ export function useChatViewport(
     viewState,
     patchView,
     items,
+    tasks: source.tasks,
     plan: source.plan,
+    park: source.park,
+    resolvePlan: source.resolvePlan,
     branch: source.branch,
     refetchBranch: source.refetchBranch,
     subagents: source.subagents,

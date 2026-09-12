@@ -49,10 +49,12 @@ from .code import code_toolset
 from .deps import RunDeps
 from .describe import category_names, describe
 from .files import files_toolset
+from .plan import GATED_TOOLS as _PLAN_GATED
 from .plan import plan_toolset
 from .repo import repo_toolset
 from .shell import GATED_TOOLS as _SHELL_GATED
 from .shell import shell_toolset
+from .tasks import tasks_toolset
 
 #: Conditionally-gated names the **core** categories contribute — the ones that raise
 #: `ApprovalRequired` from inside the call rather than carrying `requires_approval=True`,
@@ -60,7 +62,7 @@ from .shell import shell_toolset
 #: manifest; the core ones have no manifest, so they are collected here and seeded into
 #: `app.state.gated_tools` at assembly. A name missing from that union is missing from the
 #: operator's approval-scope vocabulary, which is what makes a grant possible.
-CORE_GATED_TOOLS: frozenset[str] = _SHELL_GATED | _AGENTS_GATED
+CORE_GATED_TOOLS: frozenset[str] = _SHELL_GATED | _AGENTS_GATED | _PLAN_GATED
 
 
 def _enabled_gate(ctx: RunContext[RunDeps], tool_def: ToolDefinition) -> bool:
@@ -107,8 +109,11 @@ def core_categories() -> dict[str, AbstractToolset[RunDeps]]:
         "builtin": builtin_toolset(),
         "code": code_toolset(),
         "files": files_toolset(),
+        # The two halves of the split: `tasks` is the running checklist the agent keeps at
+        # every level, `plan` the written document a Plan-level turn submits for approval.
+        "tasks": tasks_toolset(),
         "plan": plan_toolset(),
-        # Core rather than a manifest's, for the same reason `plan` and `files` are: it
+        # Core rather than a manifest's, for the same reason `tasks` and `files` are: it
         # is bound to the run's own workspace, which no feature owns.
         "agents": agents_toolset(),
         # Coding mode's two categories. Registered unconditionally like every other, and

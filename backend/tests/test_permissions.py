@@ -311,9 +311,14 @@ class TestTheToolsetElevation:
         # are a fraction of the others'.
         assert WORKSPACE_WRITE not in kinds
         assert HOST_EXEC not in kinds
-        # ...except the plan writes, which are the one mutation a Plan turn exists to
-        # make, and which still run without a prompt.
-        assert kinds["plan_write_plan"] == "function"
+        # ...except the task-list writes, which are the model's own scratchpad and still
+        # run without a prompt, and `plan_enter`, which only ever narrows further.
+        assert kinds["tasks_write"] == "function"
+        assert kinds["plan_enter"] == "function"
+        # `plan_submit` is the exception to the exception: exempt from the *level* so a
+        # Plan turn has a way out at all, and still marked `unapproved` by its own
+        # `ApprovalRequired`, because the way out is the operator's to open.
+        assert kinds["plan_submit"] == "function"
         assert kinds[READ] == "function"
 
     async def test_a_tools_own_marking_is_never_taken_away(self):
@@ -478,90 +483,19 @@ class TestTheLiveControl:
             resp = await client.post("/chat", json={"prompt": "hi", "permission_level": "root"})
             assert resp.status_code == 422
 
-    async def test_accepting_a_plan_raises_the_level_and_hands_back_the_seed(
-        self, monkeypatch
-    ):
-        patch_model_resolution(monkeypatch, output_text="here is the plan")
-        async with client_app() as (client, app):
-            created = await client.post(
-                "/chat", json={"prompt": "plan it", "permission_level": "plan"}
-            )
-            conversation_id = created.json()["conversation_id"]
-            await collect_sse_events(client, created.json()["run_id"])
-            await app.state.conversation_plans.replace(
-                "operator", conversation_id, _a_plan()
-            )
-
-            resp = await client.post(f"/conversations/{conversation_id}/plan/accept")
-            assert resp.status_code == 200
-            body = resp.json()
-            # Where an accept with no level named lands is the registry's answer, not a
-            # word this route or this test spells out — a thread that accepts a plan
-            # carries on at whatever a fresh thread would have run at.
-            assert body["permission_level"] == DEFAULT_PERMISSION
-            # The plan the operator agreed to rides in the seed, so the transcript records
-            # what was accepted rather than whatever the list says later.
-            assert "rewrite the parser" in body["prompt"]
-            detail = await client.get(f"/conversations/{conversation_id}")
-            assert detail.json()["permission_level"] == DEFAULT_PERMISSION
-
-    async def test_accepting_can_choose_a_level_other_than_the_default(self, monkeypatch):
-        """The named level wins over the default. Named as Edit because that is the choice
-        that means something now that the default is Auto: the operator accepting a plan
-        but wanting to be asked at the workspace boundary anyway."""
-        patch_model_resolution(monkeypatch, output_text="here is the plan")
-        async with client_app() as (client, app):
-            created = await client.post("/chat", json={"prompt": "plan it"})
-            conversation_id = created.json()["conversation_id"]
-            await collect_sse_events(client, created.json()["run_id"])
-            await app.state.conversation_plans.replace("operator", conversation_id, _a_plan())
-
-            resp = await client.post(
-                f"/conversations/{conversation_id}/plan/accept", json={"level": "edit"}
-            )
-            assert resp.json()["permission_level"] == "edit"
-            assert "edit" != DEFAULT_PERMISSION  # or this pins nothing
-
-    async def test_accepting_offers_exactly_the_levels_that_can_act(self, monkeypatch):
-        """Which levels those are is the registry's answer, not a pair the route spells
-        out — so a fifth preset is a row in `services/permissions/levels.py` and this
-        surface follows it without being edited."""
-        patch_model_resolution(monkeypatch, output_text="here is the plan")
-        async with client_app() as (client, app):
-            created = await client.post("/chat", json={"prompt": "plan it"})
-            conversation_id = created.json()["conversation_id"]
-            await collect_sse_events(client, created.json()["run_id"])
-            await app.state.conversation_plans.replace("operator", conversation_id, _a_plan())
-
-            for level in PERMISSION_LEVELS:
-                resp = await client.post(
-                    f"/conversations/{conversation_id}/plan/accept", json={"level": level}
-                )
-                if level in ACTING_PERMISSIONS:
-                    assert resp.status_code == 200, level
-                    assert resp.json()["permission_level"] == level
-                else:
-                    # Accepting a plan and staying read-only is a no-op with extra steps.
-                    assert resp.status_code == 422, level
-
-    async def test_there_is_nothing_to_accept_without_a_plan(self, monkeypatch):
+    async def test_a_thread_with_no_plan_reports_none_rather_than_missing(self, monkeypatch):
+        """"This thread has no plan" is the ordinary state of nearly every thread, not a
+        miss — so the backfill the panel reads answers `null` rather than 404, and the
+        level stays exactly where the operator put it."""
         patch_model_resolution(monkeypatch, output_text="no plan here")
         async with client_app() as (client, _app):
             created = await client.post("/chat", json={"prompt": "hi", "permission_level": "plan"})
             conversation_id = created.json()["conversation_id"]
             await collect_sse_events(client, created.json()["run_id"])
 
-            resp = await client.post(f"/conversations/{conversation_id}/plan/accept")
-            assert resp.status_code == 409
-            # And the level did not move on the strength of a document that isn't there.
+            assert (await client.get(f"/conversations/{conversation_id}/plan")).json() is None
             detail = await client.get(f"/conversations/{conversation_id}")
             assert detail.json()["permission_level"] == "plan"
-
-
-def _a_plan():
-    from pydantic_ai_harness.planning import PlanItem
-
-    return [PlanItem(id="1", content="rewrite the parser", status="pending")]
 
 
 def _write_categories(calls: list[str]):

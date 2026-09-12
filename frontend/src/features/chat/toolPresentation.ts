@@ -75,6 +75,7 @@ const CATEGORY_ICONS: Record<string, IconName> = {
   research: "research",
   shell: "terminal",
   skills: "library",
+  tasks: "note",
   vault: "lock",
   view: "panel-right",
   web: "search",
@@ -203,9 +204,12 @@ const TOOLS: Record<string, ToolEntry> = {
   },
   memory_remember: { icon: "database", label: "Remember", keys: ["content"] },
 
-  plan_read_plan: { icon: "note", label: "Read plan", noun: ["task", "tasks"] },
-  plan_update_task_statuses: { icon: "note", label: "Task statuses" },
-  plan_write_plan: { icon: "note", label: "Write plan" },
+  tasks_read: { icon: "note", label: "Read tasks", noun: ["task", "tasks"] },
+  tasks_update_statuses: { icon: "note", label: "Task statuses" },
+  tasks_write: { icon: "note", label: "Write tasks" },
+  plan_enter: { icon: "note", label: "Enter plan mode" },
+  plan_read: { icon: "note", label: "Read plan" },
+  plan_submit: { icon: "note", label: "Submit plan" },
 
   project_active: { icon: "layers", label: "Active project" },
   project_list: {

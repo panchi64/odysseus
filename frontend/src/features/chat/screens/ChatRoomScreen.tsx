@@ -229,8 +229,13 @@ export function ChatRoomScreen(): JSX.Element {
     ...stream,
     branch: branch.latest,
     refetchBranch: branch.refetch,
-    permission,
-    permissionPending,
+    // A submitted plan is answered in the panel that renders it rather than in the
+    // dock — see `PlanSurface`. It is the same park and the same single resume, so it
+    // goes back through the same settle the dock uses.
+    resolvePlan: (decisions) => {
+      const park = stream.park();
+      if (park) return stream.resolvePark(park.messageId, { decisions });
+    },
   });
 
   registerChatRoomKeymap({
@@ -334,6 +339,10 @@ export function ChatRoomScreen(): JSX.Element {
               {(park) => (
                 <ParkDock
                   park={park()}
+                  // This room has a Plan panel, so a submitted plan is answered
+                  // there rather than down here. A compare pane passes nothing and
+                  // decides it in the dock, having no panel to defer to.
+                  planInPanel
                   onStop={() => void stopRun()}
                   onSubmit={(settlement) =>
                     stream.resolvePark(park().messageId, settlement)
@@ -412,7 +421,7 @@ export function ChatRoomScreen(): JSX.Element {
                 streaming={stream.sending}
                 detached={stream.detached}
                 stats={stream.stats}
-                plan={stream.plan}
+                tasks={stream.tasks}
                 grantsRevalidate={conversationGrantsRevision}
               />
             </div>

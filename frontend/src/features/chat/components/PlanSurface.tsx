@@ -1,52 +1,133 @@
-import { type JSX } from "solid-js";
-import { Text } from "~/ui";
-import type { PlanItem } from "~/lib/stream/events";
-import { PlanRows, planSummary } from "./PlanRows";
+import { For, Show, type JSX } from "solid-js";
+import { Markdown, Stack, StatusFlag, Text } from "~/ui";
+import type { ApprovalDecision, PlanDocument, PlanStatus } from "../model";
+import type { Park } from "../stream/approvals";
+import { ApprovalPanel } from "./ApprovalPanel";
+
+/** How each state reads, and how loudly. `pending` is the only one that is a question;
+ *  the rest are a record of one already answered, and record-shaped states stay quiet. */
+const STATUS: Record<
+  PlanStatus,
+  { label: string; tone: "warn" | "nominal" | "alert" | "idle" }
+> = {
+  pending: { label: "Awaiting your approval", tone: "warn" },
+  approved: { label: "Approved", tone: "nominal" },
+  revising: { label: "Revising", tone: "idle" },
+  denied: { label: "Rejected", tone: "alert" },
+};
 
 /**
- * The agent's task list, as a surface.
+ * **The plan the agent wants to carry out, and the operator's answer to it.**
  *
- * It has lived under the composer, folded into the status strip, where it was a
- * five-row window on a list in a band sized for one-line readouts — a thing you
- * expand, read, and collapse again because it is in the way of the thing it is
- * about. Beside the transcript it is just there, next to the work it describes.
+ * A panel rather than a strip, and read rather than glanced at: this is the document the
+ * whole of plan mode exists to produce, and the operator is deciding on the strength of
+ * it alone. It gets the width to be read in.
  *
- * **A strip, not a panel.** A plan is a handful of short rows and takes its own
- * height; giving it a full-height pane would hand most of the panel to whitespace
- * and push whatever the operator is actually reading out of view. `PlanRows` is
- * reused exactly as the status strip uses it — the rows are the same rows, and a
- * second renderer for them would be a second thing to keep in step.
+ * **The decision is rendered here, not in the dock.** Every other approval takes over the
+ * composer, which is right for a one-line question about a command — the operator's
+ * attention and the run's next step in the same place. A plan is not that: answering it
+ * means reading several hundred words first, and a decision docked at the bottom of the
+ * window while the thing it is about is in a panel beside it puts the question and its
+ * subject in two places. So the panel holds both, and `ParkDock` steps back to its Stop
+ * control while it does.
+ *
+ * It is still the *same* park and the same single submission — `ApprovalPanel` reports
+ * upward exactly as it does in the dock, and the run resumes once, on one body covering
+ * every call it stopped for.
  */
 export function PlanSurface(props: {
-  items: () => PlanItem[];
-  /** Rows before the list scrolls inside itself rather than growing. Roughly
-   *  `maxRows` × the row's line box; an exact height would need measuring, and
-   *  being a little generous costs nothing a scrollbar does not fix. */
-  maxRows: number;
+  plan: () => PlanDocument | null;
+  /** The live park, when the run is waiting on this plan. */
+  park: () => Park | null;
+  onSubmit: (decisions: ApprovalDecision[]) => void | Promise<void>;
 }): JSX.Element {
-  // Cancelled tasks are already out of `total`, so this counts what the plan is
-  // still claiming it will do rather than everything it ever said.
-  const progress = (): string => {
-    const { done, total } = planSummary(props.items());
-    return `${done}/${total}`;
-  };
+  // The approval and the document are two readings of the same submission, arriving by
+  // different routes (the park off the transcript, the plan off `plan.updated`). The
+  // decision is only offered when both are in hand and the stored plan still says it is
+  // waiting — a park matched against an already-answered plan would be asking a question
+  // the backend has the answer to.
+  const awaiting = () =>
+    props.plan()?.status === "pending"
+      ? (props.park()?.planApproval ?? null)
+      : null;
 
   return (
-    <div class="flex flex-col gap-1 px-3 py-2">
-      <div class="flex items-baseline justify-between gap-2">
-        <Text variant="label" tone="bright">
-          Plan
-        </Text>
-        <Text variant="micro" tone="dim">
-          {progress()}
-        </Text>
-      </div>
-      <div
-        class="overflow-y-auto"
-        style={{ "max-height": `${props.maxRows * 1.75}rem` }}
-      >
-        <PlanRows items={props.items} />
-      </div>
-    </div>
+    <Show
+      when={props.plan()}
+      keyed
+      fallback={
+        <div class="flex h-full items-center justify-center p-4">
+          <Text variant="micro" tone="dim">
+            No plan for this conversation.
+          </Text>
+        </div>
+      }
+    >
+      {(plan) => (
+        <div class="flex h-full flex-col overflow-y-auto">
+          <Stack gap={3} class="p-4">
+            <Stack gap={2}>
+              <StatusFlag status={STATUS[plan.status].tone} dot>
+                {STATUS[plan.status].label}
+              </StatusFlag>
+              <Text variant="readout" tone="bright">
+                {plan.title}
+              </Text>
+            </Stack>
+
+            <Markdown>{plan.body}</Markdown>
+
+            <Show when={plan.steps.length > 0}>
+              <Stack gap={2}>
+                <Text variant="label" tone="dim">
+                  STEPS
+                </Text>
+                {/* Numbered, because the order is part of what is being agreed — and
+                    because on approval these become the thread's task list in exactly
+                    this order. */}
+                <ol class="flex list-decimal flex-col gap-1 pl-5">
+                  <For each={plan.steps}>
+                    {(step) => (
+                      <li>
+                        <Text variant="body">{step}</Text>
+                      </li>
+                    )}
+                  </For>
+                </ol>
+              </Stack>
+            </Show>
+
+            <Show when={awaiting()} keyed>
+              {(approval) => (
+                <Show
+                  when={!props.park()?.stale}
+                  fallback={
+                    <Text variant="micro" tone="dim">
+                      ANSWERED ELSEWHERE — this was settled from another
+                      session; the transcript will catch up shortly.
+                    </Text>
+                  }
+                >
+                  <div class="border-line border-t pt-3">
+                    <ApprovalPanel
+                      approvals={[approval]}
+                      revisable
+                      hideGrant
+                      // The plan is already the whole panel above; repeating it as
+                      // `formatArgs` output under the buttons would be the same document
+                      // twice, once unreadably.
+                      renderBody={() => <></>}
+                      onChange={(decisions, allDecided) => {
+                        if (allDecided) void props.onSubmit(decisions);
+                      }}
+                    />
+                  </div>
+                </Show>
+              )}
+            </Show>
+          </Stack>
+        </div>
+      )}
+    </Show>
   );
 }

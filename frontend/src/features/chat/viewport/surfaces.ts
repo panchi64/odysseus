@@ -62,13 +62,26 @@ export type SurfaceSpec = StripSpec | PanelSpec;
  */
 export const SURFACES = [
   {
-    id: "plan",
+    id: "tasks",
     shape: "strip",
+    label: "Tasks",
+    icon: "note",
+    // Eight rows before it stops growing. A list longer than that is one the operator
+    // scrolls, not one that pushes the panels off the bottom.
+    maxRows: 8,
+  },
+  {
+    // A **panel**, where the task list above is a strip, because the two are different
+    // kinds of thing: that one is a handful of short lines glanced at while work runs,
+    // this is a document read end-to-end before answering. A plan the operator has to
+    // scroll eight rows at a time is a plan they approve without reading.
+    id: "plan",
+    shape: "panel",
     label: "Plan",
     icon: "note",
-    // Eight rows before it stops growing. A plan longer than that is a plan the
-    // operator scrolls, not one that pushes the panels off the bottom.
-    maxRows: 8,
+    minWidth: 380,
+    minHeight: 280,
+    defaultWidth: 520,
   },
   {
     id: "agents",

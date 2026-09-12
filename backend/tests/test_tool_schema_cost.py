@@ -8,12 +8,14 @@ assembled catalog (core plus every manifest's export), through the same
 operator reads stay one unit.
 
 Since the dormant categories landed there are two numbers, not one. A **fresh request**
-carries ~23k characters across 31 tools — call it ~5.6k tokens — because five categories
+carries ~27k characters across 34 tools — call it ~6.6k tokens — because five categories
 (``browse``, ``calendar``, ``mail``, ``research``, ``vault``) ship with their schemas
 withheld until the model asks for the group. The **corpus** behind it, every dormant group
-revealed, is ~43k across 65; ``browse`` alone is 18 tools and ~15k of that, which is why it
-is dormant. A Plan-level turn is handed ~21k of the corpus, because everything above
-``read`` is withheld outright rather than offered and refused.
+revealed, is ~47k across 68; ``browse`` alone is 18 tools and ~15k of that, which is why it
+is dormant. A Plan-level turn is handed less of the corpus than an acting one, because
+everything above ``read`` is withheld outright rather than offered and refused — but not
+the ``plan`` and ``tasks`` categories, which a read-only turn needs precisely because it
+is read-only.
 
 Three things are pinned. A **ceiling on the fresh request**, which is what a turn actually
 pays. A looser **ceiling on the corpus**, because a tool added to a dormant group is
@@ -44,10 +46,17 @@ from tools import RunDeps, build_agent_toolsets
 from ._helpers import full_tool_categories
 
 #: What a fresh request's catalog may cost, in characters of serialized schema. Set a
-#: little above today's ~23k so an ordinary addition lands quietly and a category-sized one
+#: little above today's ~27k so an ordinary addition lands quietly and a category-sized one
 #: does not. Characters rather than tokens for the same reason the measurement itself uses
 #: them: no tokenizer, no provider, no drift.
-CATALOG_CEILING_CHARS = 26_000
+#:
+#: **Raised once, from 26k, for the `plan` category** — the three tools that let a thread
+#: enter plan mode, submit a plan and read the one it agreed to. They cost every request
+#: about 1.5k characters, and they are the one addition that could not be paid for by
+#: deferral: a model that has to reveal a dormant group before it can propose planning is a
+#: model that has already started doing the work instead. The saving that would have come
+#: from making them dormant is real and was declined on purpose.
+CATALOG_CEILING_CHARS = 28_000
 
 #: The same for the whole corpus — every dormant group revealed. Deferral moves a group's
 #: cost from every turn to the turns that want it; it does not make the group free, and a
