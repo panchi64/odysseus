@@ -74,8 +74,15 @@ export interface LastRequest {
 
 /** "compaction" is not a turn either party took — it is the chassis marking where the
  *  thread's earlier turns were folded into a summary. Rendered as a full-width divider,
- *  not a bubble; it carries the summary in `content` and has no actions. */
-export type Role = "user" | "assistant" | "compaction";
+ *  not a bubble; it carries the summary in `content` and has no actions.
+ *
+ *  "subagent" is the other turn nobody in the room took: a sub-agent the agent launched
+ *  has reported back, and that report reached the thread in the one shape a model has for
+ *  a message from outside itself. Shown as a report rather than as a bubble, because the
+ *  operator has not seen it, did not write it, and is not being replied to. Like a
+ *  compaction it carries its text in `content` and has no actions — there is nothing to
+ *  edit, and nothing to send it back to. */
+export type Role = "user" | "assistant" | "compaction" | "subagent";
 
 export type ToolStatus = "running" | "ok" | "error";
 

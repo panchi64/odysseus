@@ -38,6 +38,14 @@ function fullness(subagent: Subagent): number | null {
   return Math.min(100, Math.round((used / window) * 100));
 }
 
+/** Grey until it is worth looking at, then amber, then red — the composer's own gauge
+ *  reads the operator's thresholds from the backend, and a sub-agent's card is a glance
+ *  rather than a setting, so it takes fixed ones. */
+function ringTone(value: number): "dim" | "warn" | "alert" {
+  if (value >= 90) return "alert";
+  return value >= 75 ? "warn" : "dim";
+}
+
 /** How long it ran, in the coarsest unit that is still true. */
 function took(subagent: Subagent): string | null {
   if (subagent.endedAt === null) return null;
@@ -106,15 +114,16 @@ export function SubagentCard(props: {
         <Text variant="micro" tone="dim" class="min-w-0 flex-1 truncate">
           {props.subagent.task}
         </Text>
-        <Show when={fullness(props.subagent)}>
-          {(value) => (
-            <ProgressRing
-              class="shrink-0"
-              value={value()}
-              tone={value() >= 90 ? "alert" : value() >= 75 ? "warn" : "dim"}
-              label={`context ${value()}% full`}
-            />
-          )}
+        {/* `!== null`, not the value itself: a sub-agent that has barely started rounds
+            to 0, and 0 is falsy — a truthiness test would hide the ring for exactly the
+            cards that have just appeared and are the ones being watched. */}
+        <Show when={fullness(props.subagent) !== null}>
+          <ProgressRing
+            class="shrink-0"
+            value={fullness(props.subagent) ?? 0}
+            tone={ringTone(fullness(props.subagent) ?? 0)}
+            label={`context ${fullness(props.subagent) ?? 0}% full`}
+          />
         </Show>
       </div>
       <div class="flex min-w-0 items-baseline gap-1.5">

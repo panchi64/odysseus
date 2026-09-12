@@ -45,6 +45,7 @@ from services.settings_store import (
     get_context_thresholds,
 )
 from services.subagent_store import SubagentStore
+from services.subagents.report import report_envelope
 from services.tool_policy import effective_disabled_tools
 from services.uploads import UploadStore
 from services.workspace import DELEGATION_SEP
@@ -119,14 +120,25 @@ class SubagentWake:
             return  # an ordinary run, not one of ours
         summary, error = await self._outcome(run, row.child_conversation_id)
         merged = await self._merge(row)
-        await self._records.settle(
-            row.id,
-            status=_status_of(run),
-            summary=None if summary is None else _joined(summary, merged),
-            error=error,
-            context_used=getattr(run.metrics, "context_used", None) if run.metrics else None,
-            context_window=run.context_window,
-        )
+        try:
+            await self._records.settle(
+                row.id,
+                status=_status_of(run),
+                summary=None if summary is None else _joined(summary, merged),
+                error=error,
+                context_used=(
+                    getattr(run.metrics, "context_used", None) if run.metrics else None
+                ),
+                context_window=run.context_window,
+            )
+        except Exception:
+            # Guarded on its own, and this is the whole reason it is: closing the row is
+            # bookkeeping, and delivering the report is the work. A write that failed —
+            # two turns and the write-behind drainers can hold SQLite's single writer lock
+            # past its retries — would otherwise cost the parent a report nothing else
+            # holds, on top of a card that reads "working" forever. The card is wrong
+            # until the next restart reconciles it; the thread still hears what happened.
+            logger.exception("subagents: could not close out %s", row.id)
         if not row.parent_conversation_id:
             return  # launched from a thread that no longer exists, or from none
         await self.deliver(
@@ -248,7 +260,10 @@ class SubagentWake:
         )
         try:
             compose_turn(
-                prompt=report,
+                # The same envelope a report queued into a *running* turn arrives in. The
+                # two roads are the same event, and a model should not be able to tell
+                # which one a report took — nor read one of them as the operator talking.
+                prompt=report_envelope(report),
                 conversation_id=conversation_id,
                 models=models,
                 capabilities=self._ctx.capabilities,

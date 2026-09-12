@@ -86,8 +86,10 @@ export interface ViewSnapshotDTO {
 export interface MessageDTO {
   id: string;
   /** "compaction" is a chassis-authored divider, not a turn — the summary the
-   *  thread's earlier turns were folded into, carried in `content`. */
-  role: "user" | "assistant" | "compaction";
+   *  thread's earlier turns were folded into, carried in `content`. "subagent" is a
+   *  report from one the agent launched, which arrived as a request message and is not
+   *  the operator speaking. */
+  role: "user" | "assistant" | "compaction" | "subagent";
   content: string;
   reasoning?: string | null;
   tools: ToolCallDTO[];

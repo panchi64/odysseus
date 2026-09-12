@@ -15,6 +15,7 @@ import type { ApprovalDecision, ChatMessage, Citation } from "../model";
 import { hasLayers as turnHasLayers } from "../blocks";
 import type { ViewItem } from "../viewport/viewItems";
 import { CompactionDivider } from "./CompactionDivider";
+import { SubagentReport } from "./SubagentReport";
 import { MessageActions, TURN_REVEAL_CLASS } from "./MessageActions";
 import { MessageAttachments } from "./MessageAttachments";
 import { TurnBlocks } from "./TurnBlocks";
@@ -111,6 +112,9 @@ export function MessageItem(props: MessageItemProps): JSX.Element {
         >
           <Match when={props.message.role === "compaction"}>
             <CompactionDivider message={props.message} />
+          </Match>
+          <Match when={props.message.role === "subagent"}>
+            <SubagentReport message={props.message} />
           </Match>
           <Match when={props.message.role === "user"}>
             <UserTurn

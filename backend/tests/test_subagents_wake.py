@@ -22,6 +22,7 @@ import asyncio
 from datetime import UTC, datetime
 
 import pytest
+from pydantic_ai import ModelRequest, UserPromptPart
 
 from agent.injected import injected_text
 from harness.manifests._subagent_wake import WAKE_CHAIN_LIMIT, SubagentWake
@@ -96,9 +97,7 @@ class TestItNeverInterrupts:
         # Framing between the operator and the model is framing neither asked for.
         assert injected_text(_queued("wait, stop", source="operator")) == "wait, stop"
 
-    async def test_a_report_lands_on_the_next_request_not_the_current_stream(
-        self, monkeypatch
-    ):
+    async def test_a_report_lands_on_the_next_request_not_the_current_stream(self, monkeypatch):
         async with client_app() as (client, app):
             patch_model_resolution(monkeypatch, output_text="the answer")
             created = await client.post("/chat", json={"prompt": "hello"})
@@ -115,6 +114,40 @@ class TestItNeverInterrupts:
             # it streams.
             turns = await app.state.conversations.messages_view(created.json()["conversation_id"])
             assert [t.role for t in turns][:2] == ["user", "assistant"]
+
+
+class TestHowTheOperatorReadsIt:
+    """The envelope is written for the model and read back for the operator.
+
+    Both halves matter and only one of them is about the model. A report arrives in the
+    one shape there is for a message from outside the model, so on the way back out it
+    would show as a turn the operator took — a message they have not even seen, attributed
+    to them, in their own thread.
+    """
+
+    def test_a_report_turn_is_not_shown_as_the_operator_speaking(self):
+        from services.conversation_view import MessageView, project_tree
+        from services.subagents.report import report_envelope
+
+        views: list[MessageView] = project_tree(
+            [("n1", ModelRequest(parts=[UserPromptPart(content=report_envelope("I found it"))]))]
+        )
+
+        assert [v.role for v in views] == ["subagent"]
+        # And the framing written for the model is taken back off: it addresses the model
+        # about the operator, in the third person, and the operator is who reads this.
+        assert views[0].content == "I found it"
+
+    def test_the_operators_own_words_are_still_theirs(self):
+        from services.conversation_view import project_tree
+
+        views = project_tree(
+            [("n1", ModelRequest(parts=[UserPromptPart(content="<subagent-report> nice try")]))]
+        )
+        # Matched on the exact envelope, so text that merely resembles one is not
+        # relabelled — a message of theirs attributed to a sub-agent is the same lie
+        # in reverse.
+        assert [v.role for v in views] == ["user"]
 
 
 class TestDelivery:
@@ -152,7 +185,11 @@ class TestDelivery:
             # bring the thread back to life rather than wait for a boundary that will
             # never come.
             assert [c["kind"] for c in composed] == ["wake"]
-            assert composed[0]["prompt"] == "a report"
+            # Framed as a report, exactly as one queued into a running turn is: the two
+            # roads are the same event, and a model that could tell them apart would
+            # answer one of them as though the operator had spoken.
+            assert "a report" in composed[0]["prompt"]
+            assert "not a message from the operator" in composed[0]["prompt"]
             await _drain(app)
 
     async def test_a_wake_turn_does_not_take_the_interactive_lane(self):
@@ -164,9 +201,7 @@ class TestDelivery:
 
 
 class TestTheReportThatNearlyGotDropped:
-    async def test_a_report_queued_during_the_final_stream_survives_terminal(
-        self, monkeypatch
-    ):
+    async def test_a_report_queued_during_the_final_stream_survives_terminal(self, monkeypatch):
         async with client_app() as (client, app):
             patch_model_resolution(monkeypatch, output_text="ok")
             created = await client.post("/chat", json={"prompt": "go"})
@@ -184,7 +219,7 @@ class TestTheReportThatNearlyGotDropped:
             await _wake(app).settled(run, False)
 
             assert composed, "the report was dropped with the run"
-            assert composed[0]["prompt"] == "the sub-agent's only report"
+            assert "the sub-agent's only report" in composed[0]["prompt"]
             await _drain(app)
 
     async def test_the_operators_undelivered_message_is_left_alone(self, monkeypatch):

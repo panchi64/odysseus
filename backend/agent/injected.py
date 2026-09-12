@@ -11,31 +11,15 @@ without a marker the transcript would claim the operator typed it, the model wou
 as though they had, and every later turn would replay it that way. So the text is wrapped,
 once, here.
 
-**A marker, not a protocol.** The envelope is plain text the model reads as framing; there
-is no parser on the other side and nothing keys off it. The structured answer to "who said
-this" is the ``source`` on the queued message and the ``origin`` on the persisted row —
-this is what makes the *model's* copy honest, which those cannot.
-
-The wrap happens at injection rather than at delivery so that one report is worded one way
-wherever it came from: a report that woke a finished turn and a report that landed in a
-running one are the same sentence.
+The envelope itself is ``services/subagents/report.py``, not here: the transcript reads it
+back on the way out and sits below this layer, so one home for the marker is the only way
+its writer and its reader cannot drift.
 """
 
 from __future__ import annotations
 
 from runs import QueuedMessage
-
-#: What a sub-agent's report is wrapped in. Deliberately unlike anything the operator would
-#: type, and deliberately explicit that the operator has not seen it — a model that thanked
-#: them for the finding would be the first sign this had gone wrong.
-_REPORT = (
-    "<subagent-report>\n"
-    "A sub-agent you launched has finished and reported back. This is its report, not a "
-    "message from the operator — they have not seen it and are not waiting on a reply to "
-    "it. Carry on with whatever it unblocks, and tell them what matters.\n\n"
-    "{text}\n"
-    "</subagent-report>"
-)
+from services.subagents.report import report_envelope
 
 
 def injected_text(message: QueuedMessage) -> str:
@@ -46,5 +30,5 @@ def injected_text(message: QueuedMessage) -> str:
     asked for.
     """
     if message.source == "subagent":
-        return _REPORT.format(text=message.text.strip())
+        return report_envelope(message.text)
     return message.text

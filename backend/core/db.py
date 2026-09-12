@@ -50,6 +50,38 @@ _ALEMBIC_INI = Path(__file__).resolve().parent.parent / "alembic.ini"
 # of their short bookkeeping transactions.
 _BUSY_TIMEOUT_MS = 5000
 
+# How many times a write that *still* lost the lock after that budget is tried again, and
+# how long it waits between tries (growing linearly).
+#
+# The busy handler is a per-connection wait and it is not the whole answer: it holds the
+# calling **thread**, so a long contended stretch is a threadpool thread parked for five
+# seconds, and when it does expire the caller gets a hard error for what is a transient
+# condition. Two agent turns running at once — which is the ordinary case now that the
+# agent launches sub-agents, and was the rare one before — plus the write-behind drainers
+# can hold the single writer lock past that budget.
+#
+# Here rather than in each store, for the reason the busy handler is here: this module owns
+# how a unit of work reaches SQLite, and a retry written at one call site is a retry the
+# next writer does not get. Only a *lock* failure is retried — every other
+# `OperationalError` (a missing column, a broken file) is a real fault that retrying turns
+# into a slow real fault.
+#
+# The work callable is re-run from the top, so it must be idempotent. Every caller's
+# already is: they are `session.get` + mutate, or an `add` of a row built outside.
+_LOCK_RETRIES = 3
+_LOCK_RETRY_DELAY_S = 0.25
+
+
+def _is_locked(exc: OperationalError) -> bool:
+    """Whether this is SQLite's writer-lock contention rather than a real fault.
+
+    Matched on the message because that is what SQLite gives us — `sqlite3` raises the
+    same `OperationalError` class for a locked database and for a syntax error, and the
+    dialect does not translate either into anything more specific.
+    """
+    message = str(exc.orig if exc.orig is not None else exc).lower()
+    return "database is locked" in message or "database table is locked" in message
+
 
 def make_engine(url: str) -> Engine:
     """Build the SQLite engine. In-memory URLs share one connection (for tests)."""
@@ -195,7 +227,11 @@ def _raise_schema_error(
 async def in_session[T](engine: Engine, work: Callable[[Session], T]) -> T:
     """Run a unit of DB work in a threadpool and commit it. For a single-connection
     in-memory engine the session is taken under that engine's lock, so overlapping
-    threadpool calls never drive the one shared connection at the same time."""
+    threadpool calls never drive the one shared connection at the same time.
+
+    A write that loses SQLite's single writer lock for longer than ``busy_timeout`` is
+    retried rather than raised — see :data:`_LOCK_RETRIES`.
+    """
     lock = _CONN_LOCKS.get(engine)
 
     def _run() -> T:
@@ -210,7 +246,20 @@ async def in_session[T](engine: Engine, work: Callable[[Session], T]) -> T:
         with lock:
             return _run()
 
-    return await asyncio.to_thread(_run_guarded)
+    for attempt in range(_LOCK_RETRIES + 1):
+        try:
+            return await asyncio.to_thread(_run_guarded)
+        except OperationalError as exc:
+            if attempt == _LOCK_RETRIES or not _is_locked(exc):
+                raise
+            logger.warning(
+                "db: write lock still held after %sms, retrying (%s/%s)",
+                _BUSY_TIMEOUT_MS,
+                attempt + 1,
+                _LOCK_RETRIES,
+            )
+            await asyncio.sleep(_LOCK_RETRY_DELAY_S * (attempt + 1))
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 async def get_owned[M](
