@@ -45,8 +45,14 @@ async def wired(tmp_path):
     return plans, tasks, conversations, conversation_id
 
 
-def _ctx(plans: PlanMode, tasks: ConversationTasks, conversation_id: str, permission: str):
-    run = Run(id="r-plan", kind="chat", owner_id=OWNER, stream=RunStream())
+def _ctx(
+    plans: PlanMode,
+    tasks: ConversationTasks,
+    conversation_id: str,
+    permission: str,
+    kind: str = "chat",
+):
+    run = Run(id="r-plan", kind=kind, owner_id=OWNER, stream=RunStream())
     caps = ServiceContainer()
     caps.add(plans, as_type=PlanMode)
     caps.add(tasks, as_type=ConversationTasks)
@@ -138,6 +144,73 @@ async def test_resubmitting_after_feedback_is_a_new_revision(wired):
     assert stored.body == "second attempt"
 
 
+async def test_a_second_plan_supersedes_the_first_rather_than_accumulating(wired):
+    """A thread has **one** plan, whatever happened earlier in it.
+
+    Two ways a thread reaches a second plan, and they are the same write: answering
+    feedback on a pending one, and proposing fresh work after an earlier plan was already
+    carried out. Both replace the row, because a plan is what this thread is working to
+    *now* — and the superseded one is not a thing anyone asks the backend for: every
+    version is in the transcript as the arguments of the call that submitted it, with the
+    operator's answer beside it, which is the version history that actually gets read.
+
+    The counter is the part worth pinning. It never resets, so it stays a monotonic
+    "nth submission in this thread" rather than restarting per plan — which is exactly
+    what the panel needs, since it claims its one-shot steal per counter value and a
+    reset would let a *new* plan land on a claim the previous one had already spent.
+    """
+    plans, tasks, conversations, conversation_id = wired
+    ctx, _ = _ctx(plans, tasks, conversation_id, "plan")
+    first = {"title": "First", "body": "one", "steps": ["a"]}
+    with pytest.raises(ApprovalRequired):
+        await _call("plan_submit", first, ctx)
+    ctx.tool_call_approved = True
+    await _call("plan_submit", first, ctx)
+    assert (await plans.current(OWNER, conversation_id)).status == "approved"
+
+    # Later in the same thread: new work, a new plan. The approved one is replaced.
+    ctx, _ = _ctx(plans, tasks, conversation_id, "plan")
+    with pytest.raises(ApprovalRequired):
+        await _call("plan_submit", {"title": "Second", "body": "two", "steps": ["b"]}, ctx)
+
+    current = await plans.current(OWNER, conversation_id)
+    assert current.title == "Second"
+    assert current.status == "pending"
+    # Counting submissions, not resetting per plan — see the docstring.
+    assert current.revision == 2
+    # The first plan's task list survives until the second is *approved*: a pending plan
+    # has changed nothing yet, and wiping the work in flight on the strength of a proposal
+    # the operator has not agreed to would be acting on it early.
+    assert [i.content for i in await tasks.items(OWNER, conversation_id)] == ["a"]
+
+    ctx.tool_call_approved = True
+    await _call("plan_submit", {"title": "Second", "body": "two", "steps": ["b"]}, ctx)
+    assert [i.content for i in await tasks.items(OWNER, conversation_id)] == ["b"]
+
+
+async def test_only_one_plan_can_be_awaiting_an_answer_at_a_time(wired):
+    """There is no way to open a second question while the first is unanswered.
+
+    `plan_submit` defers, which parks the turn — so a turn cannot reach a second call,
+    and a conversation runs one turn at a time. The unique constraint on the row is the
+    same fact spelled in the schema: a thread cannot hold two plans, pending or otherwise.
+    """
+    from sqlmodel import Session, select
+
+    from models.plan import ConversationPlan
+
+    plans, tasks, _, conversation_id = wired
+    ctx, _ = _ctx(plans, tasks, conversation_id, "plan")
+    for body in ("first", "second", "third"):
+        with pytest.raises(ApprovalRequired):
+            await _call("plan_submit", {"title": "T", "body": body, "steps": ["s"]}, ctx)
+
+    with Session(plans._db) as session:  # noqa: SLF001 - asserting the stored shape
+        rows = session.exec(select(ConversationPlan)).all()
+    assert len(rows) == 1
+    assert rows[0].revision == 3
+
+
 async def test_approving_is_one_act(wired):
     """Records the yes, seeds the tasks, raises the level — and widens this turn's catalog
     so the same turn carries the plan out. A path that did any one without the others
@@ -202,6 +275,35 @@ async def test_a_run_with_no_conversation_says_so_rather_than_parking(wired):
     assert "not available" in await _call(
         "plan_submit", {"title": "T", "body": "B", "steps": ["s"]}, ctx
     )
+
+
+async def test_an_unattended_run_is_not_offered_plan_mode_at_all(wired):
+    """Both halves of the guard, because either alone leaves a run that hangs.
+
+    A scheduled task's whole point is that nobody is watching it, so a `plan_submit`
+    park there waits until the process restarts — and `plan_enter` is worse than a park:
+    it takes every mutating tool away and leaves that park as the only way back, so the
+    run could neither act nor ever be released.
+    """
+    from services.tool_policy import lane_disabled_tools
+
+    # The catalog gate, which is what actually prevents it.
+    withheld = lane_disabled_tools("task")
+    assert {"plan_enter", "plan_submit"} <= withheld
+    # Reading a plan reaches nothing and strands nobody, so it stays.
+    assert "plan_read" not in withheld
+
+    # And the belt-and-braces inside the call, for the same reason `builtin.py` carries
+    # one: "unreachable" and "hangs until restart" are too far apart to leave to one gate.
+    plans, tasks, _, conversation_id = wired
+    ctx, _ = _ctx(plans, tasks, conversation_id, "auto", kind="task")
+    assert "unattended" in await _call("plan_enter", {"reason": "x"}, ctx)
+    assert "unattended" in await _call(
+        "plan_submit", {"title": "T", "body": "B", "steps": ["s"]}, ctx
+    )
+    # Nothing moved: no plan recorded, and the level is where it was.
+    assert await plans.current(OWNER, conversation_id) is None
+    assert ctx.deps.permission == "auto"
 
 
 async def test_a_locked_vault_does_not_block_the_yes(wired):

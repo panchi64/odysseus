@@ -38,6 +38,7 @@ from pydantic import Field
 from pydantic_ai import FunctionToolset, RunContext
 from pydantic_ai.exceptions import ApprovalRequired
 
+from runs.lanes import lane_for
 from services.plan_mode import ACTING_LEVEL, PLAN_SUBMIT_TOOL, PLANNING_LEVEL, PlanMode
 from services.tool_policy import permission_disabled_tools
 
@@ -54,6 +55,22 @@ NO_THREAD = (
     "Plan mode is not available in this run — it belongs to a conversation, and this "
     "one has none. Carry on and decide with your best judgment."
 )
+
+#: What a turn that tries to plan in a run nobody is watching gets back instead of
+#: stranding itself. Belt-and-braces, exactly as ``tools/builtin.py`` is for ``ask_user``:
+#: ``services/tool_policy.ATTENDED_ONLY_TOOLS`` withholds both tools from those runs, so
+#: this should be unreachable — but "unreachable" and "hangs the run until the process
+#: restarts" are too far apart to leave to one gate. Worse here than for a question, in
+#: fact: ``plan_enter`` also takes away every tool the run could have finished with.
+NO_OPERATOR = (
+    "No operator is available to approve a plan in this run (it is running unattended). "
+    "Carry the work out directly, and say what you assumed."
+)
+
+
+def _unattended(ctx: RunContext[RunDeps]) -> bool:
+    """Whether this run has nobody in front of it to answer a plan. See :data:`NO_OPERATOR`."""
+    return lane_for(ctx.deps.run.kind) != "interactive"
 
 
 def _retarget(ctx: RunContext[RunDeps], level: str) -> None:
@@ -92,6 +109,8 @@ def plan_toolset() -> FunctionToolset[RunDeps]:
         conversation_id = ctx.deps.conversation_id
         if plans is None or conversation_id is None:
             return NO_THREAD
+        if _unattended(ctx):
+            return NO_OPERATOR
         await plans.enter(conversation_id, reason=reason, run=ctx.deps.run)
         _retarget(ctx, PLANNING_LEVEL)
         return (
@@ -156,6 +175,8 @@ def plan_toolset() -> FunctionToolset[RunDeps]:
         conversation_id = ctx.deps.conversation_id
         if plans is None or conversation_id is None:
             return NO_THREAD
+        if _unattended(ctx):
+            return NO_OPERATOR
         owner_id = ctx.deps.run.owner_id
         if not ctx.tool_call_approved:
             # Record and announce first, *then* park: the panel renders the plan the

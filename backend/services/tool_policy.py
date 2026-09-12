@@ -132,7 +132,13 @@ def vision_disabled_tools(vision: bool) -> frozenset[str]:
 # Tools that need a person sitting in front of the run to work at all — they suspend the
 # turn on the operator and have no answer without one. Written out for the same reason
 # `VISION_ONLY_TOOLS` is, and pinned against the real catalog by `tests/test_tool_policy.py`.
-ATTENDED_ONLY_TOOLS = frozenset({"builtin_ask_user"})
+#
+# `plan_submit` parks exactly as `builtin_ask_user` does, and `plan_enter` is worse than a
+# park: it takes every mutating tool away and leaves `plan_submit` as the only way back,
+# so an unattended run that entered plan mode could neither act nor ever be released.
+# Plan mode is a conversation with the operator about work not yet done; a run nobody is
+# watching has no one to have it with.
+ATTENDED_ONLY_TOOLS = frozenset({"builtin_ask_user", "plan_enter", "plan_submit"})
 
 
 def lane_disabled_tools(kind: str) -> frozenset[str]:
