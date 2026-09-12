@@ -33,7 +33,7 @@ from harness.manifests._subagent_wake import SubagentWake
 from harness.manifests._subagents import ConversationSubagents
 from services.subagent_store import SubagentStore
 from services.subagents import SubagentLauncher
-from tools.subagents import subagents_toolset
+from tools.subagents import GATED_TOOLS, subagents_toolset
 
 
 async def _build(ctx: HarnessContext) -> FeatureRuntime:
@@ -85,6 +85,11 @@ MANIFEST = FeatureManifest(
     # so it reaches nothing the chat scope does not already cover. A scope claiming no
     # prefix would grant nothing while adding a name every issued token has to carry.
     toolsets=(("subagents", subagents_toolset),),
+    # Launching a sub-agent that can change things is the operator's to allow. The tool
+    # raises for approval either way, but a name missing from the assembled gated set never
+    # reaches the approval scopes — so without this the operator would be asked again on
+    # every single launch, with no way to say yes for the conversation.
+    gated_tools=GATED_TOOLS,
     dormant=(
         DormantCategory(
             "subagents",

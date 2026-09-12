@@ -5,6 +5,8 @@ The package is four small pieces and no machinery:
 - ``spec.py`` — what a sub-agent *is*, as data.
 - ``roster.py`` — the ones this installation ships with, and how a roster is merged and
   described to the model.
+- ``definitions.py`` — the ones a *project* declares in its own files, read into the same
+  record so nothing downstream can tell the two apart.
 - ``launcher.py`` — the seam ``tools/`` resolves, implemented at the wiring layer.
 - (the implementation itself lives in ``harness/manifests/_subagents.py``, where turn
   composition is reachable.)
@@ -26,6 +28,8 @@ from services.subagents.launcher import (
 from services.subagents.roster import (
     BUILTIN,
     EXPLORER,
+    REVIEWER,
+    TEST_RUNNER,
     WORKER,
     builtin_roster,
     describe_roster,
@@ -36,6 +40,8 @@ from services.subagents.spec import SubagentSpec, WorkspacePolicy
 __all__ = [
     "BUILTIN",
     "EXPLORER",
+    "REVIEWER",
+    "TEST_RUNNER",
     "LaunchedSubagent",
     "SubagentLauncher",
     "SubagentParent",

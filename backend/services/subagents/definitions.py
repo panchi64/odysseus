@@ -1,0 +1,246 @@
+"""Sub-agents a project declares for itself, in its own files.
+
+A repository that has written down how *its* reviewer should work knows something this
+installation cannot, and the convention for writing it down already exists: a markdown
+file with YAML frontmatter under ``.claude/agents/`` — the shape Claude Code reads, and
+the one the repo-inventory tool already reports to the model. So a project definition is
+not a second kind of sub-agent. It is a :class:`SubagentSpec` built from a file instead of
+from :mod:`services.subagents.roster`, and past this module nothing can tell the two apart.
+
+**Where the files are found is not decided here.** The harness's own asset scan
+(``.claude``, ``.agents``, ``.codex``, ``.grok``, each with an ``agents/`` directory) is
+what the inventory tool reports, and reusing it is what keeps "where your agent files are"
+and "which agent files were loaded" from ever disagreeing. Files sitting directly in
+``.agents/`` are picked up as well, because a directory named that is an agents directory
+whatever the scan's shape suggests.
+
+**A bad file is skipped, never fatal.** These are hand-written, they arrive with a
+checkout, and nobody editing one is watching this process. A file that cannot be read
+costs its own sub-agent and nothing else — the roster is still the built-ins plus whatever
+parsed, and what went wrong is logged rather than raised into a turn the operator was in
+the middle of.
+
+**A declaration is a request, never a grant.** ``permission`` here is folded against the
+launching thread's own level at launch, so a file asking for the run of the place gets
+exactly what the operator already allowed. That is enforced in the launcher rather than
+trusted here — this module's job is to read the file honestly, including honestly
+reporting what it asks for.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from collections.abc import Iterable
+from pathlib import Path
+from typing import Any
+
+from pydantic_ai_harness.repo_context import RepoContext
+from pydantic_ai_harness.repo_context._inventory import scan_assets
+
+from core.frontmatter import FrontmatterError, split_frontmatter
+from services.permissions import PERMISSION_LEVELS, STRICTEST_PERMISSION
+from services.subagents.spec import SubagentSpec, WorkspacePolicy
+
+logger = logging.getLogger(__name__)
+
+#: The roots scanned for ``agents/*.md``, taken from the capability's own default rather
+#: than restated, so this and the inventory tool describe one filesystem layout.
+ASSET_ROOTS: tuple[str, ...] = tuple(RepoContext.asset_roots)
+
+#: The directory whose name says what is in it, read flat as well as through the scan
+#: above. A project that put ``reviewer.md`` straight in here meant an agent by it.
+FLAT_ROOT = ".agents"
+
+#: What a name may be. Deliberately looser than the skills' own rule in one way — an
+#: underscore is allowed, because the built-ins use one and a project renaming its file to
+#: match a built-in is how shadowing is expressed.
+_NAME = re.compile(r"^[a-z0-9]([a-z0-9_-]*[a-z0-9])?$")
+
+#: How much of a description is kept. It is joined with its peers into the launch tool's
+#: description, which is paid for on every request of every turn — a project file that
+#: pasted an essay in here would otherwise charge the operator for it forever.
+DESCRIPTION_MAX_CHARS = 400
+
+#: How much of a body is kept as the brief. Charged once per request of the *sub-agent's*
+#: own turns rather than the parent's, so the room is larger; the cap is against a file
+#: that is not a brief at all (a whole design document committed under ``agents/``).
+BRIEF_MAX_CHARS = 8_000
+
+_WHITESPACE_RUN = re.compile(r"\s+")
+
+#: Tool names from the foreign standard that observe and nothing more. See
+#: :func:`_declared_ceiling` for what is and is not done with them.
+_READ_ONLY_FOREIGN_TOOLS = frozenset(
+    {
+        "read",
+        "glob",
+        "grep",
+        "ls",
+        "notebookread",
+        "todoread",
+        "webfetch",
+        "websearch",
+    }
+)
+
+_WORKSPACES: frozenset[str] = frozenset({"shared", "isolated", "own"})
+
+
+class AgentFileError(ValueError):
+    """The file is not a usable agent definition."""
+
+
+def project_specs(root: Path) -> tuple[SubagentSpec, ...]:
+    """Every sub-agent this project declares, by name, in discovery order.
+
+    Never raises. A project whose agent files are all broken has the roster it started
+    with, which is the only behaviour that makes sense for a file nobody is looking at
+    while the model is mid-turn.
+    """
+    specs: dict[str, SubagentSpec] = {}
+    for path in agent_files(root):
+        try:
+            spec = parse_agent_file(path.read_text(encoding="utf-8"), name=path.stem)
+        except (AgentFileError, OSError, UnicodeDecodeError) as exc:
+            logger.info("subagents: skipped agent file %s (%s)", path, exc)
+            continue
+        specs[spec.name] = spec
+    return tuple(specs.values())
+
+
+def agent_files(root: Path) -> list[Path]:
+    """The agent definition files under a project root, deduplicated and ordered.
+
+    Sorted by path rather than left in scan order so two checkouts of one repository
+    produce the same roster in the same order — the order is what the model reads the
+    descriptions in, and a roster that shuffles between runs is a prompt prefix that never
+    caches.
+    """
+    found: set[Path] = set()
+    for entry in scan_assets(root, ASSET_ROOTS).roots:
+        found.update((root / path).resolve() for path in entry.agents)
+    flat = root / FLAT_ROOT
+    if flat.is_dir():
+        found.update(path.resolve() for path in flat.glob("*.md") if path.is_file())
+    return sorted(found)
+
+
+def parse_agent_file(text: str, *, name: str) -> SubagentSpec:
+    """One agent definition file as a spec.
+
+    ``name`` is the filename's stem, used when the frontmatter does not name the agent
+    itself — the standard allows either, and the file is usually named for what is in it.
+    """
+    try:
+        fields, body = split_frontmatter(text)
+    except FrontmatterError as exc:
+        raise AgentFileError(str(exc)) from None
+
+    spec_name = _name(fields.get("name"), fallback=name)
+    description = _text(fields.get("description"), field="description")
+    if not description:
+        # The one field with no sensible default: it is the only thing the model reads
+        # when choosing, so an agent without one can be launched by nobody.
+        raise AgentFileError(f"agent {spec_name!r} has no description")
+    brief = body.strip()
+    if not brief:
+        # Likewise the body. Frontmatter says which agent this is; the body is the whole
+        # of what it is told to do, and an empty one is an agent with no instructions.
+        raise AgentFileError(f"agent {spec_name!r} has no instructions below its frontmatter")
+
+    return SubagentSpec(
+        name=spec_name,
+        description=_clip(description, DESCRIPTION_MAX_CHARS),
+        brief=_clip(brief, BRIEF_MAX_CHARS),
+        permission_ceiling=_declared_ceiling(fields),
+        workspace=_declared_workspace(fields, name=spec_name),
+    )
+
+
+def _name(raw: Any, *, fallback: str) -> str:
+    value = _text(raw) or fallback
+    value = value.strip().lower().replace(" ", "-")
+    if not _NAME.match(value):
+        raise AgentFileError(
+            f"{value!r} is not a usable agent name — lowercase letters, digits, "
+            "hyphens and underscores only"
+        )
+    return value
+
+
+def _text(raw: Any, *, field: str | None = None) -> str:
+    """A frontmatter scalar as one line of text.
+
+    Collapsed rather than rejected for containing newlines: a description written as a YAML
+    block scalar is a normal thing to write, and it is rendered as a single line in the
+    launch tool's roster whatever the file did.
+    """
+    if raw is None:
+        return ""
+    if not isinstance(raw, str):
+        if field is None:
+            return ""
+        raise AgentFileError(f"{field} must be text")
+    return _WHITESPACE_RUN.sub(" ", raw).strip()
+
+
+def _clip(value: str, limit: int) -> str:
+    return value if len(value) <= limit else value[: limit - 1].rstrip() + "…"
+
+
+def _declared_workspace(fields: dict[str, Any], *, name: str) -> WorkspacePolicy:
+    """Which files this agent works in, if the file says.
+
+    Ours rather than the foreign standard's — that standard has no notion of a workspace,
+    because the agent it describes always runs in the one checkout. A project that wants
+    its sub-agent kept out of the working tree has no other way to say so, and an
+    unrecognised value falls back to the default rather than failing the file, since
+    getting this wrong should not cost the project its agent.
+    """
+    declared = _text(fields.get("workspace")).lower()
+    if not declared:
+        return "shared"
+    if declared not in _WORKSPACES:
+        logger.info(
+            "subagents: agent %r declared unknown workspace %r; using shared", name, declared
+        )
+        return "shared"
+    return declared  # type: ignore[return-value]
+
+
+def _declared_ceiling(fields: dict[str, Any]) -> str | None:
+    """How far this agent may reach, read from whichever of the two fields says something.
+
+    ``permission`` is ours and names one of this installation's levels directly.
+
+    ``tools`` is the foreign standard's, and is read for **one bit only**: whether
+    everything it lists observes. It cannot be honoured tool-for-tool, and pretending
+    otherwise would be worse than ignoring it — those names are Claude Code's
+    (``Read``, ``Grep``, ``Bash``), not this catalog's, so an allow-list applied literally
+    would withhold every tool this installation has and leave the sub-agent unable to do
+    anything at all. What the field reliably carries is the author's intent about *reach*,
+    and the read-only case is the one where that intent is unambiguous and worth keeping:
+    an agent whose file says it only reads is held to it. Anything else is left to the
+    level the launcher works out, which is already capped by the launching thread's own.
+    """
+    declared = _text(fields.get("permission")).lower()
+    if declared in PERMISSION_LEVELS:
+        return declared
+    listed = _tool_names(fields.get("tools"))
+    if listed and listed <= _READ_ONLY_FOREIGN_TOOLS:
+        return STRICTEST_PERMISSION
+    return None
+
+
+def _tool_names(raw: Any) -> frozenset[str]:
+    """The ``tools`` field's names, lowercased. Accepts the standard's comma-separated
+    string and a YAML list, since both are written in the wild."""
+    parts: Iterable[str]
+    if isinstance(raw, str):
+        parts = re.split(r"[,\s]+", raw)
+    elif isinstance(raw, list):
+        parts = [str(part) for part in raw]
+    else:
+        return frozenset()
+    return frozenset(part.strip().lower() for part in parts if part.strip())

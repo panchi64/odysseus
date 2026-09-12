@@ -188,6 +188,7 @@ async def test_booted_app_assembles_the_same_catalog():
             "plan_submit",
             "shell_run_command",
             "shell_start_command",
+            "subagents_launch",
         }
         # ...and every one of them is a real, registered tool, so the operator's scope
         # list can actually offer it.

@@ -18,7 +18,23 @@ from collections.abc import Iterable, Mapping
 from services.subagents.spec import SubagentSpec
 
 EXPLORER = "explorer"
+REVIEWER = "reviewer"
+TEST_RUNNER = "test_runner"
 WORKER = "worker"
+
+#: The tools a sub-agent whose job is to *report* is not offered. Named rather than derived
+#: from a sensitivity class because the two are not the same question: this is about the
+#: sub-agent's job, not about how far it may reach, and a reviewer withheld from writing is
+#: still allowed to run things.
+#:
+#: Stated plainly: this stops a sub-agent from *deciding* to edit, not from being able to.
+#: One that also has a shell can obviously write a file through it. That is the right shape
+#: anyway — the fence that matters is the permission level and the operator's approval, and
+#: what this prevents is the common, well-meant failure where an agent asked to find the
+#: problem quietly fixes it instead and reports a suite that now passes.
+_NO_EDITING: frozenset[str] = frozenset(
+    {"files_write_file", "files_edit_file", "files_create_directory"}
+)
 
 _EXPLORER_BRIEF = (
     "You are an explorer. Search and read the workspace you have been given and answer "
@@ -30,6 +46,32 @@ _EXPLORER_BRIEF = (
     "Report only what you actually found. If the answer is not in the workspace, say so "
     "plainly and say where you looked — a confident guess is worse than nothing here, "
     "because nobody downstream can tell it apart from something you read."
+)
+
+_REVIEWER_BRIEF = (
+    "You are a reviewer. Read the work you were pointed at and say what is wrong with "
+    "it.\n\n"
+    "You change nothing. Do not fix what you find — the agent that launched you is the "
+    "one deciding what to do about it, and a problem you quietly repaired is one it never "
+    "learns about.\n\n"
+    "Report problems, each with the file and line it is at and what would go wrong if it "
+    "shipped. Order them by how much they matter, and say which ones you are unsure "
+    "about. Do not pad the list: a review that lists eleven things to be thorough buries "
+    "the two that were real, and everything you raise costs somebody a decision.\n\n"
+    "If you found nothing worth raising, say so. That is a useful answer and a short one."
+)
+
+_TEST_RUNNER_BRIEF = (
+    "You are a test runner. Run what you were asked to run, and report what happened.\n\n"
+    "Find the project's own way of running its tests before inventing one — the "
+    "instructions it ships, the scripts it defines — and use it.\n\n"
+    "Do not fix anything. You are not offered the editing tools, and that is deliberate: "
+    "a failure you repaired on the way past is a failure the agent that launched you never "
+    "hears about, and it is the one deciding whether the test or the code is wrong.\n\n"
+    "Report the command you ran, whether it passed, and for each failure its name and the "
+    "part of the output that says why. Quote the error, do not summarise it — the "
+    "difference between two assertion failures is usually the whole answer. If the suite "
+    "would not run at all, say that plainly rather than reporting zero failures."
 )
 
 _WORKER_BRIEF = (
@@ -61,6 +103,38 @@ BUILTIN: tuple[SubagentSpec, ...] = (
         # The launching thread's own workspace: an explorer reads the work *in progress*,
         # and a copy taken at launch would answer questions about a tree that has since
         # moved on. Safe to share precisely because it cannot write to it.
+        workspace="shared",
+    ),
+    SubagentSpec(
+        name=REVIEWER,
+        description=(
+            "reads work that has already been done — a change, a file, a design — and "
+            "reports what is wrong with it, in order of how much it matters, changing "
+            "nothing itself"
+        ),
+        brief=_REVIEWER_BRIEF,
+        # Read-only the same way the explorer is: by never being offered a tool that
+        # changes anything, which is the only form of it that survives a model deciding
+        # the fix was obvious.
+        permission_ceiling="plan",
+        # The launching thread's own workspace, and necessarily so — a review is of the
+        # work in progress, and a copy taken at launch would review a tree that has since
+        # moved on.
+        workspace="shared",
+    ),
+    SubagentSpec(
+        name=TEST_RUNNER,
+        description=(
+            "runs the project's tests (or a command you name) and reports what failed and "
+            "why, quoting the output — it does not fix anything"
+        ),
+        brief=_TEST_RUNNER_BRIEF,
+        # Not read-only: running the suite is the job, and a level that withholds
+        # execution would leave it reporting on tests it never ran.
+        withheld=_NO_EDITING,
+        # Without a shell this is not a degraded test runner, it is a model recalling what
+        # the suite probably does — which reads downstream exactly like a real result.
+        required=frozenset({"shell_run_command"}),
         workspace="shared",
     ),
     SubagentSpec(

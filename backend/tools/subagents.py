@@ -16,6 +16,12 @@ say it furthest from the choice. Generating it from the roster is what stops the
 failure: a hand-written list naming sub-agents that no longer exist and omitting the ones
 that do, with nothing to make the two disagree loudly.
 
+**And regenerated per run**, because a project declares sub-agents of its own in files and
+which project that is depends on the run. The description is rewritten in `get_tools` from
+the run's own roster, so a repository's `reviewer` is one the model can actually see rather
+than one it would have to be told about separately — and one the model *could* not see is
+one that may as well not exist.
+
 **Only a sub-agent that can write is gated.** Reading changes nothing, and asking about it
 would be a question with one sensible answer asked over and over. One that edits does work
 the operator's own merge will carry out, so launching it is theirs to allow — once per
@@ -24,8 +30,13 @@ conversation, if they grant it that far.
 
 from __future__ import annotations
 
-from pydantic_ai import FunctionToolset, ModelRetry, RunContext
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
+from typing import Any
+
+from pydantic_ai import AbstractToolset, FunctionToolset, ModelRetry, RunContext
 from pydantic_ai.exceptions import ApprovalRequired
+from pydantic_ai.toolsets import ToolsetTool, WrapperToolset
 
 from services.permissions import STRICTEST_PERMISSION
 from services.subagents import (
@@ -37,13 +48,20 @@ from services.subagents import (
     describe_roster,
 )
 from tools.deps import RunDeps
+from tools.project_agents import run_roster
 from tools.workspace import run_workspace
+
+#: The launch tool's name inside the toolset, before the category prefix makes it
+#: ``subagents_launch``. Named rather than spelled at each of its two uses — the
+#: registration and the per-run description rewrite — because those two agreeing is what
+#: decides whether the rewrite lands on anything at all, and a typo would simply do nothing.
+LAUNCH_TOOL = "launch"
 
 #: The conditionally-gated name this category contributes to the approval-scope
 #: vocabulary. The raise below parks the run either way, but a name absent from the
 #: assembled gated set never reaches the approval scopes, so the operator could not grant
 #: it for the conversation and would be asked once per launch.
-GATED_TOOLS: frozenset[str] = frozenset({"subagents_launch"})
+GATED_TOOLS: frozenset[str] = frozenset({f"subagents_{LAUNCH_TOOL}"})
 
 _UNAVAILABLE = "Sub-agents are unavailable in this deployment."
 
@@ -73,7 +91,7 @@ conflict rather than silently taking one side.
 """
 
 
-def subagents_toolset() -> FunctionToolset[RunDeps]:
+def subagents_toolset() -> AbstractToolset[RunDeps]:
     toolset = FunctionToolset[RunDeps]()
 
     async def launch(
@@ -82,7 +100,7 @@ def subagents_toolset() -> FunctionToolset[RunDeps]:
         launcher = ctx.deps.caps.get_optional(SubagentLauncher)
         if launcher is None:
             return {"launched": False, "detail": _UNAVAILABLE}
-        roster = builtin_roster()
+        roster = await run_roster(ctx)
         spec = roster.get(agent_name)
         if spec is None:
             # Recoverable: the model very likely guessed a name. Naming the roster back
@@ -118,8 +136,11 @@ def subagents_toolset() -> FunctionToolset[RunDeps]:
             ),
         }
 
-    launch.__doc__ = _LAUNCH_DOC.format(roster=describe_roster(builtin_roster()))
-    toolset.add_function(launch, name="launch", requires_approval=True)
+    # The built-ins alone, which is what the operator's catalog shows and what a run with
+    # no project of its own is offered. A run that has one gets this same text with its
+    # roster in it, rewritten in `get_tools` below.
+    launch.__doc__ = launch_description(builtin_roster())
+    toolset.add_function(launch, name=LAUNCH_TOOL, requires_approval=True)
 
     @toolset.tool(name="read")
     async def read_subagent(ctx: RunContext[RunDeps], subagent_id: str) -> dict:
@@ -147,7 +168,56 @@ def subagents_toolset() -> FunctionToolset[RunDeps]:
             "error": view.error,
         }
 
-    return toolset
+    return _ProjectRoster(toolset)
+
+
+def launch_description(roster: Mapping[str, SubagentSpec]) -> str:
+    """What the model is told it may launch, for one roster."""
+    return _LAUNCH_DOC.format(roster=describe_roster(roster))
+
+
+@dataclass
+class _ProjectRoster(WrapperToolset[RunDeps]):
+    """The launch tool, described against the roster of the run that is reading it.
+
+    The wrapper exists because the category is assembled once at startup and shared by
+    every conversation, while a project's own sub-agents are a fact about the run's
+    workspace. `get_tools` is the hook the library calls per request with a `RunContext` in
+    hand, which is the earliest point both halves are known.
+
+    Only the *description* moves. The tool's name and schema are the same for every run —
+    which is what keeps the operator's catalog (read off `.tools`, a static registry with
+    no run to resolve) honest about the agent's real stack, rather than describing a tool
+    whose shape depends on where it is called.
+    """
+
+    @property
+    def id(self) -> str:
+        # The library's wrapper answers `None`, which would cost this category its identity
+        # for anything keying on it.
+        return "subagents"
+
+    @property
+    def tools(self) -> dict[str, Any]:
+        """The static registry `tools/catalog.py` enumerates for the settings surface.
+        Read from the wrapped toolset, because a catalog row is not per-run."""
+        return getattr(self.wrapped, "tools", {})
+
+    async def get_tools(self, ctx: RunContext[RunDeps]) -> dict[str, ToolsetTool[RunDeps]]:
+        tools = await super().get_tools(ctx)
+        tool = tools.get(LAUNCH_TOOL)
+        if tool is None:
+            # Switched off, or withheld at this level. Nothing to describe.
+            return tools
+        described = launch_description(await run_roster(ctx))
+        if described == tool.tool_def.description:
+            # The overwhelmingly common case — no project agent files — and worth taking
+            # early: an identical object keeps the request's prefix byte-for-byte stable.
+            return tools
+        return {
+            **tools,
+            LAUNCH_TOOL: replace(tool, tool_def=replace(tool.tool_def, description=described)),
+        }
 
 
 def _can_write(spec: SubagentSpec) -> bool:
