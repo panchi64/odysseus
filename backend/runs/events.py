@@ -723,13 +723,20 @@ class ReviewCompleted(_Body):
 
 
 #: Who a queued message came from. ``operator`` is somebody typing while a run is going;
-#: ``subagent`` is a sub-agent's report, delivered into the thread that launched it.
+#: ``subagent`` is a sub-agent's report, delivered into the thread that launched it; and
+#: ``parent`` is the same link read the other way — the launching agent redirecting a
+#: sub-agent that is still working.
 #:
-#: The two ride the same road deliberately — the injection point already guarantees a
+#: All three ride the same road deliberately — the injection point already guarantees a
 #: queued message never interrupts an in-flight model stream, which is exactly what a
-#: report needs — but they must not *read* the same. A report rendered as the operator's
-#: own words is a transcript that lies about who said what, to the reader and to the model.
-MessageSource = Literal["operator", "subagent"]
+#: report and a direction both need — but they must not *read* the same. A report rendered
+#: as the operator's own words is a transcript that lies about who said what, to the reader
+#: and to the model.
+#:
+#: This is the load-bearing answer to "who sent this". The envelope
+#: (``services/subagents/report.py``) is a label anyone who can type angle brackets could
+#: forge; this is structural and never arrives from outside.
+MessageSource = Literal["operator", "subagent", "parent"]
 
 
 class MessageQueued(_Body):

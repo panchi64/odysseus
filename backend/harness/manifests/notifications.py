@@ -70,8 +70,21 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
         policy of its own: research was a conversation-less run against a store, so its
         completion had to be special-cased. A research thread is a thread, nobody is
         streaming the run the agent started in the background, and so the ordinary
-        "finished while you weren't watching" branch says exactly the right thing."""
+        "finished while you weren't watching" branch says exactly the right thing.
+
+        A **hidden** thread is the exception, and it is the sub-agents' one. A notification
+        is a deep link, and a sub-agent's conversation is deliberately kept out of the
+        session list — so one finishing would announce a thread the operator cannot find,
+        and a fan-out of six would announce six of them at once. What they watch instead is
+        the card, which is where the report lands anyway; the thread that launched it still
+        notifies for itself when its own turn ends."""
         if run.conversation_id is None or run.status in (RunStatus.cancelled, RunStatus.blocked):
+            return
+        try:
+            if await conversations.is_hidden(run.conversation_id):
+                return
+        except Exception:
+            logger.exception("notifications: failed to read run %s's thread", run.id)
             return
         try:
             summary = await conversations.get_summary(run.conversation_id, OPERATOR_ID)

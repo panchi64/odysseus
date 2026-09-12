@@ -36,7 +36,6 @@ DORMANT = {
     "browse": "drive a real browser",
     "calendar": "the operator's calendars",
     "mail": "the operator's email",
-    "research": "a thread that investigates on its own",
     "subagents": "another agent that works on its own",
     "vault": "the operator's stored secrets",
 }

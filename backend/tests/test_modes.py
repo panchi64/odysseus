@@ -96,6 +96,29 @@ class TestWhatEachModeCarries:
         # — see `prompts/modes.py`.
         assert {name for name, s in MODES.items() if s.instructions} == {"research", "code"}
 
+    def test_the_research_prompt_is_true_on_the_turns_a_report_wakes(self):
+        """Research mode's prose is one text on purpose, and it has two readers' worth of
+        turns to be true on.
+
+        A research thread fans its topics out to sub-agents and ends its turn; each report
+        comes back as a `wake` turn, which is **not** interactive — so `plan_submit` and
+        `ask_user` are withheld on exactly the turns that synthesize the answer
+        (`services/tool_policy.py`'s attended-only set). A sequence that only ever said
+        "ask, then plan, then launch" would be instructing a woken turn to reach for two
+        tools it does not have. So the text has to name where a woken turn picks it up.
+        """
+        from runs.lanes import lane_for
+        from services.tool_policy import ATTENDED_ONLY_TOOLS
+
+        # The premise, pinned so this test fails if the lane ever changes rather than
+        # silently stopping to mean anything.
+        assert lane_for("wake") != "interactive"
+        assert {"plan_submit", "builtin_ask_user"} <= ATTENDED_ONLY_TOOLS
+
+        prose = MODES["research"].instructions
+        assert "reading this because a researcher just reported" in prose
+        assert "past the asking and the planning" in prose
+
     def test_research_raises_the_round_trip_floor(self):
         assert MODES["research"].request_limit is not None
         assert MODES["normal"].request_limit is None

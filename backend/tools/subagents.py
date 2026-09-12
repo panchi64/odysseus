@@ -1,6 +1,9 @@
 """The `subagents` category — handing a self-contained piece of work to another agent.
 
-Two tools, and the shape of them is the design.
+Four tools, and the shape of them is the design. One hands work over; the other three exist
+because handing it over is not the same as forgetting about it — `send` changes what a
+sub-agent was asked for while it still can, `list` says what is still out, and `read` says
+where one has got to.
 
 **`launch` does not wait.** A sub-agent runs as its own Run on the same substrate and
 takes minutes. Blocking this turn on it would spend the turn's whole step budget watching
@@ -86,6 +89,9 @@ bug we discussed" describes nothing it can act on.
 your files. Ask for it when you mean to keep editing meanwhile: two agents in one tree is
 fine when one is waiting and a mess when neither is. A file you both changed comes back as
 a reported conflict rather than silently taking one side.
+
+Once one is running you are not stuck with what you asked for: `subagents_send` amends a
+sub-agent's brief while it works, and `subagents_list` says which of yours are still out.
 """
 
 
@@ -145,6 +151,81 @@ def subagents_toolset() -> AbstractToolset[RunDeps]:
     # guessed agent name come back as one retry instead of as a question the operator has
     # to answer before the model can be told it got the name wrong.
     toolset.add_function(launch, name=LAUNCH_TOOL)
+
+    @toolset.tool(name="send")
+    async def send_to_subagent(
+        ctx: RunContext[RunDeps], subagent_id: str, message: str
+    ) -> dict:
+        """Redirect a sub-agent that is still working, by amending what you asked it for.
+
+        Use it when what you want from one has genuinely changed — a constraint arrived, the
+        operator narrowed the question, another sub-agent already covered half of it. It is
+        far cheaper than letting one finish the wrong work and launching a replacement.
+
+        This is **not** a conversation. The sub-agent does not answer you; it folds your
+        message into its brief and carries on, and the one thing you get back from it is its
+        report when it finishes. Do not use this to ask it how it is getting on — that is
+        `subagents_read`.
+
+        Delivery is best effort: the sub-agent reads it at its next step, so one that is
+        about to finish may never see it. The result says which.
+        """
+        launcher = ctx.deps.caps.get_optional(SubagentLauncher)
+        if launcher is None:
+            return {"sent": False, "detail": _UNAVAILABLE}
+        try:
+            view = await launcher.steer(ctx.deps.owner_id, subagent_id, message)
+        except SubagentUnavailableError as exc:
+            # Recoverable, and usually a race with a sub-agent that has just finished —
+            # the model should read its report rather than fail the turn over this.
+            raise ModelRetry(str(exc)) from exc
+        return {
+            "sent": True,
+            "subagent_id": view.subagent_id,
+            "agent_name": view.name,
+            "status": view.status,
+            "detail": (
+                "Queued for the sub-agent's next step. It will not reply to this — carry "
+                "on, and you will get its report when it finishes. If it was already "
+                "close to done it may finish without reading this, so do not assume the "
+                "report reflects it."
+            ),
+        }
+
+    @toolset.tool(name="list")
+    async def list_subagents(ctx: RunContext[RunDeps]) -> dict:
+        """The sub-agents of this thread that are still working — what you are waiting on.
+
+        One that has finished is not here: it has already told you what it found, so this is
+        the list of what is still outstanding rather than a history to compare against.
+
+        Check it before you conclude. Answering while half the work is still out produces an
+        answer built on half the evidence, and you will be woken by the rest of it
+        afterwards with nothing left to do about it.
+        """
+        launcher = ctx.deps.caps.get_optional(SubagentLauncher)
+        if launcher is None:
+            return {"available": False, "detail": _UNAVAILABLE}
+        views = await launcher.live(
+            ctx.deps.owner_id, conversation_id=ctx.deps.conversation_id
+        )
+        return {
+            "available": True,
+            "working": [
+                {
+                    "subagent_id": view.subagent_id,
+                    "agent_name": view.name,
+                    "task": view.task,
+                    "status": view.status,
+                }
+                for view in views
+            ],
+            "detail": (
+                "Nothing of yours is still working — everything you launched has reported."
+                if not views
+                else "Still working. You will be told as each one finishes; do not poll."
+            ),
+        }
 
     @toolset.tool(name="read")
     async def read_subagent(ctx: RunContext[RunDeps], subagent_id: str) -> dict:

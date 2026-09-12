@@ -32,7 +32,7 @@ from pydantic_ai import (
 
 from core.serde import jsonable
 from core.text import chars_to_tokens
-from services.subagents.report import report_body
+from services.subagents.report import direction_body, report_body
 
 if TYPE_CHECKING:  # a type, not a dependency — nothing here calls into the run substrate
     from runs import TurnOverhead
@@ -532,10 +532,18 @@ def project_tree(
                 # envelope `agent/injected.py` writes, which is a constant of ours rather
                 # than a shape guessed at from the text.
                 report = report_body(text)
+                # The same link read the other way: the launching agent's mid-flight
+                # direction, in a sub-agent's own thread. Only the envelope is stripped —
+                # the message stays a `user` turn, because in a thread nobody else can type
+                # in, the agent that launched it *is* the one giving it direction, and a
+                # role of its own would be a new vocabulary word for a distinction the
+                # reader of that transcript cannot act on.
+                direction = None if report is not None else direction_body(text)
+                body = report if report is not None else direction
                 views.append(
                     MessageView(
-                        role="user" if report is None else "subagent",
-                        content=text if report is None else report,
+                        role="subagent" if report is not None else "user",
+                        content=text if body is None else body,
                         timestamp=getattr(part, "timestamp", None),
                         id=node_id,
                     )

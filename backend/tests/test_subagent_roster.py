@@ -25,6 +25,7 @@ from pathlib import Path
 
 import pytest
 
+from services.modes import mode_spec
 from services.subagents import BUILTIN, SubagentSpec, builtin_roster, merged_roster
 from services.subagents.definitions import (
     AgentFileError,
@@ -86,6 +87,48 @@ class TestTheBuiltIns:
             # Generated rather than written out, so a sub-agent added to the roster is one
             # the model can actually see. A name missing here may as well not exist.
             assert f"`{spec.name}`" in described
+
+
+class TestTheResearcher:
+    """The one built-in that replaced a whole feature.
+
+    Research used to be its own launcher, its own abstraction and two tools of its own
+    (`research_start` / `research_read`) that the model polled. It is now one row in the
+    roster, which only works if the row carries everything the deleted module enforced.
+    """
+
+    def test_it_refuses_rather_than_answering_from_memory(self):
+        # The direct port of the deleted `_REQUIRED_WEB_TOOLS` check. A researcher with no
+        # way to reach the web still answers — from the model's own memory — and reads, in
+        # a report, exactly as though it had gone and looked.
+        assert builtin_roster()["researcher"].required == frozenset(
+            {"web_search", "web_fetch"}
+        )
+
+    def test_it_reads_and_therefore_launches_without_asking(self):
+        # Reading the web changes nothing, so the operator is not asked. What they rule on
+        # is the *plan* the research thread submits before it fans out.
+        assert builtin_roster()["researcher"].permission_ceiling == "plan"
+
+    def test_it_does_not_run_in_research_mode(self):
+        """The mode named `research` is the *orchestrator's*.
+
+        Its prompt is written for a thread with an operator to ask and a plan to submit,
+        and a sub-agent has neither tool (`ATTENDED_ONLY_TOOLS` withholds both from every
+        linked run). A researcher reading that prompt would be told to do two things it
+        cannot, so it runs in the mode research mode is otherwise identical to and carries
+        its whole job in its brief instead.
+        """
+        spec = builtin_roster()["researcher"]
+        assert spec.mode == "normal"
+        # And the floor research mode would have supplied comes with it explicitly, since
+        # the mode that used to is not this sub-agent's.
+        assert spec.request_limit == mode_spec("research").request_limit
+
+    def test_it_works_nowhere_near_the_launching_threads_files(self):
+        # It is reading the open web, which is the case `own` exists for. Sharing would
+        # put a long-running reader in the operator's tree for no reason at all.
+        assert builtin_roster()["researcher"].workspace == "own"
 
 
 class TestReadingAProjectsOwnFiles:
@@ -287,7 +330,7 @@ class TestWhatTheModelActuallySees:
         # The settings surface enumerates `.tools`, which has no run to resolve. A wrapper
         # that stopped forwarding it would silently cost the operator every toggle in this
         # category.
-        assert set(subagents_toolset().tools) == {"launch", "read"}
+        assert set(subagents_toolset().tools) == {"launch", "send", "list", "read"}
 
     async def test_the_app_the_operator_runs_has_the_rewrite_in_its_stack(self):
         from tests._helpers import client_app

@@ -164,6 +164,27 @@ class TestHowTheOperatorReadsIt:
         # about the operator, in the third person, and the operator is who reads this.
         assert views[0].content == "I found it"
 
+    def test_a_direction_keeps_its_turn_and_loses_its_markup(self):
+        from services.conversation_view import project_tree
+        from services.subagents.report import direction_envelope
+
+        views = project_tree(
+            [
+                (
+                    "n1",
+                    ModelRequest(
+                        parts=[UserPromptPart(content=direction_envelope("only the parser"))]
+                    ),
+                )
+            ]
+        )
+        # The mirror of a report, and deliberately *not* a role of its own. This is read in
+        # a sub-agent's own thread, where nobody else can type: the agent that launched it
+        # is the only thing that gives it direction, so `user` is what that turn is. What
+        # comes off is the framing, which addresses the sub-agent and not the reader.
+        assert [v.role for v in views] == ["user"]
+        assert views[0].content == "only the parser"
+
     def test_the_operators_own_words_are_still_theirs(self):
         from services.conversation_view import project_tree
 

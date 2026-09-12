@@ -266,6 +266,32 @@ class ConversationSubagents(SubagentLauncher):
             "whatever does not depend on them, or end your turn."
         )
 
+    async def steer(self, owner_id: str, subagent_id: str, message: str) -> SubagentView:
+        message = message.strip()
+        if not message:
+            raise SubagentUnavailableError("A direction with nothing in it changes nothing.")
+        row = await self._records.get(subagent_id, owner_id)
+        if row is None:
+            raise SubagentUnavailableError(
+                f"No sub-agent {subagent_id!r} — check the id you were given when you "
+                "launched it."
+            )
+        run = self._runs.get(row.run_id)
+        if run is None or run.is_terminal:
+            # Not a failure of the caller's: it is racing something that finished. Say what
+            # is true now, because the answer it wanted is already on its way as a report.
+            raise SubagentUnavailableError(
+                f"`{row.spec_name}` has already finished, so there is nothing left to "
+                "redirect. Its report is on its way to you — read it, and launch another "
+                "sub-agent if there is more to do."
+            )
+        # The steering road, unchanged: queued on the run and handed to its next
+        # not-yet-sent request, so this cannot interrupt a model mid-stream. `source` is
+        # what makes it read as its launcher's direction rather than as an operator who is
+        # not there (`agent/injected.py` picks the envelope from it).
+        run.enqueue_message(message, source="parent")
+        return self._live_view(row)
+
     async def read(self, owner_id: str, subagent_id: str) -> SubagentView:
         row = await self._records.get(subagent_id, owner_id)
         if row is None:
@@ -317,10 +343,19 @@ class ConversationSubagents(SubagentLauncher):
         )
 
 
-#: The one tool a sub-agent is never offered. Depth stays 1 by construction rather than by
-#: a counter somebody has to remember to increment: a tree of agents is unbounded cost and
+#: The tools a sub-agent is never offered. Depth stays 1 by construction rather than by a
+#: counter somebody has to remember to increment: a tree of agents is unbounded cost and
 #: unbounded blast radius, and nothing about the work needs one.
-_NO_RECURSION: frozenset[str] = frozenset({"subagents_launch"})
+#:
+#: ``send`` and ``list`` are here for a second reason, and it is not depth. They address a
+#: sub-agent by id within the owner, not within the launching thread — so a sub-agent
+#: keeping them could redirect a *sibling*, with text the envelope frames as coming from
+#: the agent that launched it. Nothing about a sub-agent's job needs to reach another one.
+#: (``subagents_read`` stays: it only reads, and with no way to launch or list, a sub-agent
+#: has no id to read but its own.)
+_NO_RECURSION: frozenset[str] = frozenset(
+    {"subagents_launch", "subagents_send", "subagents_list"}
+)
 
 
 def _isolation(declared: WorkspacePolicy, *, isolate: bool) -> WorkspacePolicy:

@@ -21,6 +21,7 @@ EXPLORER = "explorer"
 REVIEWER = "reviewer"
 TEST_RUNNER = "test_runner"
 WORKER = "worker"
+RESEARCHER = "researcher"
 
 #: The tools a sub-agent whose job is to *report* is not offered. Named rather than derived
 #: from a sensitivity class because the two are not the same question: this is about the
@@ -72,6 +73,25 @@ _TEST_RUNNER_BRIEF = (
     "part of the output that says why. Quote the error, do not summarise it — the "
     "difference between two assertion failures is usually the whole answer. If the suite "
     "would not run at all, say that plainly rather than reporting zero failures."
+)
+
+_RESEARCHER_BRIEF = (
+    "You are a researcher. You have been given one question and you read the open web to "
+    "answer it.\n\n"
+    "You are almost certainly one of several working in parallel on different parts of a "
+    "larger question, so stay on the one you were given — another researcher has the "
+    "neighbouring topic, and work you duplicate is paid for twice.\n\n"
+    "Gather before you conclude. Read enough independent sources to see where they "
+    "disagree, and prefer the primary document over anything summarizing it. A single "
+    "source that happens to confirm what you expected is the weakest possible evidence. "
+    "Where sources conflict, say so, and say which you find more credible and why, rather "
+    "than silently picking one.\n\n"
+    "Attribute everything. Every non-obvious claim carries a link to the page you actually "
+    "read it on, inline, where the claim is made — the agent that launched you is writing "
+    "the real answer from your report and cannot check a claim it cannot trace. State "
+    "plainly what you could not establish: a named gap is worth more than a confident "
+    "sentence covering it.\n\n"
+    "Report what you found, not how you searched. Nobody downstream wants the queries."
 )
 
 _WORKER_BRIEF = (
@@ -148,6 +168,35 @@ BUILTIN: tuple[SubagentSpec, ...] = (
         # on should just do the work where the work is. The launch call asks for
         # ``isolated`` when the point is precisely that the thread carries on meanwhile.
         workspace="shared",
+    ),
+    SubagentSpec(
+        name=RESEARCHER,
+        description=(
+            "reads the open web on one question and reports what it found with its "
+            "sources — for a topic worth several searches, not a single lookup"
+        ),
+        brief=_RESEARCHER_BRIEF,
+        # **Not** research mode, which is the mode of the thread that *orchestrates*
+        # research: its prompt is written for an agent with an operator to ask and a plan
+        # to submit, and a sub-agent has neither tool. The two modes are otherwise the same
+        # row (`services/modes.py` — sandbox workspace, the same admitted categories), so
+        # normal costs this nothing and the whole of what makes it a researcher is its
+        # brief. Which is what a brief is for.
+        mode="normal",
+        # Read-only by absence: reading the web is the entire job, and a level at which a
+        # mutating tool is never offered is what keeps the launch itself ungated.
+        permission_ceiling="plan",
+        # Its own workspace. A researcher is not here for anyone's files — it is reading
+        # the open web, which is the case ``own`` was written for.
+        workspace="own",
+        # Without these this is not a degraded researcher, it is a model recalling what the
+        # web probably says — which reads, to everyone downstream, exactly like something
+        # it went and looked up.
+        required=frozenset({"web_search", "web_fetch"}),
+        # Research mode's floor, carried explicitly because the mode that used to supply it
+        # is not this sub-agent's. Reading enough sources to see where they disagree is
+        # many more round trips than answering a question.
+        request_limit=60,
     ),
 )
 

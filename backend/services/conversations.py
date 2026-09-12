@@ -1428,6 +1428,22 @@ class ConversationStore:
 
         return await in_session(self._engine, work)
 
+    async def is_hidden(self, conversation_id: str) -> bool:
+        """Whether this thread is kept out of the operator's listing.
+
+        Exists for the one caller that has to know whether there is anywhere to send the
+        operator: a notification is a deep link, and a thread they cannot find in their own
+        session list is one the link lands them in with no way back. A conversation that no
+        longer exists reads as hidden, which is the answer that says nothing rather than
+        the one that announces a row nobody can open.
+        """
+
+        def work(session: Session) -> bool:
+            conversation = session.get(Conversation, conversation_id)
+            return True if conversation is None else bool(conversation.ephemeral)
+
+        return await in_session(self._engine, work)
+
     async def set_permission_level(self, conversation_id: str, level: str) -> PermissionLevel:
         """Move this thread to ``level``, returning what it is now.
 

@@ -11,15 +11,20 @@ without a marker the transcript would claim the operator typed it, the model wou
 as though they had, and every later turn would replay it that way. So the text is wrapped,
 once, here.
 
-The envelope itself is ``services/subagents/report.py``, not here: the transcript reads it
-back on the way out and sits below this layer, so one home for the marker is the only way
-its writer and its reader cannot drift.
+A direction travelling the other way — the launching agent redirecting a sub-agent that is
+still working — has the mirror of that problem and takes the mirror of this road: same
+queue, same boundary, a different envelope. Which one a message gets is decided by its
+``source``, never by looking at its text.
+
+The envelopes themselves are ``services/subagents/report.py``, not here: the transcript
+reads them back on the way out and sits below this layer, so one home for the markers is
+the only way their writers and their readers cannot drift.
 """
 
 from __future__ import annotations
 
 from runs import QueuedMessage
-from services.subagents.report import report_envelope
+from services.subagents.report import direction_envelope, report_envelope
 
 
 def injected_text(message: QueuedMessage) -> str:
@@ -27,8 +32,11 @@ def injected_text(message: QueuedMessage) -> str:
 
     The operator's own words are handed over untouched: they are what a user message is,
     and wrapping them would put framing between the operator and the model that neither
-    asked for.
+    asked for. Everything else came down a link between a thread and a sub-agent, and is
+    framed as whichever direction it travelled.
     """
     if message.source == "subagent":
         return report_envelope(message.text)
+    if message.source == "parent":
+        return direction_envelope(message.text)
     return message.text

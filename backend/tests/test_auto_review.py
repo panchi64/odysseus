@@ -68,7 +68,6 @@ from tools.browse import browse_toolset
 from tools.calendar import calendar_toolset
 from tools.code import code_toolset
 from tools.mail import mail_toolset
-from tools.research import research_toolset
 from tools.skills import skills_toolset
 from tools.subagents import subagents_toolset
 from tools.vault import vault_toolset
@@ -452,14 +451,6 @@ class TestWhatEachToolSaysAboutItself:
         assert "explorer" in capability.summary
         assert capability.detail == "task: read the docs"
 
-    def test_research_carries_the_question_it_would_go_and_answer(self):
-        capability = capability_of(
-            "research_start", {"question": "why is it slow?", "context": "since Tuesday"}
-        )
-        assert capability.detail is not None
-        assert "why is it slow?" in capability.detail
-        assert "since Tuesday" in capability.detail
-
     def test_a_skill_edit_carries_the_words_it_would_leave_behind(self):
         # A published skill is loaded and *followed* in conversations that have nothing to
         # do with this one, so the act being reviewed is the replacement text itself. The
@@ -609,7 +600,6 @@ class TestWhatEachToolSaysAboutItself:
             "browse": browse_toolset,
             "vault": vault_toolset,
             "subagents": subagents_toolset,
-            "research": research_toolset,
             "skills": skills_toolset,
             "code": code_toolset,
         }

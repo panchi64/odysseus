@@ -424,12 +424,19 @@ export interface ReviewCompleted extends Base {
 }
 /** Who a queued message is from. `operator` is somebody typing while a run is going;
  *  `subagent` is a report from one the agent launched, delivered into the thread that
- *  launched it. They ride the same road on purpose — a queued message is handed to the
- *  *next, not-yet-sent* request, so neither can interrupt a model mid-stream — but they
- *  must not read the same, because a report shown as the operator's own words is a
- *  transcript lying about who said what. Absent on an older backend, which only ever sent
- *  the operator's. */
-export type MessageSource = "operator" | "subagent";
+ *  launched it; `parent` is that same link the other way — the launching agent redirecting
+ *  a sub-agent while it works, so it only ever appears in a sub-agent's own run. They ride
+ *  the same road on purpose — a queued message is handed to the *next, not-yet-sent*
+ *  request, so none can interrupt a model mid-stream — but they must not read the same,
+ *  because a report shown as the operator's own words is a transcript lying about who said
+ *  what. Absent on an older backend, which only ever sent the operator's.
+ *
+ *  Only `subagent` changes how anything renders. A direction arrives in a thread nobody
+ *  else can type in, where the agent that launched it *is* the one giving it direction —
+ *  so it stays an ordinary incoming message, exactly as the transcript projects it on the
+ *  way back out (`services/conversation_view.py`). It is in the union because the wire
+ *  carries it, not because there is a branch for it. */
+export type MessageSource = "operator" | "subagent" | "parent";
 /** A message arrived while the run was still executing; it is queued for injection
  *  at the run's next model-request boundary. `text` rides inline so a reattaching
  *  client rebuilds the pending bubble purely from replay. */

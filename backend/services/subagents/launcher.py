@@ -111,7 +111,7 @@ class SubagentView:
 
 
 class SubagentLauncher(ABC):
-    """Launch a sub-agent, read one back, and list the ones that exist."""
+    """Launch a sub-agent, redirect one, read one back, and list the ones that exist."""
 
     @abstractmethod
     async def launch(
@@ -142,6 +142,24 @@ class SubagentLauncher(ABC):
 
         Raises :class:`SubagentUnavailableError` for every state the system can legitimately
         be in that prevents a launch.
+        """
+
+    @abstractmethod
+    async def steer(self, owner_id: str, subagent_id: str, message: str) -> SubagentView:
+        """Redirect a sub-agent that is still working, and return where it has got to.
+
+        The message rides the same road the operator's own mid-turn message does: queued on
+        the sub-agent's Run and handed to its *next, not-yet-sent* request, so it can never
+        interrupt a model that is mid-stream. Nothing here waits for it to be read.
+
+        **Delivery is not guaranteed, and callers must say so.** A sub-agent that is queued
+        behind the lane gets it at its first request; one parked on an approval gets it when
+        the operator answers and it resumes; and one that finishes before its next request
+        never gets it at all, because what is still pending at a run's terminal is dropped —
+        correctly, since a direction to a finished sub-agent is about work that is over.
+
+        Raises :class:`SubagentUnavailableError` when there is no such sub-agent, or when it
+        has already settled — the caller wants its report at that point, not this.
         """
 
     @abstractmethod

@@ -39,9 +39,29 @@ from models.conversation import Conversation, Message
 # answers, and the one that drifts is the one nobody is looking at.
 from services.conversations import _MESSAGE, _project
 from services.modes import mode_spec
-from services.research_threads import title_for
 
 logger = logging.getLogger(__name__)
+
+#: How long a carried question may be before its title is cut. A research question is often
+#: a paragraph and the session list is one line wide.
+_TITLE_MAX_CHARS = 80
+
+
+def title_for(question: str) -> str:
+    """A carried thread's name in the session list — the question, folded to one line.
+
+    The question *is* the title, rather than the thread being auto-titled from its first
+    exchange like an operator's own: nobody wrote this thread's opening message, so without
+    the question in the row the operator meets it with no idea why it exists.
+
+    Lives here because this is now its only caller. It was declared beside the research
+    launcher seam while that seam also named threads this way; the launcher is gone, and a
+    helper kept where nothing uses it is the next reader's wrong turn.
+    """
+    question = " ".join(question.split())
+    if len(question) <= _TITLE_MAX_CHARS:
+        return question
+    return question[: _TITLE_MAX_CHARS - 1] + "…"
 
 #: The holding table the migration leaves behind, and the only thing here that knows its
 #: name — see ``migrations/versions/b6d20a5c74e1_dropped_the_research_entity.py``.

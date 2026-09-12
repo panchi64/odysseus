@@ -248,10 +248,6 @@ PROJECTIONS: dict[str, Projection] = {
         identity=("agent_name",),
         content=("task",),
     ),
-    "research_start": Projection(
-        "Starts an autonomous research run that reads the web",
-        content=("question", "context"),
-    ),
     # A skill's text is followed in *future* conversations, so a review of an edit is a
     # review of the replacement words themselves — the name alone says a file changed and
     # nothing about what it will now instruct. Both halves ride as content, with the
