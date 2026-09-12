@@ -138,6 +138,9 @@ SENSITIVITY_CLASSES: Mapping[Sensitivity, frozenset[str]] = {
             # and stopping one are execution; asking what it printed is not.
             "shell_check_command",
             "skills_open",
+            # Asking how a sub-agent this thread already launched is getting on. Reading a
+            # transcript the operator can open themselves reaches nothing.
+            "subagents_read",
             "tasks_read",
             # Retrieval over the network. The operator's machine and every service on it
             # are exactly as they were afterwards.
@@ -190,6 +193,11 @@ SENSITIVITY_CLASSES: Mapping[Sensitivity, frozenset[str]] = {
             # least the worst case of running a program, and its arguments say nothing
             # about which tools it will end up using.
             "agents_delegate_task",
+            # And the same call, made asynchronously. If anything it classifies higher
+            # than the blocking form rather than lower: the launching turn ends while the
+            # sub-agent is still working, so whatever it does happens with nobody's turn
+            # open around it.
+            "subagents_launch",
         }
     ),
     Sensitivity.EXTERNAL_EFFECT: frozenset(

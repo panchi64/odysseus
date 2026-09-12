@@ -22,17 +22,23 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-#: How a sub-agent is given files to work on.
+#: Which files a sub-agent works on. All three are one workspace *key* and nothing else —
+#: see ``services/workspace.py`` for how a key is read.
 #:
-#: ``none`` — no workspace of its own; it reads what it is told and reports. The cheapest,
-#: and right for anything that only needs the model.
-#: ``seed`` — a *copy* of the parent's files, taken once at launch and thrown away after.
-#: Right for reading and analysis: nothing it does can reach the operator's own tree, and
-#: nothing the parent does afterwards moves underneath it.
-#: ``fork`` — its own sandbox session or its own checkout on its own branch, merged back
-#: when it finishes, with conflicts reported rather than resolved in its favour.
-#: Right, and only right, for a sub-agent that *changes* things.
-WorkspacePolicy = Literal["none", "seed", "fork"]
+#: ``shared`` — the launching thread's own workspace. The default, and the one that makes a
+#: sub-agent feel like part of the same session: it sees the work in progress, and what it
+#: does is simply there afterwards, with nothing to merge. The cost is that two agents are
+#: editing one tree, which is fine for reading and fine for work the parent is waiting on,
+#: and wrong for anything long-running the parent means to keep working alongside.
+#:
+#: ``isolated`` — a delegated fork of that workspace: its own sandbox session, or its own
+#: checkout on its own branch, cut from what the parent's transcript describes. What it
+#: changed is merged back when it ends, and anything the parent changed meanwhile comes
+#: back as a reported conflict rather than as the sub-agent's version winning.
+#:
+#: ``own`` — its own conversation's workspace, unrelated to the parent's. For a sub-agent
+#: whose work is not about the parent's files at all (reading the open web, say).
+WorkspacePolicy = Literal["shared", "isolated", "own"]
 
 
 @dataclass(frozen=True)
@@ -57,7 +63,12 @@ class SubagentSpec:
     #: The furthest this sub-agent may reach, before the parent's own level is folded in.
     #: None takes the mode's default. Never raises what the operator allowed.
     permission_ceiling: str | None = None
-    workspace: WorkspacePolicy = "none"
+    #: Where this sub-agent works by default. The launch call may ask for ``isolated``
+    #: whatever this says — the model knows whether *this* task is one the launching thread
+    #: means to work alongside — but it may never ask for less isolation than the spec
+    #: declares, so a sub-agent written to stay out of the way cannot be talked into the
+    #: operator's own tree.
+    workspace: WorkspacePolicy = "shared"
     #: Tools withheld from this sub-agent on top of everything mode, level and the
     #: operator's own switches already withhold. For narrowing a sub-agent to its job —
     #: a reviewer that reads and reports has no business editing.

@@ -1,0 +1,88 @@
+"""The sub-agents feature — autonomous agents the model launches for itself.
+
+What a sub-agent *is* is almost nothing: a hidden conversation, composed by the same
+``compose_turn`` an operator's own message goes through, running the same engine over the
+same tools. So this manifest contributes three small things and no machinery.
+
+The **launcher** (built in ``_subagents.py`` beside this file), so ``tools/subagents.py``
+can start one from inside a run without importing turn composition, which sits above
+``tools/``. It is built here for the same reason the research launcher and the scheduler's
+task executor are: a tool has no ``Request``, and a launcher that closed over one could
+never be reached from inside a run, while here every handle it needs is already resolved.
+
+The **register** (``services/subagent_store.py``), which is what keeps a sub-agent's
+transcript reachable by name once the process that ran it is gone. Its startup pass closes
+out anything a previous process left running — a row still live after a restart describes
+work that stopped when the process did, and left alone it would count against the operator's
+cap and promise a report that is never coming.
+
+**A sub-agent's thread notifies like any other**, because it *is* one, and its approvals
+arrive through the ordinary approval route: a parked run is addressed by run id, so a
+sub-agent waiting on the operator needs no surface of its own.
+"""
+
+from __future__ import annotations
+
+from harness.manifest import (
+    DormantCategory,
+    FeatureManifest,
+    FeatureRuntime,
+    HarnessContext,
+)
+from harness.manifests._subagents import ConversationSubagents
+from services.subagent_store import SubagentStore
+from services.subagents import SubagentLauncher
+from tools.subagents import subagents_toolset
+
+
+async def _build(ctx: HarnessContext) -> FeatureRuntime:
+    records = SubagentStore(ctx.engine, ctx.vault)
+    launcher = ConversationSubagents(ctx, records)
+    # Waits for the key like every other startup pass that touches sealed rows, and does
+    # nothing on an installation that has never run a sub-agent.
+    ctx.lifecycle.track("subagent-reconcile", records.reconcile_stranded())
+    return FeatureRuntime(
+        services=(records, launcher),
+        # On the app as well, because the register is what the panel's own routes read —
+        # a card list and a transcript are not agent capabilities, and a route resolves
+        # its handles from `app.state` rather than from the agent's bag.
+        state={"subagent_records": records},
+        # Registered under the abstract type so `tools/subagents.py` can resolve it
+        # without importing this wiring layer, which sits above `tools/`.
+        capabilities=((launcher, SubagentLauncher),),
+    )
+
+
+MANIFEST = FeatureManifest(
+    name="subagents",
+    # Launching one composes a full interactive turn, so every feature contributing to
+    # that turn's capability set must have built first — the same list the research
+    # launcher works under, and for the same reason.
+    after=(
+        "calendar",
+        "corpus",
+        "external",
+        "mail",
+        "memory",
+        "notifications",
+        "research",
+        "secret-vault",
+        "skills",
+        "uploads",
+        "views",
+        "web",
+    ),
+    # No scope of its own, and deliberately not a new one: a sub-agent is a conversation,
+    # created and streamed and read through `/chat` and `/conversations` like every other,
+    # so it reaches nothing the chat scope does not already cover. A scope claiming no
+    # prefix would grant nothing while adding a name every issued token has to carry.
+    toolsets=(("subagents", subagents_toolset),),
+    dormant=(
+        DormantCategory(
+            "subagents",
+            "hand a self-contained piece of work to another agent that does it on its "
+            "own while you carry on, and tells you what it found",
+        ),
+    ),
+    build=_build,
+)

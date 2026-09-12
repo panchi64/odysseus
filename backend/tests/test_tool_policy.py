@@ -154,6 +154,8 @@ _PINNED_CATALOG = {
     "skills_create",
     "skills_edit",
     "skills_open",
+    "subagents_launch",
+    "subagents_read",
     "tasks_read",
     "tasks_update_statuses",
     "tasks_write",

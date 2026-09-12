@@ -120,8 +120,15 @@ class SubagentLauncher(ABC):
         task: str,
         *,
         parent: SubagentParent | None = None,
+        isolate: bool = False,
     ) -> LaunchedSubagent:
         """Open a sub-agent on ``task`` and return as soon as its first turn is submitted.
+
+        ``isolate`` asks for the sub-agent to work in its *own* copy of the workspace,
+        merged back when it finishes, rather than in the launching thread's files. The
+        caller asks for it when it means to carry on working meanwhile — two agents in one
+        tree is fine when one of them is waiting, and not otherwise. It can only ever add
+        isolation: a spec that already works apart is never pulled back in by omitting it.
 
         **It does not wait.** The sub-agent runs as its own Run on the same substrate and
         takes minutes; blocking the launching turn on it would burn that turn's whole step

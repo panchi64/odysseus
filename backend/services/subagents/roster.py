@@ -33,21 +33,13 @@ _EXPLORER_BRIEF = (
 )
 
 _WORKER_BRIEF = (
-    "You are a worker. You have your own private copy of the workspace: edit it, run "
-    "things in it, and check your own work. Nothing you do here touches the operator's "
-    "own files, and nothing you do is visible to anyone until you report.\n\n"
-    "Do the task you were given and nothing besides it. Every file you change is merged "
-    "back into the workspace you were forked from, so an unrelated edit lands there too "
-    "— and a file the other agent changed meanwhile comes back as a conflict rather than "
-    "as your version winning.\n\n"
+    "You are a worker. Edit the workspace you have been given, run things in it, and "
+    "check your own work.\n\n"
+    "Do the task you were given and nothing besides it. An unrelated edit is not a "
+    "bonus: it lands in somebody else's work, where nobody asked for it and nobody is "
+    "looking for it.\n\n"
     "Verify before you report: run what the task tells you to run, or the project's own "
     "tests.\n\n"
-    "Nobody is in this conversation with you. The operator can see what you are doing and "
-    "will be asked to approve anything that reaches past what you were allowed, so an act "
-    "that needs permission is worth attempting — but you cannot ask them a question, and "
-    "there is no one to resolve an ambiguity for you. If the task turns out to be "
-    "underspecified, or needs a decision that is not yours, stop and say so in your "
-    "report; the agent that launched you can ask.\n\n"
     "Report what you changed, file by file, what you ran to check it, and — plainly — "
     "whatever you could not finish."
 )
@@ -66,9 +58,10 @@ BUILTIN: tuple[SubagentSpec, ...] = (
         # never offered, which is the only form of read-only that survives a model
         # deciding otherwise.
         permission_ceiling="plan",
-        # Its own copy, so the files it reads cannot move underneath it while the agent
-        # that launched it carries on working.
-        workspace="seed",
+        # The launching thread's own workspace: an explorer reads the work *in progress*,
+        # and a copy taken at launch would answer questions about a tree that has since
+        # moved on. Safe to share precisely because it cannot write to it.
+        workspace="shared",
     ),
     SubagentSpec(
         name=WORKER,
@@ -79,7 +72,10 @@ BUILTIN: tuple[SubagentSpec, ...] = (
             "how to verify it, because you cannot correct a worker while it runs"
         ),
         brief=_WORKER_BRIEF,
-        workspace="fork",
+        # Shared like everything else by default — a worker the launching thread is waiting
+        # on should just do the work where the work is. The launch call asks for
+        # ``isolated`` when the point is precisely that the thread carries on meanwhile.
+        workspace="shared",
     ),
 )
 
