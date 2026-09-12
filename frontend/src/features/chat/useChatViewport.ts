@@ -41,7 +41,7 @@ import type {
   ViewSnapshotRef,
 } from "./model";
 import type { BranchState } from "./data";
-import type { SubagentRun } from "./stream/fold";
+import type { Subagent } from "./data";
 import type { Park } from "./stream/approvals";
 import type { TaskItem } from "~/lib/stream/events";
 import {
@@ -82,8 +82,10 @@ export interface ViewportSource {
   plan: Accessor<PlanDocument | null>;
   branch: () => BranchState | null | undefined;
   refetchBranch: () => void;
-  /** Who this thread delegated to, for the Agents surface. */
-  subagents: Accessor<SubagentRun[]>;
+  /** The sub-agents this thread has launched, for the Sub-agents surface. */
+  subagents: Accessor<Subagent[]>;
+  /** Re-read them — after the operator answers one that was waiting on them. */
+  refetchSubagents: () => void;
   /** What the live turn is parked on, and how to settle it. The Plan surface holds
    *  the decision for a submitted plan — a document is answered where it is read, not
    *  in the composer's slot — so the panel needs both. Everything else about that
@@ -112,8 +114,10 @@ export interface ChatViewport {
   /** The thread's branch, for the Diff surface. */
   branch: () => BranchState | null | undefined;
   refetchBranch: () => void;
-  /** Who this thread delegated to, for the Agents surface. */
-  subagents: Accessor<SubagentRun[]>;
+  /** The sub-agents this thread has launched, for the Sub-agents surface. */
+  subagents: Accessor<Subagent[]>;
+  /** Re-read them — after the operator answers one that was waiting on them. */
+  refetchSubagents: () => void;
   /** Whether a surface has anything to show — which header buttons exist. */
   available: (id: SurfaceId) => boolean;
   /** Whether a surface is currently in the layout. */
@@ -456,6 +460,7 @@ export function useChatViewport(
     branch: source.branch,
     refetchBranch: source.refetchBranch,
     subagents: source.subagents,
+    refetchSubagents: source.refetchSubagents,
     available,
     isOpen,
     toggleSurface,

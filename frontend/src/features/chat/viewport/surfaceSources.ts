@@ -20,7 +20,7 @@
 
 import type { PlanDocument } from "../model";
 import type { TaskItem } from "~/lib/stream/events";
-import type { SubagentRun } from "../stream/fold";
+import type { Subagent } from "../data";
 import type { BranchState } from "../data";
 import type { SurfaceId } from "./surfaces";
 import type { ViewItem } from "./viewItems";
@@ -62,7 +62,7 @@ export interface SurfaceDeps {
   tasks: () => TaskItem[];
   plan: () => PlanDocument | null;
   branch: () => BranchState | null | undefined;
-  subagents: () => SubagentRun[];
+  subagents: () => Subagent[];
 }
 
 export function createSurfaceSources(
@@ -95,12 +95,15 @@ export function createSurfaceSources(
       // and earns a fresh claim, while the same plan re-rendering does not.
       claimKey: () => `plan:${deps.plan()?.revision ?? 0}`,
     },
-    // A thread that has never delegated has no roster; one that has keeps it, since
-    // what a sub-agent reported is as much a result as a run in flight.
+    // A thread that has never launched one has no panel; one that has keeps it for the
+    // rest of the session, because a finished sub-agent's transcript is as much a result
+    // as a run in flight — and the operator's usual reason for opening this is that
+    // something went wrong, which is exactly when the card has stopped being live.
     agents: {
       available: () => deps.subagents().length > 0,
-      // A delegation is the agent getting on with the work it was already doing.
-      // The transcript narrates it; the roster is there when the operator wants it.
+      // Launching one is the agent getting on with work it was already doing. The
+      // panel is there when the operator wants it; a sub-agent parked on an approval
+      // does interrupt, but through the approval dock, which is where they answer it.
       arrival: () => "announce",
       claimKey: () => "",
     },

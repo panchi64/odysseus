@@ -89,7 +89,6 @@ async def test_catalog_matches_the_names_the_agent_is_offered():
 # shrinks the agent's world without any other test noticing — this literal set is the
 # tripwire. A deliberate tool addition/removal updates this list in the same change.
 _PINNED_CATALOG = {
-    "agents_delegate_task",
     "attachments_provision",
     "browse_click",
     "browse_console_messages",
@@ -182,7 +181,6 @@ async def test_booted_app_assembles_the_same_catalog():
         # theirs). A name missing here is a tool that parks the run but can never be
         # granted for the conversation, so the operator is asked again on every call.
         assert app.state.gated_tools == {
-            "agents_delegate_task",
             "corpus_retrieve",
             "conversations_search",
             "plan_submit",

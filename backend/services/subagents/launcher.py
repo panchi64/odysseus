@@ -157,3 +157,13 @@ class SubagentLauncher(ABC):
         it is waiting on anything. A sub-agent parked on an approval is *live*: it has not
         reported, and the thing it is waiting for is the operator, not a slot.
         """
+
+    @abstractmethod
+    async def for_parent(self, owner_id: str, conversation_id: str) -> list[SubagentView]:
+        """Every sub-agent a thread has launched, newest first — live and finished.
+
+        The panel's read, and the reason it is on this seam rather than on the register:
+        a live sub-agent's run knows more than its stored row does (whether it has parked,
+        how full its context has become), and folding the two together is this
+        implementation's job rather than the route's.
+        """

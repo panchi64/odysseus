@@ -159,7 +159,7 @@ Approval is **consent, not containment**: a misjudged click, a destructive comma
 | Approval | **none** — compute is not an exit | **`requires_approval=True`**, **per call, never a standing grant** | **`requires_approval=True`** (deferred, D20) |
 | Extra contract | — | `domains` + a `reason` in the model's own words; the domain is remembered for the workspace once approved, the *act of widening* never is | a plain-language **`explanation`** arg, shown to the operator, describing what it does and its effect on the host (`AE-3.4`) |
 | If capability absent | returns "code execution is unavailable" — the model adapts | reports no allowlist is configured | n/a |
-| In a delegated run | available | **withheld** — a child has nobody to ask | **withheld** |
+| In a sub-agent's run | available | **withheld** — a child has nobody to ask | **withheld** |
 | In code mode | **withheld** — the worktree is the one workspace, and the fenced shell is the one way to run in it (`services/modes.py`) | **withheld** — a grant widens a container's proxy, and there is no container; the host fence reads `egress_allowed_domains` alone | **withheld** — the fenced shell already is that path |
 
 The inversion is the point: **routine code-exec has no approval friction at all**, and the approval prompts are the genuine exits — changing the operator's host, and reaching somewhere nobody approved.
@@ -173,7 +173,7 @@ The inversion is the point: **routine code-exec has no approval friction at all*
 | Walls inside the box | **relaxed (D78)** | no `--read-only` root (the image's tree is root-owned and the box is not root, so it bought nothing `--user` did not), a 1g `/tmp` tmpfs, honest caps (4g / 2.0 cpus / 1024 pids). Compute and installing packages must not feel restricted |
 | Network | **reshaped (D78)** | not "off by default" and no per-call `network=True` bridge container. Each session sits on its own `--internal` network whose only exit is an **allowlisting proxy sidecar** (`sidecar.py` + `egress_proxy.py`). One list feeds both fences, not one per fence: the sidecar reads `egress_allowed_domains` plus whatever `code_request_egress` widened for *that* workspace (`services/egress.py`) |
 | Execution outside a container | **fenced (D78)** | the code-mode shell and the approved host command run under seatbelt/bubblewrap confinement (`host.py`) reading that **same** `egress_allowed_domains` — credential paths and the data dir unreadable, writes allowed in the worktree. Required for the shell (it refuses when confinement cannot initialise), degrading with `confined:false` for the host hatch, where the operator approved *this* command |
-| A delegated agent's workspace | **forked (D78)** | a `worker` gets its own copy (sandbox) or child worktree, and its changes come back through a three-way merge that reports conflicts rather than overwriting |
+| A sub-agent's workspace | **shared, or forked on request (D91)** | it works in the launching thread's own workspace by default — a sub-agent the thread is waiting on should work where the work is. `isolate` gives it its own copy (sandbox) or child worktree, merged back through a three-way merge that reports conflicts rather than overwriting. Isolation only ever increases: a spec written to stay out of the way cannot be talked into the operator's files |
 | Fails closed, never to host | unchanged | `detect_sandbox()` returns `None` with no runtime, no `SandboxSessionManager` is registered in the capability bag, and `code_execute` reports the capability unavailable (`XC-DEG-*`) |
 
 The backend stays **pluggable** (`Sandbox` ABC; default `ContainerSandbox` over Docker/Podman — portable per `XC-PORT-1`). Outputs return explicitly (stdout/stderr + copied-out files); nothing escapes as a side effect. The operator's own terminal (`SHELL-*`) is unchanged and **agent-unreachable** — the agent's paths to the host are the explained-approval tool and, in a code thread, the fenced shell.
@@ -263,6 +263,7 @@ The result: the spec's entire access-control surface (`AE-2` categories, `AE-3` 
 | Auto-level review (shell judge + utility-model reviewer) | ✅ built (`services/permissions/`, `agent/gating.py`) |
 | D23 sandbox isolation + host escape hatch | ✅ built (`services/sandbox`, `tools/code.py`) |
 | D78 blast-radius model (egress allowlist + sidecar, fenced shell, forked delegates, boot reconciliation) | ✅ built (`services/egress.py`, `services/sandbox/{sidecar,egress_proxy,host,fork,reconcile}.py`) |
+| D91 async sub-agents (`subagents` category, register, wake, panel) | ✅ built (`services/subagents/`, `services/subagent_store.py`, `harness/manifests/subagents.py`, `tools/subagents.py`) — replaces the `agents` category and its blocking `delegate_task` |
 | Privilege gate (D14) | 🔭 seam reserved — empty until a second user exists |
 | Relevance pre-filter (D3) | 🔭 seam reserved — deliberately omitted |
 | D24 scheduled pre-authorization | ⬜ designed, lands with `TASK-*` |

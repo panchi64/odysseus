@@ -243,8 +243,8 @@ PROJECTIONS: dict[str, Projection] = {
         "Lists the vault's entries — names and usernames, not passwords",
         content=("reason",),
     ),
-    "agents_delegate_task": Projection(
-        "Hands a task to a sub-agent with its own tools",
+    "subagents_launch": Projection(
+        "Hands a task to a sub-agent with its own tools, which does it on its own",
         identity=("agent_name",),
         content=("task",),
     ),

@@ -191,12 +191,9 @@ SENSITIVITY_CLASSES: Mapping[Sensitivity, frozenset[str]] = {
             "shell_start_command",
             # A sub-agent's whole catalog, reached through one call. Its worst case is at
             # least the worst case of running a program, and its arguments say nothing
-            # about which tools it will end up using.
-            "agents_delegate_task",
-            # And the same call, made asynchronously. If anything it classifies higher
-            # than the blocking form rather than lower: the launching turn ends while the
-            # sub-agent is still working, so whatever it does happens with nobody's turn
-            # open around it.
+            # about which tools it will end up using — and it is asynchronous, so whatever
+            # it does happens after the launching turn has ended, with nobody's turn open
+            # around it.
             "subagents_launch",
         }
     ),

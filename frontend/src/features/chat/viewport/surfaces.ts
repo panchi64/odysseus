@@ -84,13 +84,18 @@ export const SURFACES = [
     defaultWidth: 520,
   },
   {
+    // A **panel**, where this used to be a strip, because what it holds changed rather
+    // than because it grew. A delegation was a row — a name, a task, and how it ended —
+    // and there was nothing to read at length. A sub-agent is its own thread, and the
+    // question the operator brings here is "what did it actually do?", answered only by
+    // its transcript. A transcript six rows tall is one nobody reads.
     id: "agents",
-    shape: "strip",
+    shape: "panel",
     label: "Agents",
     icon: "users",
-    // Six rows of delegations. Past that the agent is farming out more work than
-    // the operator can follow at a glance, and the list scrolls.
-    maxRows: 6,
+    minWidth: 340,
+    minHeight: 260,
+    defaultWidth: 460,
   },
   {
     id: "diff",

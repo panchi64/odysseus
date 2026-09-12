@@ -58,7 +58,6 @@ export interface ToolEntry extends ToolPresentation {
  *  registered category is listed, so a new tool lands in the right family on the
  *  day it lands rather than falling through to the generic plug. */
 const CATEGORY_ICONS: Record<string, IconName> = {
-  agents: "users",
   attachments: "attach",
   builtin: "clock",
   calendar: "calendar",
@@ -75,6 +74,7 @@ const CATEGORY_ICONS: Record<string, IconName> = {
   research: "research",
   shell: "terminal",
   skills: "library",
+  subagents: "users",
   tasks: "note",
   vault: "lock",
   view: "panel-right",
@@ -84,11 +84,6 @@ const CATEGORY_ICONS: Record<string, IconName> = {
 const DEFAULT_ICON: IconName = "plug";
 
 const TOOLS: Record<string, ToolEntry> = {
-  agents_delegate_task: {
-    icon: "users",
-    label: "Delegate",
-    keys: ["task", "agent_name"],
-  },
   attachments_provision: {
     icon: "attach",
     label: "Attach",
@@ -262,6 +257,16 @@ const TOOLS: Record<string, ToolEntry> = {
     keys: ["name", "explanation"],
   },
   skills_open: { icon: "library", label: "Open skill", keys: ["name"] },
+
+  // Both keys, in this order: which sub-agent is most of what the row says, and the
+  // task is the part worth reading. The card is the *launch* — a sub-agent's own work
+  // is its card in the Agents panel, not a line under the call that started it.
+  subagents_launch: {
+    icon: "users",
+    label: "Sub-agent",
+    keys: ["agent_name", "task"],
+  },
+  subagents_read: { icon: "users", label: "Check sub-agent" },
 
   vault_get_entry: { icon: "key", label: "Secret", keys: ["entry_id"] },
   vault_list_entries: {

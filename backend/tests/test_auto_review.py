@@ -64,13 +64,13 @@ from services.permissions.reviewer import review_prompt
 from services.sandbox import HostConfinement
 from services.workspace import HostFiles, RunWorkspace
 from tools import RunDeps
-from tools.agents import agents_toolset
 from tools.browse import browse_toolset
 from tools.calendar import calendar_toolset
 from tools.code import code_toolset
 from tools.mail import mail_toolset
 from tools.research import research_toolset
 from tools.skills import skills_toolset
+from tools.subagents import subagents_toolset
 from tools.vault import vault_toolset
 
 from ._helpers import client_app
@@ -447,9 +447,9 @@ class TestWhatEachToolSaysAboutItself:
 
     def test_a_delegated_task_is_named_by_its_agent_and_carried_whole(self):
         capability = capability_of(
-            "agents_delegate_task", {"agent_name": "researcher", "task": "read the docs"}
+            "subagents_launch", {"agent_name": "explorer", "task": "read the docs"}
         )
-        assert "researcher" in capability.summary
+        assert "explorer" in capability.summary
         assert capability.detail == "task: read the docs"
 
     def test_research_carries_the_question_it_would_go_and_answer(self):
@@ -523,7 +523,7 @@ class TestWhatEachToolSaysAboutItself:
 
     def test_the_detail_goes_to_the_reviewer_inside_the_fence(self):
         capability = capability_of(
-            "agents_delegate_task", {"agent_name": "researcher", "task": "read the docs"}
+            "subagents_launch", {"agent_name": "explorer", "task": "read the docs"}
         )
         prompt = review_prompt(ReviewRequest(capability=capability, transcript=()))
         assert json.loads(_fenced(prompt, "tool-call")) == {
@@ -608,7 +608,7 @@ class TestWhatEachToolSaysAboutItself:
             "calendar": calendar_toolset,
             "browse": browse_toolset,
             "vault": vault_toolset,
-            "agents": agents_toolset,
+            "subagents": subagents_toolset,
             "research": research_toolset,
             "skills": skills_toolset,
             "code": code_toolset,
@@ -1267,8 +1267,8 @@ class TestTheEngineRunsIt:
         await gating.review_call(
             run,
             tool_call_id="t1",
-            tool="agents_delegate_task",
-            args={"agent_name": "researcher", "task": "read the docs"},
+            tool="subagents_launch",
+            args={"agent_name": "explorer", "task": "read the docs"},
             root=None,
             transcript=(),
             reviewer=reviewer_of(verdict("low", "explicitly_yes")),
@@ -1276,7 +1276,7 @@ class TestTheEngineRunsIt:
         )
         started = next(b for b in _bodies(run) if b.type == "review.started")
         assert started.detail == "task: read the docs"
-        assert "researcher" in started.summary
+        assert "explorer" in started.summary
         # And most tools have none, which is null on the wire rather than an empty string.
         run = Run(id="r-plain", kind="chat", owner_id="operator", stream=RunStream())
         await gating.review_call(

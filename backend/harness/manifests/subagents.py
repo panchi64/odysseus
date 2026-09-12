@@ -31,6 +31,7 @@ from harness.manifest import (
 )
 from harness.manifests._subagent_wake import SubagentWake
 from harness.manifests._subagents import ConversationSubagents
+from routes.subagents import router as subagents_router
 from services.subagent_store import SubagentStore
 from services.subagents import SubagentLauncher
 from tools.subagents import GATED_TOOLS, subagents_toolset
@@ -63,6 +64,10 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
 
 MANIFEST = FeatureManifest(
     name="subagents",
+    # One read, under `/conversations` — a thread's sub-agents are a property of the
+    # thread, reached with the same grant that reads it, which is why this claims no scope
+    # of its own (see the note on `api_scopes` below).
+    routers=(subagents_router,),
     # Launching one composes a full interactive turn, so every feature contributing to
     # that turn's capability set must have built first — the same list the research
     # launcher works under, and for the same reason.

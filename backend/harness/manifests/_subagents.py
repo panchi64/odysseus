@@ -11,7 +11,7 @@ no run loop, no step budget of its own, no progress protocol, no second way of h
 message history. Launching one is: make a conversation, decide how far it may reach and
 which files it works on, and submit exactly the turn a route would have submitted. Reading
 one is: what did it say, and is it still going. The shortness of this module against what
-``tools/worker.py`` used to be is the evidence that nothing was rebuilt.
+the deleted blocking delegation used to be is the evidence that nothing was rebuilt.
 """
 
 from __future__ import annotations

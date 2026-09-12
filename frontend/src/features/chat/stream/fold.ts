@@ -81,32 +81,10 @@ export interface FoldState {
   activeRunId: string | null;
 }
 
-/** One delegation, as the conversation knows it.
- *
- *  Conversation-scoped for the same reason the plan is: a delegation outlives the turn
- *  that started it in the operator's reading of the thread — "what did that worker end
- *  up doing?" is asked after the turn has finished — and pinning it to a message block
- *  would strand it on whichever bubble happened to be open.
- *
- *  `partial` is latest-wins, not a log: the backend sends one line per child event, and
- *  a row shows where a sub-agent has got to rather than everywhere it has been. */
-export interface SubagentRun {
-  /** `{run_id}:{tool_call_id}:{seq}` — unique per delegation, including across the
-   *  retries of one tool call, which share a `tool_call_id`. */
-  id: string;
-  /** Which sub-agent: "explorer", "worker", or whatever the model asked for. */
-  name: string;
-  task: string;
-  /** The delegating call, so a row can be tied back to its tool card. */
-  toolCallId: string;
-  status: "running" | "completed" | "failed";
-  /** The most recent line of narration, while it runs. */
-  partial?: string;
-  /** Its report, once it has one (capped backend-side; the tool card carries the rest). */
-  summary?: string;
-  error?: string;
-  durationMs?: number;
-}
+/* Sub-agents used to be folded here, from a `subagent.*` family the blocking delegation
+   emitted onto its parent's stream. They are runs of their own now, with transcripts and
+   register rows of their own, and the panel reads those — so there is nothing for a fold
+   over one parent turn's stream to carry. */
 
 /** Everything the fold is allowed to touch. Passed in rather than reached for, so the
  *  same fold serves the persistent main room and an ephemeral compare pane without
@@ -118,7 +96,6 @@ export interface FoldDeps {
   patchById: PatchById;
   setMessages: SetStoreFunction<ChatMessage[]>;
   setSnapshots: (fn: (prev: ViewSnapshotRef[]) => ViewSnapshotRef[]) => void;
-  setSubagents: (fn: (prev: SubagentRun[]) => SubagentRun[]) => void;
   setTasks: (items: TaskItem[]) => void;
   setPlan: (plan: PlanDocument | null) => void;
   /** Re-seat the thread's level after the run moved it. Only `permission.changed` calls
@@ -128,27 +105,6 @@ export interface FoldDeps {
   setUsage: (context: ContextWindow | null) => void;
   setStats: (stats: ConversationStats | null) => void;
   setErrored: (errored: boolean) => void;
-}
-
-/** One sub-agent's row, changed in place — or the list untouched when nothing matches.
- *
- *  The miss is the interesting case and it is deliberately a no-op: a `Last-Event-ID`
- *  resume replays from a seq the caller has already folded past, so a close can arrive
- *  for a delegation whose `subagent.started` is behind the resume point. There is no
- *  name and no task to rebuild a row from, and a row that said only "something finished"
- *  is worse than no row. */
-function patchSubagent(
-  list: SubagentRun[],
-  id: string,
-  change: Partial<SubagentRun>,
-): SubagentRun[] {
-  let found = false;
-  const next = list.map((s) => {
-    if (s.id !== id) return s;
-    found = true;
-    return { ...s, ...change };
-  });
-  return found ? next : list;
 }
 
 export function createFolder(
@@ -376,61 +332,6 @@ export function createFolder(
         // screen explains. `permissionLevel` degrades an unreadable value to the
         // strictest one, which is the only reading that cannot widen a thread.
         deps.setPermission(permissionLevel(ev.level));
-        break;
-      case "subagent.started":
-        // Conversation-scoped, like the plan and the version list above: a delegation is
-        // still the answer to "what did that worker do?" after the turn that started it
-        // has ended, so it must not be pinned to the bubble that happened to be open.
-        //
-        // The delegating call also folds onto that bubble as an ordinary tool card, with
-        // the same events flattened onto it one line at a time — that surface is the
-        // transcript's, this one is the roster's, and neither is derivable from the
-        // other because every delegation on one call flattens onto one `tool_call_id`.
-        //
-        // Deduped on `subagent_id` rather than left to the seq guard: a reattach replays
-        // a run's whole buffer (`fromSeq: 0`) over a list that may already hold the row.
-        deps.setSubagents((prev) =>
-          prev.some((s) => s.id === ev.subagent_id)
-            ? prev
-            : [
-                ...prev,
-                {
-                  id: ev.subagent_id,
-                  name: ev.agent_name,
-                  task: ev.task,
-                  toolCallId: ev.tool_call_id,
-                  status: "running",
-                },
-              ],
-        );
-        break;
-      case "subagent.progress":
-        // Latest-wins: the backend sends one line per child event, and a row says where
-        // a sub-agent has got to, not everywhere it has been.
-        deps.setSubagents((prev) =>
-          patchSubagent(prev, ev.subagent_id, { partial: ev.partial }),
-        );
-        break;
-      case "subagent.completed":
-        deps.setSubagents((prev) =>
-          patchSubagent(prev, ev.subagent_id, {
-            status: "completed",
-            summary: ev.summary,
-            durationMs: ev.duration_ms,
-            // The run is over — drop the mid-flight line, which would otherwise read as
-            // the last thing it was doing rather than as what it reported.
-            partial: undefined,
-          }),
-        );
-        break;
-      case "subagent.failed":
-        deps.setSubagents((prev) =>
-          patchSubagent(prev, ev.subagent_id, {
-            status: "failed",
-            error: ev.error,
-            partial: undefined,
-          }),
-        );
         break;
       case "approval.required": {
         // `args` is typed as always-present, but it arrives as untrusted JSON off
