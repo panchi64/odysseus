@@ -150,6 +150,26 @@ class TestWhatIsStillOut:
             assert [view.subagent_id for view in live] == [started.subagent_id]
             await _settle(app, started.run_id)
 
+    async def test_a_thread_is_never_shown_another_threads_sub_agents(self, monkeypatch):
+        """`live` reads `None` as *every* thread's, which is right for the operator's cap
+        and wrong for the tool.
+
+        A run with no conversation of its own — a scheduled task — would otherwise be
+        handed every live sub-agent the operator has, and with them the ids to redirect one
+        it never launched. That is the sibling-injection hole the withheld set closes on
+        the other axis, and it has to be closed here too.
+        """
+        async with client_app() as (_client, app):
+            patch_model_resolution(monkeypatch, output_text="found it")
+            started = await _launcher(app).launch(
+                "operator", EXPLORER, "find the parser", parent=_parent_thread()
+            )
+            # What a thread-less run is scoped to: its own launches, recorded under "".
+            assert await _launcher(app).live("operator", conversation_id="") == []
+            # And the unscoped read, which is the cap's and must stay whole.
+            assert len(await _launcher(app).live("operator")) == 1
+            await _settle(app, started.run_id)
+
     async def test_one_that_has_reported_falls_off_the_list(self, monkeypatch):
         async with client_app() as (_client, app):
             patch_model_resolution(monkeypatch, output_text="found it")
@@ -169,6 +189,99 @@ class TestWhatIsStillOut:
 
 def _parent_thread() -> SubagentParent:
     return SubagentParent(conversation_id="c-parent")
+
+
+class TestWhatTheToolHandsBack:
+    async def test_a_settled_sub_agent_is_an_answer_not_a_retry(self):
+        """`launch` returns a dict for the same exception, and this must too.
+
+        Everything `steer` refuses is settled — the sub-agent finished, or there is no such
+        id — so a retry of the identical call cannot come out differently. Raising
+        `ModelRetry` spends a model round trip proving that, and on a turn near its limit
+        it can be the round trip that ends it.
+        """
+        from pydantic_ai import RunContext
+        from pydantic_ai.models.test import TestModel
+        from pydantic_ai.usage import RunUsage
+
+        from core.container import ServiceContainer
+        from runs import Run, RunStream
+        from services.subagents import SubagentLauncher
+        from tools import RunDeps
+        from tools import subagents as module
+
+        class _Settled(SubagentLauncher):
+            async def launch(self, *a, **k):  # pragma: no cover — not under test
+                raise NotImplementedError
+
+            async def steer(self, owner_id, subagent_id, message):
+                raise SubagentUnavailableError("`researcher` has already finished.")
+
+            async def read(self, *a, **k):  # pragma: no cover — not under test
+                raise NotImplementedError
+
+            async def live(self, *a, **k):  # pragma: no cover — not under test
+                raise NotImplementedError
+
+            async def for_parent(self, *a, **k):  # pragma: no cover — not under test
+                raise NotImplementedError
+
+        caps = ServiceContainer()
+        caps.add(_Settled(), as_type=SubagentLauncher)
+        run = Run(id="t", kind="chat", owner_id="operator", stream=RunStream())
+        ctx = RunContext(
+            deps=RunDeps(run=run, owner_id="operator", caps=caps),
+            model=TestModel(),
+            usage=RunUsage(),
+        )
+        toolset = module.subagents_toolset()
+        tools = await toolset.get_tools(ctx)
+        result = await toolset.call_tool(
+            "send", {"subagent_id": "s1", "message": "narrow it"}, ctx, tools["send"]
+        )
+        assert result["sent"] is False
+        assert "already finished" in result["detail"]
+
+
+class TestASpecAsksRatherThanGrants:
+    """The numeric fields are folded against what the operator allowed, never substituted.
+
+    ``or`` is the shape that looks right here and is wrong: it takes the spec's number
+    whenever the spec has one, which is a sub-agent overruling the operator. The engine
+    already refuses to let a *mode* do that — ``get_agent_request_limit_override`` exists
+    only so an explicitly lowered ceiling can be told apart from an unset one — and a spec
+    must not be the way around it.
+    """
+
+    def test_an_operator_who_lowered_the_ceiling_is_not_overruled(self):
+        from harness.manifests._subagents import _lower_of
+
+        # The researcher asks for 60; the operator said 10. They get 10, and the settings
+        # page keeps telling the truth.
+        assert _lower_of(60, 10) == 10
+
+    def test_a_spec_may_still_raise_a_default_nobody_chose(self):
+        from harness.manifests._subagents import _lower_of
+
+        # No operator ceiling: the spec's number stands. That is a floor over a shipped
+        # default, which is exactly what a mode's own floor does.
+        assert _lower_of(60, None) == 60
+
+    def test_a_spec_that_asks_for_nothing_takes_the_bound(self):
+        from harness.manifests._subagents import _lower_of
+
+        assert _lower_of(None, 10) == 10
+        assert _lower_of(None, None) is None
+
+    def test_the_researcher_asks_for_the_floor_research_mode_used_to_supply(self):
+        # Carried explicitly because the mode that supplied it is not this sub-agent's —
+        # and now genuinely a request, which is the only reason it is safe to carry.
+        from services.modes import mode_spec
+
+        assert (
+            builtin_roster()["researcher"].request_limit
+            == mode_spec("research").request_limit
+        )
 
 
 class TestASubAgentCannotReachItsSiblings:

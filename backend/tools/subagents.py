@@ -176,9 +176,11 @@ def subagents_toolset() -> AbstractToolset[RunDeps]:
         try:
             view = await launcher.steer(ctx.deps.owner_id, subagent_id, message)
         except SubagentUnavailableError as exc:
-            # Recoverable, and usually a race with a sub-agent that has just finished —
-            # the model should read its report rather than fail the turn over this.
-            raise ModelRetry(str(exc)) from exc
+            # Returned rather than raised as a retry, the way `launch` answers the same
+            # exception. Every state it reports is settled — the sub-agent finished, or
+            # there is no such id — so a retry of this call cannot come out differently
+            # and would spend a round trip proving it. The detail says what to do instead.
+            return {"sent": False, "detail": str(exc)}
         return {
             "sent": True,
             "subagent_id": view.subagent_id,
@@ -206,8 +208,14 @@ def subagents_toolset() -> AbstractToolset[RunDeps]:
         launcher = ctx.deps.caps.get_optional(SubagentLauncher)
         if launcher is None:
             return {"available": False, "detail": _UNAVAILABLE}
+        # `or ""` rather than the bare value: `live` reads `None` as "every thread's", and
+        # a run with no conversation of its own (a scheduled task) would be handed every
+        # live sub-agent the operator has — along with the ids to redirect them with, which
+        # is the sibling-injection hole `_NO_RECURSION` closes on the other axis. A
+        # thread-less run's own launches are recorded under `""`, so this scopes it to
+        # exactly what it launched.
         views = await launcher.live(
-            ctx.deps.owner_id, conversation_id=ctx.deps.conversation_id
+            ctx.deps.owner_id, conversation_id=ctx.deps.conversation_id or ""
         )
         return {
             "available": True,

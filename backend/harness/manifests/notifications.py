@@ -72,12 +72,19 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
         streaming the run the agent started in the background, and so the ordinary
         "finished while you weren't watching" branch says exactly the right thing.
 
-        A **hidden** thread is the exception, and it is the sub-agents' one. A notification
-        is a deep link, and a sub-agent's conversation is deliberately kept out of the
-        session list — so one finishing would announce a thread the operator cannot find,
-        and a fan-out of six would announce six of them at once. What they watch instead is
-        the card, which is where the report lands anyway; the thread that launched it still
-        notifies for itself when its own turn ends."""
+        A **hidden** thread is the exception. A notification is a deep link, and an
+        ephemeral conversation is deliberately kept out of the session list — so one
+        finishing announces a thread the operator cannot find their way back to.
+
+        Sub-agents are what made this worth fixing: a fan-out of six researchers finishing
+        unwatched is six such notices at once, and what the operator watches is the card,
+        which is where the report lands anyway. The thread that launched them still
+        notifies for itself when its own turn ends.
+
+        **Compare panes are ephemeral too, and are deliberately included.** They lose the
+        `run_failed` notice they used to get unconditionally, which is the right trade for
+        the same reason: the operator is looking at the pane, the failure is on it, and the
+        link would have gone somewhere they cannot reach from the session list."""
         if run.conversation_id is None or run.status in (RunStatus.cancelled, RunStatus.blocked):
             return
         try:

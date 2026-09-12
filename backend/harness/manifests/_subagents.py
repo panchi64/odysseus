@@ -194,8 +194,16 @@ class ConversationSubagents(SubagentLauncher):
             # Which files it works on: the launching thread's own workspace, a delegated
             # fork of it, or one of its own (`services/workspace.py` reads the key).
             workspace_key=workspace_key,
-            request_limit=spec.request_limit
-            or await get_agent_request_limit_override(self._settings, owner_id),
+            # Folded, never substituted. A spec is a request and not a grant — the same
+            # rule its permission ceiling is read under — so a sub-agent asking for 60
+            # round trips on an installation whose operator deliberately lowered theirs to
+            # 10 gets 10. Where the operator set nothing, the spec's number stands: that is
+            # a floor raised over a default nobody chose, which is what the engine's own
+            # mode floor does and for the same reason.
+            request_limit=_lower_of(
+                spec.request_limit,
+                await get_agent_request_limit_override(self._settings, owner_id),
+            ),
             context_thresholds=await get_context_thresholds(self._settings, owner_id),
             auto_compact=await resolve_auto_compact_policy(self._settings, owner_id),
             owner_id=owner_id,
@@ -204,8 +212,9 @@ class ConversationSubagents(SubagentLauncher):
             # watchdog cannot end it (a model streaming tokens refreshes that clock on
             # every frame), and a wedged sub-agent would hold its lane for as long as it
             # cared to.
-            wall_clock_timeout_s=(
-                spec.wall_clock_timeout_s or self._ctx.settings.research_wall_clock_timeout_s
+            wall_clock_timeout_s=_lower_of(
+                spec.wall_clock_timeout_s,
+                self._ctx.settings.research_wall_clock_timeout_s,
             ),
             # A sub-agent's thread is hidden, so auto-titling it is invisible work that
             # only holds the run open after the answer — it is named from its task above.
@@ -356,6 +365,22 @@ class ConversationSubagents(SubagentLauncher):
 _NO_RECURSION: frozenset[str] = frozenset(
     {"subagents_launch", "subagents_send", "subagents_list"}
 )
+
+
+def _lower_of[T: (int, float)](asked: T | None, bound: T | None) -> T | None:
+    """The smaller of what a spec asked for and what it is allowed, either alone, or None.
+
+    The bound-folding every numeric field on a spec needs, written once because ``or`` is
+    the shape that looks right and is wrong: it takes the spec's number whenever the spec
+    has one, which is a sub-agent overruling the operator rather than asking. ``None`` on
+    either side means *that* side set no number — not zero, and not a bound of nothing to
+    fold against.
+    """
+    if asked is None:
+        return bound
+    if bound is None:
+        return asked
+    return min(asked, bound)
 
 
 def _isolation(declared: WorkspacePolicy, *, isolate: bool) -> WorkspacePolicy:
