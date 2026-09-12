@@ -32,6 +32,7 @@ from services.settings_store import (
     SettingsStore,
     get_agent_request_limit_override,
     get_context_thresholds,
+    get_subagent_limit,
 )
 from services.subagent_store import SubagentStore
 from services.subagents.briefing import brief_for
@@ -96,6 +97,7 @@ class ConversationSubagents(SubagentLauncher):
         if not task:
             raise SubagentUnavailableError("A sub-agent needs a task to do.")
         parent = parent or SubagentParent()
+        await self._check_capacity(owner_id)
 
         try:
             models = await resolve_turn_models(self._models, None, None, owner_id=owner_id)
@@ -234,6 +236,34 @@ class ConversationSubagents(SubagentLauncher):
             run_id=created.run_id,
             name=spec.name,
             task=task,
+        )
+
+    async def _check_capacity(self, owner_id: str) -> None:
+        """Refuse a launch that would put the operator over the cap they set.
+
+        Counted from the register rather than from a number held here, because the register
+        is what survives a restart and what the panel draws from — a second count would be
+        the one that was wrong. A sub-agent parked on an approval still counts: what it is
+        waiting for is a person, not a slot, and freeing its budget would let the model pile
+        up work behind a decision nobody has made yet.
+
+        Checked before anything is created, so a refusal leaves no conversation, no row and
+        no forked workspace behind.
+        """
+        limit = await get_subagent_limit(self._settings, owner_id)
+        if limit is None:
+            return
+        running = len(await self._records.live(owner_id))
+        if running < limit:
+            return
+        # Phrased as a state of the world with a way out of it. A model told only "no" will
+        # try again immediately and spend the turn doing it; a model told what it is waiting
+        # for, and that it will be told when the wait is over, stops.
+        raise SubagentUnavailableError(
+            f"{running} sub-agents are already running, which is the most you have been "
+            "given at once. Do not launch another yet and do not retry this — you will be "
+            "told as each one finishes, and you can launch again then. Carry on with "
+            "whatever does not depend on them, or end your turn."
         )
 
     async def read(self, owner_id: str, subagent_id: str) -> SubagentView:

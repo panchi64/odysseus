@@ -6,10 +6,11 @@ import { toChatSettings, toChatSettingsBody } from "./chatSettingsDto";
  *
  * A PUT here sends only the keys the caller touched, and "touched" is decided by an
  * `!== undefined` test rather than by truthiness. That distinction is invisible until a
- * setting has a meaningful falsy value — and two do: keeping **0** exchanges verbatim
- * past a fold is a real choice (summarize everything), and a `null` wall clock is the
- * value that removes the bound. Written as `if (patch.x)`, both would be dropped on the
- * floor with no error anywhere, and only for the operators who picked them.
+ * setting has a meaningful falsy value — and three do: keeping **0** exchanges verbatim
+ * past a fold is a real choice (summarize everything), and a `null` wall clock or `null`
+ * sub-agent cap is the value that removes the bound. Written as `if (patch.x)`, all three
+ * would be dropped on the floor with no error anywhere, and only for the operators who
+ * picked them.
  */
 
 const DTO = {
@@ -21,6 +22,7 @@ const DTO = {
   agent_request_limit: 25,
   inactivity_timeout_s: 120,
   wall_clock_timeout_s: null,
+  subagent_max_concurrent: null,
 };
 
 describe("reading the stored preferences", () => {
@@ -34,6 +36,7 @@ describe("reading the stored preferences", () => {
       agentRequestLimit: 25,
       inactivityTimeoutS: 120,
       wallClockTimeoutS: null,
+      subagentMaxConcurrent: null,
     });
   });
 
@@ -56,6 +59,14 @@ describe("writing a patch", () => {
     // The trap this whole file exists for.
     expect(toChatSettingsBody({ autoCompactKeepTurns: 0 })).toEqual({
       auto_compact_keep_turns: 0,
+    });
+  });
+
+  test("removing the sub-agent cap survives the encode", () => {
+    // `null` is the value that lifts the cap, and it is falsy — the same trap as the wall
+    // clock, in the second field to carry it.
+    expect(toChatSettingsBody({ subagentMaxConcurrent: null })).toEqual({
+      subagent_max_concurrent: null,
     });
   });
 

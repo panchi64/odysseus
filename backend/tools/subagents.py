@@ -69,25 +69,24 @@ _LAUNCH_DOC = """Hand a self-contained piece of work to a sub-agent, which does 
 
 {roster}
 
-It returns **immediately**, as soon as the sub-agent is submitted — it does not wait, and
-you must not poll for it in a loop. Launch as many as the work genuinely splits into (issue
-the calls together and they start together), then carry on with whatever does not depend on
-them, and end your turn when nothing is left. **You will be told what each sub-agent found
-as it finishes**, and you can keep working then.
+It returns **immediately** and does not wait; never poll for one in a loop. Launch as many
+as the work genuinely splits into, issuing the calls together, then carry on with whatever
+does not depend on them and end your turn when nothing is left. **You will be told what
+each found as it finishes.** Some may queue rather than start at once — that is throughput,
+not failure: every one you launched will run and will report.
 
-Launch one when a piece of work needs a lot of reading or a lot of editing and the steps
-themselves are not what the operator wants to see. Do not launch one for work you could do
-in a couple of tool calls: the round trip costs more than it saves.
+Launch one when a piece of work needs a lot of reading or editing and the steps themselves
+are not what the operator wants to see. Not for work you could do in a couple of tool
+calls: the round trip costs more than it saves.
 
-`task` has to stand alone. The sub-agent starts from an empty history and never sees this
-conversation, so say what to do, where to start, and what a finished answer looks like. A
-task that refers to "the bug we discussed" describes nothing it can act on.
+`task` has to stand alone — the sub-agent starts from an empty history and never sees this
+conversation. Say what to do, where to start, and what a finished answer looks like; "the
+bug we discussed" describes nothing it can act on.
 
-`isolate` gives the sub-agent its own copy of the workspace, merged back when it finishes,
-instead of working in the same files as you. Ask for it when you intend to keep editing
-meanwhile — two agents in one working tree is fine when one of them is waiting and a mess
-when neither is. It costs a copy, and a file you both changed comes back as a reported
-conflict rather than silently taking one side.
+`isolate` gives it its own copy of the workspace, merged back when it finishes, instead of
+your files. Ask for it when you mean to keep editing meanwhile: two agents in one tree is
+fine when one is waiting and a mess when neither is. A file you both changed comes back as
+a reported conflict rather than silently taking one side.
 """
 
 

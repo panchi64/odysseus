@@ -35,6 +35,7 @@ import {
   useOfflineState,
 } from "~/features/settings/data";
 import {
+  DEFAULT_SUBAGENT_LIMIT,
   DEFAULT_WALL_CLOCK_S,
   wallClockMinutes,
 } from "~/features/settings/model";
@@ -237,6 +238,36 @@ export function useSettingsIndex(): Accessor<SettingEntry[]> {
       // Writing a duration is also how the bound gets switched on, so an operator who
       // found this row first doesn't have to go find the toggle.
       write: (next) => saveChat({ wallClockTimeoutS: next * 60 }),
+    },
+    // The sub-agent cap is nullable in the same way, and takes the same two rows for the
+    // same reason. Off is the normal state here too: how many sub-agents the work splits
+    // into is the agent's call until the operator decides otherwise.
+    {
+      id: "chat.subagent-limit-enabled",
+      label: "Limit sub-agents at once",
+      keywords: ["subagent", "sub-agent", "agents", "parallel", "concurrent"],
+      group: CHAT,
+      kind: "toggle",
+      read: () => {
+        const s = chat();
+        return s === undefined ? undefined : s.subagentMaxConcurrent !== null;
+      },
+      write: (next) =>
+        saveChat({
+          subagentMaxConcurrent: next ? DEFAULT_SUBAGENT_LIMIT : null,
+        }),
+    },
+    {
+      id: "chat.subagent-limit",
+      label: "Sub-agents at once",
+      keywords: ["subagent", "sub-agent", "agents", "parallel", "concurrent"],
+      group: CHAT,
+      kind: "number",
+      min: 1,
+      read: () => chat()?.subagentMaxConcurrent ?? undefined,
+      // Writing a number is also how the cap gets switched on, so an operator who found
+      // this row first doesn't have to go find the toggle.
+      write: (next) => saveChat({ subagentMaxConcurrent: next }),
     },
     {
       id: "offline.manual",

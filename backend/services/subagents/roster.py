@@ -108,9 +108,8 @@ BUILTIN: tuple[SubagentSpec, ...] = (
     SubagentSpec(
         name=REVIEWER,
         description=(
-            "reads work that has already been done — a change, a file, a design — and "
-            "reports what is wrong with it, in order of how much it matters, changing "
-            "nothing itself"
+            "reads work already done — a change, a file, a design — and reports what is "
+            "wrong with it, worst first, changing nothing"
         ),
         brief=_REVIEWER_BRIEF,
         # Read-only the same way the explorer is: by never being offered a tool that
@@ -140,10 +139,9 @@ BUILTIN: tuple[SubagentSpec, ...] = (
     SubagentSpec(
         name=WORKER,
         description=(
-            "changes things, in its own copy of the workspace: it edits, runs and verifies "
-            "there, and what it changed is then merged back into yours, with any conflict "
-            "reported instead of overwriting your version — say exactly what to change and "
-            "how to verify it, because you cannot correct a worker while it runs"
+            "changes things: it edits, runs and verifies, and reports what it did — say "
+            "exactly what to change and how to check it, because you cannot correct a "
+            "worker while it runs"
         ),
         brief=_WORKER_BRIEF,
         # Shared like everything else by default — a worker the launching thread is waiting

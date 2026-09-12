@@ -28,6 +28,7 @@ from uuid import uuid4
 
 import pytest
 
+from services.settings_store import set_subagent_limit
 from services.subagent_store import SubagentStore
 from services.subagents import (
     SubagentLauncher,
@@ -241,6 +242,75 @@ class TestTheRegister:
             # that is never coming.
             assert row.status == "cancelled"
             assert row.ended_at is not None
+
+
+class TestTheCap:
+    async def test_there_is_no_limit_until_the_operator_sets_one(self, monkeypatch):
+        async with client_app() as (_client, app):
+            patch_model_resolution(monkeypatch, output_text="done")
+            started = [
+                await _launcher(app).launch("operator", EXPLORER, f"look at {n}")
+                for n in range(4)
+            ]
+
+            # The default the operator gets without choosing anything. A cap picked in
+            # advance, before anyone knows what the work splits into, would mostly be wrong.
+            assert len({s.subagent_id for s in started}) == 4
+            for one in started:
+                await _settle(app, one.run_id)
+
+    async def test_a_launch_over_the_cap_is_refused_with_something_to_do_instead(
+        self, monkeypatch
+    ):
+        async with client_app() as (_client, app):
+            patch_model_resolution(monkeypatch, output_text="done")
+            await set_subagent_limit(app.state.settings_store, "operator", 1)
+            first = await _launcher(app).launch("operator", EXPLORER, "look here")
+
+            with pytest.raises(SubagentUnavailableError) as refused:
+                await _launcher(app).launch("operator", EXPLORER, "look there")
+
+            # A model told only "no" retries immediately and spends the turn doing it. This
+            # says what it is waiting for and that the wait ends by itself.
+            assert "finishes" in str(refused.value)
+            await _settle(app, first.run_id)
+
+    async def test_a_finished_subagent_gives_its_slot_back(self, monkeypatch):
+        async with client_app() as (_client, app):
+            patch_model_resolution(monkeypatch, output_text="done")
+            await set_subagent_limit(app.state.settings_store, "operator", 1)
+            first = await _launcher(app).launch("operator", EXPLORER, "look here")
+            await _settle(app, first.run_id)
+
+            # Otherwise the cap is a lifetime budget rather than a concurrency one, and a
+            # long session would stop being able to launch anything at all.
+            second = await _launcher(app).launch("operator", EXPLORER, "look there")
+            await _settle(app, second.run_id)
+
+    async def test_nothing_is_created_for_a_launch_that_is_refused(self, monkeypatch):
+        async with client_app() as (_client, app):
+            patch_model_resolution(monkeypatch, output_text="done")
+            await set_subagent_limit(app.state.settings_store, "operator", 1)
+            first = await _launcher(app).launch(
+                "operator",
+                EXPLORER,
+                "look here",
+                parent=SubagentParent(conversation_id="parent-cap"),
+            )
+
+            with pytest.raises(SubagentUnavailableError):
+                await _launcher(app).launch(
+                    "operator",
+                    EXPLORER,
+                    "look there",
+                    parent=SubagentParent(conversation_id="parent-cap"),
+                )
+
+            # Checked before anything exists, so a refusal leaves no hidden conversation,
+            # no row and no forked workspace behind for the operator to wonder about.
+            rows = await _records(app).for_parent("parent-cap", "operator")
+            assert len(rows) == 1
+            await _settle(app, first.run_id)
 
 
 class TestIsolation:

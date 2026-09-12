@@ -9,16 +9,19 @@ from services.settings_store import (
     AUTO_COMPACT_ENABLED_KEY,
     AUTO_COMPACT_THRESHOLD_KEY,
     INACTIVITY_TIMEOUT_KEY,
+    SUBAGENT_LIMIT_KEY,
     WALL_CLOCK_TIMEOUT_KEY,
     SettingsStore,
     get_agent_request_limit,
     get_agent_request_limit_override,
     get_auto_compact,
     get_inactivity_timeout,
+    get_subagent_limit,
     get_wall_clock_timeout,
     resolve_compaction_enabled,
     set_agent_request_limit,
     set_inactivity_timeout,
+    set_subagent_limit,
     set_wall_clock_timeout,
 )
 
@@ -120,6 +123,28 @@ async def test_a_corrupted_request_limit_reads_as_unset():
         await store.set(OWNER, AGENT_REQUEST_LIMIT_KEY, bad)
         assert await get_agent_request_limit_override(store, OWNER) is None, bad
         assert await get_agent_request_limit(store, OWNER) == cfg.agent_request_limit
+
+
+async def test_there_is_no_subagent_cap_until_the_operator_sets_one():
+    store = _store()
+    # Not a fallback from a config default — there is no config default, because "however
+    # many the work splits into" is the intended behaviour rather than an unset one.
+    assert await get_subagent_limit(store, OWNER) is None
+
+    await set_subagent_limit(store, OWNER, 3)
+    assert await get_subagent_limit(store, OWNER) == 3
+
+    await set_subagent_limit(store, OWNER, None)
+    assert await get_subagent_limit(store, OWNER) is None
+
+
+async def test_a_corrupted_subagent_cap_reads_as_no_cap():
+    store = _store()
+    for bad in ("0", "-5", "not-a-number"):
+        await store.set(OWNER, SUBAGENT_LIMIT_KEY, bad)
+        # Back to how the product behaves out of the box, rather than to a restriction the
+        # operator never asked for — the same direction every other getter here falls.
+        assert await get_subagent_limit(store, OWNER) is None, bad
 
 
 async def test_get_inactivity_timeout_uses_config_default_when_unset():

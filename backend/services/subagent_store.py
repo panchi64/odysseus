@@ -29,6 +29,12 @@ logger = logging.getLogger(__name__)
 #: operator's cap: a sub-agent parked on an approval has not reported, and the thing it is
 #: waiting for is a person rather than a slot, so releasing its budget would let the model
 #: pile up work behind a decision nobody has made yet.
+#:
+#: Only ``running`` is ever *written* — a row is opened at a launch and closed at an
+#: ending, and the parked state in between is read off the live Run by
+#: :meth:`SubagentStore.view`'s caller rather than persisted, because the Run is the thing
+#: that actually knows. ``blocked`` is in the set anyway so that the one vocabulary answers
+#: for both, and a future writer of it cannot silently stop counting.
 LIVE_STATUSES: frozenset[str] = frozenset({"running", "blocked"})
 
 
@@ -111,20 +117,6 @@ class SubagentStore:
             if context_window is not None:
                 row.context_window = context_window
             row.ended_at = datetime.now(UTC)
-            session.add(row)
-
-        await in_session(self._db, work)
-
-    async def set_status(self, subagent_id: str, status: str) -> None:
-        """Move a sub-agent between the two live statuses — into ``blocked`` when it parks
-        on an approval, back to ``running`` when the operator settles it. Never touches
-        ``ended_at``: neither transition is an ending."""
-
-        def work(session: Session) -> None:
-            row = session.get(SubagentRecord, subagent_id)
-            if row is None or row.status not in LIVE_STATUSES:
-                return
-            row.status = status
             session.add(row)
 
         await in_session(self._db, work)

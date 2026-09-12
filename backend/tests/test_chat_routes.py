@@ -209,6 +209,41 @@ async def test_explicit_null_removes_the_wall_clock_bound():
         assert (await client.get("/chat/settings")).json()["wall_clock_timeout_s"] is None
 
 
+async def test_the_subagent_cap_is_absent_until_the_operator_sets_one():
+    # Unlimited is the default and not a fallback from a config value: the model launches
+    # sub-agents to save the operator time, and a number chosen before anyone knows what
+    # the work splits into would mostly be the wrong one.
+    async with client_app() as (client, _app):
+        assert (await client.get("/chat/settings")).json()["subagent_max_concurrent"] is None
+
+        put = await client.put("/chat/settings", json={"subagent_max_concurrent": 2})
+        assert put.status_code == 200
+        assert put.json()["subagent_max_concurrent"] == 2
+        assert (await client.get("/chat/settings")).json()["subagent_max_concurrent"] == 2
+
+
+async def test_explicit_null_removes_the_subagent_cap():
+    # The second field where `null` is a value rather than an omission.
+    async with client_app() as (client, _app):
+        await client.put("/chat/settings", json={"subagent_max_concurrent": 2})
+
+        untouched = await client.put("/chat/settings", json={"agent_request_limit": 30})
+        assert untouched.json()["subagent_max_concurrent"] == 2
+
+        cleared = await client.put("/chat/settings", json={"subagent_max_concurrent": None})
+        assert cleared.json()["subagent_max_concurrent"] is None
+        assert (await client.get("/chat/settings")).json()["subagent_max_concurrent"] is None
+
+
+async def test_the_subagent_cap_rejects_zero_and_negative():
+    # "None at all" is what switching the tool off in the catalog says. A cap of 0 would be
+    # a second, obscurer way of saying it, reachable by typing in a number box.
+    async with client_app() as (client, _app):
+        for bad in (0, -1):
+            resp = await client.put("/chat/settings", json={"subagent_max_concurrent": bad})
+            assert resp.status_code == 422
+
+
 async def test_wall_clock_timeout_rejects_zero_and_negative():
     # Off is `null`, not 0 — a 0 bound would stop every turn the instant it started.
     async with client_app() as (client, _app):

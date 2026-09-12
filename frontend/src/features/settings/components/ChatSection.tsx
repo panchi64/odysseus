@@ -11,7 +11,11 @@ import {
   toast,
 } from "~/ui";
 import { saveChatSettings, useChatSettings } from "../data";
-import { DEFAULT_WALL_CLOCK_S, wallClockMinutes } from "../model";
+import {
+  DEFAULT_SUBAGENT_LIMIT,
+  DEFAULT_WALL_CLOCK_S,
+  wallClockMinutes,
+} from "../model";
 
 /** One preference's title and its explanation — the shape every block in this panel
  *  opens with. Extracted at the fourth copy: the wording is all that ever differed,
@@ -78,6 +82,12 @@ export function ChatSection(): JSX.Element {
   const [wallClockOn, setWallClockOn] = createSignal(false);
   const [wallClockMin, setWallClockMin] = createSignal("");
   const [savingWallClock, setSavingWallClock] = createSignal(false);
+  // How many sub-agents the agent may have going at once. Off by default — the agent
+  // launches these to save the operator time, and a number picked before anyone knows what
+  // the work splits into is mostly the wrong one. Same off-is-null shape as the wall clock.
+  const [subagentCapOn, setSubagentCapOn] = createSignal(false);
+  const [subagentCap, setSubagentCap] = createSignal("");
+  const [savingSubagentCap, setSavingSubagentCap] = createSignal(false);
   // Conversation compaction: fold whole earlier turns into a summary once the context
   // window fills. The threshold is stored as a fraction and edited as a percentage — the
   // number the operator actually thinks in.
@@ -100,6 +110,8 @@ export function ChatSection(): JSX.Element {
     setTimeoutS(String(s.inactivityTimeoutS));
     setWallClockOn(s.wallClockTimeoutS !== null);
     setWallClockMin(String(minutesOr(s.wallClockTimeoutS)));
+    setSubagentCapOn(s.subagentMaxConcurrent !== null);
+    setSubagentCap(String(s.subagentMaxConcurrent ?? DEFAULT_SUBAGENT_LIMIT));
     setAutoCompactEnabled(s.autoCompactEnabled);
     setAutoCompactPct(String(Math.round(s.autoCompactThreshold * 100)));
     setKeepTurns(String(s.autoCompactKeepTurns));
@@ -164,6 +176,29 @@ export function ChatSection(): JSX.Element {
       toast.error("Unable to update the total time limit.");
     } finally {
       setSavingWallClock(false);
+    }
+  };
+
+  const saveSubagentCap = async () => {
+    // Off sends `null` — remove the cap — rather than omitting the field. The number is
+    // only read when the switch is on, so a blank box cannot block turning the cap off.
+    const cap = subagentCapOn() ? wholeNumber(subagentCap()) : null;
+    if (subagentCapOn() && cap === null) {
+      toast.error("Enter a whole number of sub-agents (1 or more).");
+      return;
+    }
+    setSavingSubagentCap(true);
+    try {
+      const saved = await saveChatSettings({ subagentMaxConcurrent: cap });
+      setSubagentCapOn(saved.subagentMaxConcurrent !== null);
+      setSubagentCap(
+        String(saved.subagentMaxConcurrent ?? DEFAULT_SUBAGENT_LIMIT),
+      );
+      toast.success("Sub-agent limit updated");
+    } catch {
+      toast.error("Unable to update the sub-agent limit.");
+    } finally {
+      setSavingSubagentCap(false);
     }
   };
 
@@ -330,6 +365,48 @@ export function ChatSection(): JSX.Element {
               onClick={() => void saveWallClock()}
             >
               {savingWallClock() ? "Saving…" : "Save"}
+            </Button>
+          </Row>
+
+          <Rule />
+
+          <SettingHeader title="Sub-agents at once">
+            The agent can hand pieces of work to sub-agents that go off and do
+            them on their own, and it decides how many the work splits into.
+            There's no limit unless you set one — each is a separate agent
+            spending model requests of its own, so this is the ceiling on how
+            much can be running while you're not watching. Over the limit, the
+            agent is told to wait rather than refused: nothing is lost, it just
+            launches the next one as one finishes.
+          </SettingHeader>
+          <Toggle
+            checked={subagentCapOn()}
+            onChange={setSubagentCapOn}
+            label="Limit how many sub-agents can run at once"
+          />
+          <Row gap={4} align="end">
+            <Stack gap={1}>
+              <Text variant="micro" tone="dim">
+                AT MOST
+              </Text>
+              <div class="w-48">
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  min="1"
+                  value={subagentCap()}
+                  onInput={(e) => setSubagentCap(e.currentTarget.value)}
+                  placeholder={String(DEFAULT_SUBAGENT_LIMIT)}
+                  disabled={!subagentCapOn()}
+                />
+              </div>
+            </Stack>
+            <Button
+              variant="primary"
+              disabled={savingSubagentCap()}
+              onClick={() => void saveSubagentCap()}
+            >
+              {savingSubagentCap() ? "Saving…" : "Save"}
             </Button>
           </Row>
 
