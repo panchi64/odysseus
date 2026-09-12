@@ -1,18 +1,18 @@
-"""Forking a workspace for a delegated agent, and reporting what came back.
+"""Landing a delegated agent's forked workspace, and reporting what came back.
 
-A sub-agent that *changes* things never works in the workspace that delegated to it. It
-gets its own copy — a sandbox session cloned from the parent's, or its own checkout on its
-own branch — and what it changed is merged back afterwards, with any conflict *reported*
-rather than resolved in its favour. That is the whole of what this module owns: taking the
-copy, handing back the two things a caller does with it, and turning the merge into the
-sentences the agent reading it can act on.
+A sub-agent that works apart never edits the workspace that launched it. It gets its own
+copy — a sandbox session cloned from the parent's, or its own checkout on its own branch —
+and what it changed is merged back afterwards, with any conflict *reported* rather than
+resolved in its favour.
 
-It lives here, in ``services/``, rather than beside the tool that first needed it, because
-the lifetime of a fork is no longer the lifetime of a tool call. A delegated run is now a
-Run of its own — it outlives the call that launched it, and the merge happens when *it*
-ends, from a terminal hook that has no ``RunContext`` and could not reach a tool module
-anyway. So the parameters are spelled out rather than read off ``RunDeps``: ``services``
-sits below ``tools`` in the dependency order and must not import it.
+**Taking the copy is not here**, and that is the shape rather than an omission. A
+delegated run resolves its workspace the way every run does — repeatedly, from its own
+workspace key, through ``services/workspace.py`` — so the fork is cut on its first
+file-tool call by whichever manager owns that kind. What has no other home is the *other*
+end: landing the copy happens when the child's run reaches terminal, from a hook with no
+``RunContext``, no deps and no workspace left to resolve. So the parameters here are spelled
+out rather than read off ``RunDeps``: ``services`` sits below ``tools`` in the dependency
+order and must not import it.
 
 Every handle is resolved optionally, which is the same degrade every capability-backed
 feature makes: a host with no container runtime can still run a sub-agent, it just cannot
@@ -32,8 +32,6 @@ from core.fork import MergeReport
 from services.projects.store import ProjectStore
 from services.projects.worktree import WorktreeManager
 from services.sandbox import SandboxSessionManager
-from services.sandbox.session import LiveWork
-from services.workspace import HostFiles, RunWorkspace
 
 logger = logging.getLogger(__name__)
 
@@ -57,89 +55,6 @@ class ForkTarget:
     project_id: str | None = None
     #: The *parent's* conversation — what the worktree manager keys a child checkout on.
     conversation_id: str | None = None
-
-
-@dataclass
-class Fork:
-    """A child's workspace and the two things its launcher does with it afterwards.
-
-    ``hold`` is the half that did not exist while delegation was synchronous. A sandbox
-    session is claimed by the run using it, so the live-session cap cannot displace it
-    mid-work — and displacing a fork means *deleting* it, nothing here being sealed. While
-    a delegation blocked its parent's turn the parent's own run was that claim; now the
-    child outlives the call that launched it, so the claim has to move to the child's run
-    as soon as there is one. A worktree fork has no such cap, and its ``hold`` is a no-op
-    rather than a second code path at every call site.
-    """
-
-    workspace: RunWorkspace
-    merge: Callable[[], Awaitable[MergeReport]]
-    discard: Callable[[], Awaitable[None]]
-    hold: Callable[[LiveWork], None]
-
-
-async def fork_workspace(
-    caps: ServiceContainer,
-    parent: RunWorkspace,
-    target: ForkTarget,
-    *,
-    holder: LiveWork | None = None,
-) -> Fork | None:
-    """The child's workspace, forked the way its kind is forked.
-
-    ``parent`` is the workspace being copied — already resolved by the caller, so a child
-    can never end up on a different filesystem than the agent that launched it.
-
-    ``None`` when the handles that would do it are absent — the same degrade every
-    capability-backed feature makes. Raising is reserved for a fork that *should* have
-    worked and didn't; the caller reports either as a sentence.
-    """
-    if parent.kind == "worktree":
-        return await _fork_worktree(caps, target)
-    return await _fork_sandbox(caps, target, holder=holder)
-
-
-async def _fork_sandbox(
-    caps: ServiceContainer, target: ForkTarget, *, holder: LiveWork | None
-) -> Fork | None:
-    sessions = caps.get_optional(SandboxSessionManager)
-    if sessions is None:
-        return None
-    session = await sessions.fork(target.parent_key, target.child_key, holder=holder)
-    return Fork(
-        workspace=RunWorkspace(root=session.ensure_workspace(), kind="sandbox", files=session),
-        merge=lambda: sessions.merge_back(target.child_key, target.parent_key),
-        discard=lambda: sessions.purge(target.child_key),
-        hold=session.hold,
-    )
-
-
-async def _fork_worktree(caps: ServiceContainer, target: ForkTarget) -> Fork | None:
-    projects = caps.get_optional(ProjectStore)
-    worktrees = caps.get_optional(WorktreeManager)
-    if projects is None or worktrees is None or not target.project_id or not target.conversation_id:
-        return None
-    project = await projects.get(target.owner_id, target.project_id)
-    root = Path(project.root_path)
-    where = {
-        "project_id": target.project_id,
-        "root": root,
-        "conversation_id": target.conversation_id,
-        "delegation_id": target.delegation_id,
-    }
-    state = await worktrees.fork(**where)
-    return Fork(
-        workspace=RunWorkspace(
-            root=state.path,
-            kind="worktree",
-            files=HostFiles(state.path),
-            branch=state.branch,
-        ),
-        merge=lambda: worktrees.merge_back(**where),
-        discard=lambda: worktrees.discard_child(**where),
-        # A checkout is not subject to the live-session cap, so nothing claims it.
-        hold=lambda _: None,
-    )
 
 
 @dataclass

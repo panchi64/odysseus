@@ -456,23 +456,35 @@ export function createFolder(
         }
         break;
       }
-      case "message.queued":
-        // A steering message the backend accepted into this run. Usually it tags
-        // the optimistic bubble `send` already pushed (matched by text, first
-        // untagged wins so duplicate texts pair off in order); on a reattach
-        // replay there is no optimistic bubble, so rebuild it from the event.
+      case "message.queued": {
+        // A message the backend accepted into this run. Usually it tags the optimistic
+        // bubble `send` already pushed (matched by text, first untagged wins so duplicate
+        // texts pair off in order); on a reattach replay there is no optimistic bubble, so
+        // rebuild it from the event.
+        //
+        // A sub-agent's report rides the same road and must not read the same. It gets no
+        // optimistic bubble to tag — nobody typed it — and it lands as a `subagent` row, so
+        // the live transcript says what a reload says rather than attributing to the
+        // operator words they have not even seen. It also means the report is not offered
+        // the edit/withdraw affordances, which belong to a message its author can still
+        // take back.
+        const fromSubagent = ev.source === "subagent";
         setMessages(
           produce((list) => {
             if (list.some((m) => m.queuedMessageId === ev.message_id)) return;
-            const untagged = list.find(
-              (m) =>
-                m.queuedPending && !m.queuedMessageId && m.content === ev.text,
-            );
+            const untagged = fromSubagent
+              ? undefined
+              : list.find(
+                  (m) =>
+                    m.queuedPending &&
+                    !m.queuedMessageId &&
+                    m.content === ev.text,
+                );
             if (untagged) untagged.queuedMessageId = ev.message_id;
             else
               list.push({
-                id: nextId("u"),
-                role: "user",
+                id: nextId(fromSubagent ? "s" : "u"),
+                role: fromSubagent ? "subagent" : "user",
                 content: ev.text,
                 queuedPending: true,
                 queuedMessageId: ev.message_id,
@@ -481,6 +493,7 @@ export function createFolder(
           }),
         );
         break;
+      }
       case "message.edited":
         // The operator rewrote a still-pending bubble. Usually `editQueued`
         // already applied the text optimistically-on-success; this fold makes a

@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from services.projects.repo import child_branch_for
 from services.projects.worktree import WorktreeManager
-from services.workspace import split_workspace_key
+from services.workspace import sandbox_workspace, split_workspace_key
 
 
 async def _run(cwd, *args: str) -> None:
@@ -132,6 +134,127 @@ class TestOpeningAChildCheckout:
         # Parallel sub-agents are the ordinary case now — the model launches several in
         # one step — so two of them must never land in one working tree.
         assert one.path != two.path
+
+
+class _FakeSession:
+    """Only what resolving a workspace asks of a session."""
+
+    def __init__(self, key: str, root, *, ephemeral: bool = False) -> None:
+        self.key = key
+        self.root = root
+        self.ephemeral = ephemeral
+        self.holders: list[object] = []
+        self.touches = 0
+
+    def ensure_workspace(self):
+        self.root.mkdir(parents=True, exist_ok=True)
+        return self.root
+
+    def hold(self, holder) -> None:
+        self.holders.append(holder)
+
+    def touch(self) -> None:
+        self.touches += 1
+
+
+class _FakeSessions:
+    """A sandbox manager as `sandbox_workspace` uses one, counting what it was asked for.
+
+    Deliberately a fake rather than the real manager: the point of these is *which call*
+    a delegated key produces, and the real one wants a container runtime to answer.
+    """
+
+    def __init__(self, tmp_path) -> None:
+        self._root = tmp_path
+        self.sessions: dict[str, _FakeSession] = {}
+        self.acquired: list[str] = []
+        self.forked: list[tuple[str, str]] = []
+
+    def existing(self, key: str):
+        return self.sessions.get(key)
+
+    async def acquire(self, key: str, *, holder=None) -> _FakeSession:
+        self.acquired.append(key)
+        session = self.sessions.setdefault(
+            key, _FakeSession(key, self._root / key.replace("/", "_"))
+        )
+        session.hold(holder)
+        return session
+
+    async def fork(self, parent_key: str, child_key: str, *, holder=None) -> _FakeSession:
+        if child_key in self.sessions:
+            raise AssertionError(f"already forked {child_key!r}")
+        self.forked.append((parent_key, child_key))
+        session = _FakeSession(
+            child_key, self._root / child_key.replace("/", "_"), ephemeral=True
+        )
+        session.hold(holder)
+        self.sessions[child_key] = session
+        return session
+
+
+class TestOpeningADelegatedSandbox:
+    """The sandbox half of the same convention.
+
+    The worktree half above was the one that had to be taught the key; this half was
+    always described as reading it, and did not. A delegated key through plain `acquire`
+    is the quiet failure: it answers with a session, so nothing raises — the sub-agent is
+    simply working in a copy of *nothing*, and the merge at the end finds no fork to land.
+    """
+
+    async def test_an_ordinary_key_is_the_conversations_own_session(self, tmp_path):
+        sessions = _FakeSessions(tmp_path)
+
+        await sandbox_workspace(sessions, "c1")
+
+        assert sessions.acquired == ["c1"]
+        assert sessions.forked == []
+
+    async def test_a_delegated_key_is_a_fork_of_the_workspace_it_delegates_from(
+        self, tmp_path
+    ):
+        sessions = _FakeSessions(tmp_path)
+
+        workspace = await sandbox_workspace(sessions, "c1/s-ab12")
+
+        assert sessions.forked == [("c1", "c1/s-ab12")]
+        # And never as a session of its own: that is the empty workspace.
+        assert sessions.acquired == []
+        assert workspace.kind == "sandbox"
+
+    async def test_resolving_it_again_reopens_the_same_fork(self, tmp_path):
+        sessions = _FakeSessions(tmp_path)
+
+        first = await sandbox_workspace(sessions, "c1/s-ab12")
+        second = await sandbox_workspace(sessions, "c1/s-ab12")
+
+        # A delegated run resolves its workspace on every file-tool call, not once at
+        # launch — the fake raises on a second fork, which is what the real manager does.
+        assert sessions.forked == [("c1", "c1/s-ab12")]
+        assert first.root == second.root
+
+    async def test_reopening_claims_the_fork_for_the_run_using_it(self, tmp_path):
+        sessions = _FakeSessions(tmp_path)
+        holder = object()
+
+        await sandbox_workspace(sessions, "c1/s-ab12", holder=holder)
+        await sandbox_workspace(sessions, "c1/s-ab12", holder=holder)
+
+        # Displacing a fork *deletes* it, nothing about a fork being sealed — so a copy
+        # left unclaimed between two of a sub-agent's tool calls is its work thrown away
+        # by the live-session cap.
+        assert sessions.sessions["c1/s-ab12"].holders == [holder, holder]
+
+    async def test_a_session_that_is_not_a_fork_is_never_adopted(self, tmp_path):
+        sessions = _FakeSessions(tmp_path)
+        # Something non-ephemeral squatting the child key — adopting it would mean
+        # merging a whole conversation's workspace into another's when this ends.
+        sessions.sessions["c1/s-ab12"] = _FakeSession(
+            "c1/s-ab12", tmp_path / "squatter"
+        )
+
+        with pytest.raises(AssertionError):
+            await sandbox_workspace(sessions, "c1/s-ab12")
 
 
 async def _log(path) -> str:

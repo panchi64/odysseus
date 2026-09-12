@@ -422,13 +422,22 @@ export interface ReviewCompleted extends Base {
   authorization: "explicitly_no" | "neutral" | "explicitly_yes" | null;
   correctness: string | null;
 }
-/** The operator sent a message while the run was still executing; it is queued
- *  for injection at the run's next model-request boundary. `text` rides inline
- *  so a reattaching client rebuilds the pending bubble purely from replay. */
+/** Who a queued message is from. `operator` is somebody typing while a run is going;
+ *  `subagent` is a report from one the agent launched, delivered into the thread that
+ *  launched it. They ride the same road on purpose — a queued message is handed to the
+ *  *next, not-yet-sent* request, so neither can interrupt a model mid-stream — but they
+ *  must not read the same, because a report shown as the operator's own words is a
+ *  transcript lying about who said what. Absent on an older backend, which only ever sent
+ *  the operator's. */
+export type MessageSource = "operator" | "subagent";
+/** A message arrived while the run was still executing; it is queued for injection
+ *  at the run's next model-request boundary. `text` rides inline so a reattaching
+ *  client rebuilds the pending bubble purely from replay. */
 export interface MessageQueued extends Base {
   type: "message.queued";
   message_id: string;
   text: string;
+  source?: MessageSource;
 }
 /** The operator rewrote a queued message's text before the run consumed it.
  *  `text` is the full replacement (not a delta), inline so a reattaching client
@@ -448,6 +457,9 @@ export interface MessageWithdrawn extends Base {
 export interface MessageInjected extends Base {
   type: "message.injected";
   message_id: string;
+  /** Repeated from the queue frame rather than looked up, so a client attaching after
+   *  that frame scrolled out of its replay window still knows whose message landed. */
+  source?: MessageSource;
 }
 /** One task on the agent's running list for this conversation. `blocked` only occurs
  *  when the backend enables subtasks/dependencies; it is carried here so a future flip

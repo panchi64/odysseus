@@ -181,6 +181,27 @@ class SubagentStore:
 
         return await in_session(self._db, work)
 
+    async def delete_for_parent(self, parent_conversation_id: str, owner_id: str) -> None:
+        """Forget every sub-agent a thread launched, because the thread is gone.
+
+        The rows are only ever read *by* parent, so one whose parent has been deleted is
+        unreachable rather than merely unlisted — and it would still be counted by the cap
+        if it were somehow left live. Deleting them is the same reasoning as the thread's
+        tasks, plan and View history going with it: they all restate work that was asked
+        for in a conversation that no longer exists.
+        """
+
+        def work(session: Session) -> None:
+            rows = session.exec(
+                select(SubagentRecord)
+                .where(SubagentRecord.owner_id == owner_id)
+                .where(SubagentRecord.parent_conversation_id == parent_conversation_id)
+            ).all()
+            for row in rows:
+                session.delete(row)
+
+        await in_session(self._db, work)
+
     async def reconcile_stranded(self) -> int:
         """Close out every row left live by a process that died, at startup.
 

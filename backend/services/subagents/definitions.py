@@ -153,7 +153,7 @@ def parse_agent_file(text: str, *, name: str) -> SubagentSpec:
         name=spec_name,
         description=_clip(description, DESCRIPTION_MAX_CHARS),
         brief=_clip(brief, BRIEF_MAX_CHARS),
-        permission_ceiling=_declared_ceiling(fields),
+        permission_ceiling=_declared_ceiling(fields, name=spec_name),
         workspace=_declared_workspace(fields, name=spec_name),
     )
 
@@ -209,7 +209,7 @@ def _declared_workspace(fields: dict[str, Any], *, name: str) -> WorkspacePolicy
     return declared  # type: ignore[return-value]
 
 
-def _declared_ceiling(fields: dict[str, Any]) -> str | None:
+def _declared_ceiling(fields: dict[str, Any], *, name: str) -> str | None:
     """How far this agent may reach, read from whichever of the two fields says something.
 
     ``permission`` is ours and names one of this installation's levels directly.
@@ -227,6 +227,17 @@ def _declared_ceiling(fields: dict[str, Any]) -> str | None:
     declared = _text(fields.get("permission")).lower()
     if declared in PERMISSION_LEVELS:
         return declared
+    if declared:
+        # Named a level this installation does not have. Logged rather than fatal, for the
+        # reason an unknown workspace is: the file still describes a usable sub-agent, and
+        # the level it falls back to is worked out by the launcher and capped by the
+        # launching thread's own — so the failure mode of guessing is a narrower sub-agent,
+        # never a wider one.
+        logger.info(
+            "subagents: agent %r declared unknown permission %r; using the mode's default",
+            name,
+            declared,
+        )
     listed = _tool_names(fields.get("tools"))
     if listed and listed <= _READ_ONLY_FOREIGN_TOOLS:
         return STRICTEST_PERMISSION

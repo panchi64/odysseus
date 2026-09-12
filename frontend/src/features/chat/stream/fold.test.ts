@@ -385,3 +385,84 @@ describe("a review's two frames", () => {
     expect(block?.kind === "review" && block.review.fenced).toBe(false);
   });
 });
+
+/**
+ * A queued message, and whose it is.
+ *
+ * The operator typing mid-turn and a sub-agent reporting back ride the same road on
+ * purpose — the injection point hands a queued message to the *next, not-yet-sent*
+ * request, so neither can interrupt a model mid-stream. They must not arrive looking the
+ * same. Read as the operator's, a report is words attributed to somebody who has not seen
+ * them, offered with edit and withdraw affordances for a message they cannot take back —
+ * and a live transcript that disagrees with what the same thread shows after a reload,
+ * where the backend labels it from the envelope it was delivered in.
+ */
+describe("whose queued message it is", () => {
+  const queued = (
+    text: string,
+    source?: "operator" | "subagent",
+  ): RunEvent => ({
+    type: "message.queued",
+    seq: ++seq,
+    ts: "",
+    message_id: "q1",
+    text,
+    ...(source === undefined ? {} : { source }),
+  });
+  const injected = (source?: "operator" | "subagent"): RunEvent => ({
+    type: "message.injected",
+    seq: ++seq,
+    ts: "",
+    message_id: "q1",
+    ...(source === undefined ? {} : { source }),
+  });
+
+  test("an unmarked frame is the operator's, as it always was", () => {
+    // An older backend sends no `source` at all, and everything it ever queued was theirs.
+    const h = harness(turn());
+    h.fold(queued("actually, check the tests too"));
+    const bubble = h.messages.find((m) => m.queuedMessageId === "q1");
+    expect(bubble?.role).toBe("user");
+  });
+
+  test("a sub-agent's report is not the operator speaking", () => {
+    const h = harness(turn());
+    h.fold(queued("explorer: the parser is in lexer.ts", "subagent"));
+    const bubble = h.messages.find((m) => m.queuedMessageId === "q1");
+    expect(bubble?.role).toBe("subagent");
+    expect(bubble?.content).toBe("explorer: the parser is in lexer.ts");
+  });
+
+  test("a report never tags an optimistic bubble the operator is waiting on", () => {
+    // Same text, by coincidence or because the operator was reading the panel. Tagging
+    // theirs with the report's id would make their own message the one that promotes as
+    // a sub-agent's, and leave the report with no bubble at all.
+    const h = harness([
+      ...turn(),
+      {
+        id: "u2",
+        role: "user",
+        content: "same words",
+        queuedPending: true,
+        createdAt: "",
+      },
+    ]);
+    h.fold(queued("same words", "subagent"));
+    expect(
+      h.messages.find((m) => m.id === "u2")?.queuedMessageId,
+    ).toBeUndefined();
+    expect(h.messages.filter((m) => m.queuedMessageId === "q1")).toHaveLength(
+      1,
+    );
+  });
+
+  test("it promotes to a turn of the thread like any other injected message", () => {
+    const h = harness(turn());
+    h.fold(queued("explorer: nothing there", "subagent"));
+    h.fold(injected("subagent"));
+    const landed = h.messages.find((m) => m.queuedMessageId === "q1");
+    expect(landed?.queuedPending).toBe(false);
+    // Still not theirs — what a reload will show, from the envelope it was delivered in.
+    expect(landed?.role).toBe("subagent");
+  });
+});

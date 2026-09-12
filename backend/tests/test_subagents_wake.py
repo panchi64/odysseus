@@ -20,10 +20,12 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from pydantic_ai import ModelRequest, UserPromptPart
 
+from agent import turn as turn_module
 from agent.injected import injected_text
 from harness.manifests._subagent_wake import WAKE_CHAIN_LIMIT, SubagentWake
 from runs import QueuedMessage, Run, RunStatus, RunStream
@@ -114,6 +116,30 @@ class TestItNeverInterrupts:
             # it streams.
             turns = await app.state.conversations.messages_view(created.json()["conversation_id"])
             assert [t.role for t in turns][:2] == ["user", "assistant"]
+
+    def test_every_road_a_queued_message_takes_is_framed_the_same_way(self):
+        """One drain, one framing — and there is more than one drain.
+
+        A turn takes queued messages in two places: at a model-request boundary mid-turn,
+        and again when the model has *finished* and something arrived while it was
+        answering. The second is where a sub-agent that finishes during the parent's reply
+        actually lands, which makes it the common road rather than the odd one — and it
+        spent a while handing the text over bare, so the report read as the operator's in
+        the history every later turn replays.
+
+        Pinned by counting rather than by driving a turn, because the failure is not a
+        behaviour that can be provoked on demand: it is one call site out of two that
+        forgot, and which site a test happens to exercise is a matter of how fast the
+        model answered. Every drain must be matched by a framing, and this notices a third
+        one arriving unframed as readily as it notices this one regressing.
+        """
+        source = (Path(turn_module.__file__)).read_text()
+
+        assert source.count("drain_messages()") == source.count("injected_text(")
+        # And nothing builds the part straight off the message, which is how both of the
+        # counts above could stay equal while one road went bare again.
+        assert "UserPromptPart(m.text)" not in source
+        assert "UserPromptPart(message.text)" not in source
 
 
 class TestHowTheOperatorReadsIt:

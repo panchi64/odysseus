@@ -40,8 +40,7 @@ import type {
   PlanDocument,
   ViewSnapshotRef,
 } from "./model";
-import type { BranchState } from "./data";
-import type { Subagent } from "./data";
+import type { BranchState, Subagent } from "./data";
 import type { Park } from "./stream/approvals";
 import type { TaskItem } from "~/lib/stream/events";
 import {

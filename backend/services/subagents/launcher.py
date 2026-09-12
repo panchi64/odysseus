@@ -25,7 +25,6 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 
 from services.subagents.spec import SubagentSpec
 
@@ -46,9 +45,9 @@ class SubagentParent:
 
     Everything here exists to *narrow* the child. The project it inherits so the child
     lands in the same scope; the permission it inherits as a ceiling it can never exceed;
-    the workspace it names so a fork is cut from the files the parent's own transcript
-    describes, rather than from a workspace re-derived down here that might not be the
-    same one.
+    the workspace key it names so the child's own files are the parent's, or a delegated
+    fork of the parent's, rather than a workspace re-derived down here that might not be
+    the same one.
     """
 
     conversation_id: str | None = None
@@ -60,10 +59,12 @@ class SubagentParent:
     #: its spec asks for, so one approved launch cannot buy a level the operator never
     #: chose. None means the caller had no level to hand over and the mode's default stands.
     permission: str | None = None
-    #: The parent's resolved workspace root — what a ``seed`` copies and a ``fork`` cuts
-    #: from. None when the parent has no workspace, which a ``fork`` spec cannot survive.
-    workspace_from: Path | None = None
-    #: The parent's workspace key, which is what the sandbox manager forks by name.
+    #: The parent's workspace key. The child's own is derived from it — the same key to
+    #: share those files, or ``<parent>/<delegation>`` to work in a fork of them — so this
+    #: is the whole of what decides which filesystem a sub-agent ends up on. Deliberately
+    #: the key and not a resolved root: resolving the parent's workspace here would open a
+    #: container or cut a checkout for an answer nothing reads, and the child resolves its
+    #: own on its first file-tool call like every other run.
     workspace_key: str | None = None
     #: The run doing the launching. Only its id is kept, to tie a card back to the turn
     #: that asked for it.

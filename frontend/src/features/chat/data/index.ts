@@ -63,6 +63,7 @@ export {
   fetchSubagents,
   isLive,
   type Subagent,
+  type SubagentsRead,
   type SubagentStatus,
 } from "./subagents";
 

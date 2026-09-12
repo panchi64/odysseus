@@ -349,16 +349,22 @@ async def drive_turn(
             output.approvals or output.calls
         )
         if not deferred:
-            # The model finished, but the operator queued more while it was working:
-            # instead of ending the run, continue it with the queued text as the next
-            # user request(s) — same run id, same stream, same usage/loop budget (so
-            # a steady drip of messages still trips the turn's bounds rather than
-            # extending them). `prompt=None` + a history ending in a user request is
-            # the same continuation shape a regenerate uses.
+            # The model finished, but something queued while it was working: instead of
+            # ending the run, continue it with the queued text as the next user
+            # request(s) — same run id, same stream, same usage/loop budget (so a steady
+            # drip of messages still trips the turn's bounds rather than extending them).
+            # `prompt=None` + a history ending in a user request is the same continuation
+            # shape a regenerate uses.
+            #
+            # Through `injected_text` like the boundary above, and for the reason there is
+            # only one of it: this is where most sub-agent reports actually land — one
+            # that finishes while the parent is mid-answer arrives *here*, not at a
+            # mid-stream boundary — and a report handed over bare is the operator credited
+            # with words they have not read, in the history every later turn replays.
             pending = run.drain_messages()
             if pending:
                 message_history = messages + [
-                    ModelRequest(parts=[UserPromptPart(m.text)]) for m in pending
+                    ModelRequest(parts=[UserPromptPart(injected_text(m))]) for m in pending
                 ]
                 prompt = None
                 deferred_results = None

@@ -6,9 +6,12 @@
  * function the main room uses, because a sub-agent *is* a conversation. Its live tail,
  * its approval and its cancel are run routes for the same reason.
  *
- * **The list degrades to empty rather than erroring.** A thread that has never launched
- * one is the ordinary case, and so is a deployment with the feature switched off — in
- * neither does the panel have anything to say, and neither is worth a broken surface.
+ * **A read that failed is not a thread with no sub-agents**, and the difference is the
+ * whole reason this returns a result rather than a list. A deployment with the feature
+ * switched off genuinely has none, and neither that nor a thread that has never launched
+ * one is worth a broken surface. But one dropped request is not evidence of either — read
+ * as "none" it would empty a panel of working sub-agents in front of the operator, and
+ * stop the poll that would have corrected it, since nothing left in the list is live.
  */
 
 import { api } from "~/lib/api";
@@ -75,17 +78,24 @@ function toSubagent(dto: SubagentDTO): Subagent {
   };
 }
 
+/** One read of the list. `ok` is false when it could not be read at all, which is a
+ *  different fact from an empty list and has to stay one — see the note at the top. */
+export interface SubagentsRead {
+  subagents: Subagent[];
+  ok: boolean;
+}
+
 /** Every sub-agent this thread has launched, newest first. */
 export async function fetchSubagents(
   conversationId: string,
-): Promise<Subagent[]> {
+): Promise<SubagentsRead> {
   try {
     const res = await api.get<{ subagents: SubagentDTO[] }>(
       `/conversations/${conversationId}/subagents`,
     );
-    return res.subagents.map(toSubagent);
+    return { subagents: res.subagents.map(toSubagent), ok: true };
   } catch (err) {
     console.warn("sub-agents unavailable", err);
-    return [];
+    return { subagents: [], ok: false };
   }
 }

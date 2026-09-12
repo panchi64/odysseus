@@ -49,7 +49,6 @@ from services.subagents import (
 )
 from tools.deps import RunDeps
 from tools.project_agents import run_roster
-from tools.workspace import run_workspace
 
 #: The launch tool's name inside the toolset, before the category prefix makes it
 #: ``subagents_launch``. Named rather than spelled at each of its two uses — the
@@ -118,7 +117,7 @@ def subagents_toolset() -> AbstractToolset[RunDeps]:
                 ctx.deps.owner_id,
                 spec,
                 task,
-                parent=await _parent(ctx),
+                parent=_parent(ctx),
                 isolate=isolate,
             )
         except SubagentUnavailableError as exc:
@@ -139,7 +138,13 @@ def subagents_toolset() -> AbstractToolset[RunDeps]:
     # no project of its own is offered. A run that has one gets this same text with its
     # roster in it, rewritten in `get_tools` below.
     launch.__doc__ = launch_description(builtin_roster())
-    toolset.add_function(launch, name=LAUNCH_TOOL, requires_approval=True)
+    # Deliberately *not* `requires_approval=True`. That marking defers the call before the
+    # body runs, which would park every launch — including an explorer that can only read —
+    # and leave the conditional gate below deciding nothing. Raising from inside is what
+    # makes "only a sub-agent that can write is gated" true, and it is also what lets a
+    # guessed agent name come back as one retry instead of as a question the operator has
+    # to answer before the model can be told it got the name wrong.
+    toolset.add_function(launch, name=LAUNCH_TOOL)
 
     @toolset.tool(name="read")
     async def read_subagent(ctx: RunContext[RunDeps], subagent_id: str) -> dict:
@@ -229,7 +234,7 @@ def _can_write(spec: SubagentSpec) -> bool:
     return spec.permission_ceiling != STRICTEST_PERMISSION
 
 
-async def _parent(ctx: RunContext[RunDeps]) -> SubagentParent:
+def _parent(ctx: RunContext[RunDeps]) -> SubagentParent:
     """What the launching thread hands the sub-agent.
 
     Every field narrows it. The permission level rides along because the operator approved
@@ -237,19 +242,16 @@ async def _parent(ctx: RunContext[RunDeps]) -> SubagentParent:
     than the one that asked for it. The workspace key rides along because that is what
     decides which files it works in — read off the run's own deps rather than re-derived,
     so a sub-agent cannot end up on a different filesystem than the agent that launched it.
+
+    The key rather than a resolved workspace: opening the parent's container or cutting its
+    checkout here would be work done to answer a question the launch never asks, and the
+    child resolves its own from this key on its first file-tool call, like every run.
     """
-    try:
-        workspace = await run_workspace(ctx)
-    except Exception:
-        # A workspace that will not open is a reason to launch without one, never a
-        # reason to refuse the launch — the launcher decides whether the spec survives it.
-        workspace = None
     return SubagentParent(
         conversation_id=ctx.deps.conversation_id,
         project_id=ctx.deps.project_id,
         mode=ctx.deps.mode,
         permission=ctx.deps.permission,
-        workspace_from=workspace.root if workspace is not None else None,
         workspace_key=ctx.deps.workspace_key,
         run_id=ctx.deps.run.id,
     )

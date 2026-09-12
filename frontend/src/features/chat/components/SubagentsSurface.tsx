@@ -62,6 +62,10 @@ export function SubagentsSurface(props: {
       .sort(byUrgency);
   const finished = (): Subagent[] =>
     props.subagents().filter((s) => s.status === "done");
+  // Derived once and read twice, and it is the count that decides the wording as well as
+  // supplying its number — a thread with nothing in the panel has neither "0 working" nor
+  // "0 done" to say, and says nothing.
+  const working = (): number => props.subagents().filter(isLive).length;
 
   const toggle = (id: string): void => {
     setOpenId((current) => (current === id ? null : id));
@@ -92,11 +96,13 @@ export function SubagentsSurface(props: {
         <Text variant="label" tone="bright">
           Agents
         </Text>
-        <Text variant="micro" tone="dim">
-          {props.subagents().filter(isLive).length > 0
-            ? `${props.subagents().filter(isLive).length} working`
-            : `${props.subagents().length} done`}
-        </Text>
+        <Show when={props.subagents().length > 0}>
+          <Text variant="micro" tone="dim">
+            {working() > 0
+              ? `${working()} working`
+              : `${props.subagents().length} done`}
+          </Text>
+        </Show>
       </div>
 
       <Show

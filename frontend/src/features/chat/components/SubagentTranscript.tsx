@@ -27,22 +27,32 @@ import { TurnBlocks } from "./TurnBlocks";
  * stream exists and would work — but a pane holding several would hold several open
  * connections to watch work nobody is blocked on, and the panel already refreshes while
  * anything is live.
+ *
+ * **Which is what re-reads this.** The card's own figures are the signal: `contextUsed`
+ * only moves when the sub-agent has actually made another model request, so keying the
+ * read on it re-fetches when there is new transcript to see and never on a poll that
+ * found nothing new. A finished sub-agent's figures stop moving, so its transcript is
+ * read once and then left alone, which is the whole reason the accordion is cheap.
  */
 export function SubagentTranscript(props: { subagent: Subagent }): JSX.Element {
-  const session = useChatSession(() => props.subagent.conversationId);
+  const session = useChatSession(
+    () => props.subagent.conversationId,
+    () => `${props.subagent.status}:${props.subagent.contextUsed ?? 0}`,
+  );
 
   return (
     <div class="border-line ml-2 flex flex-col gap-2 border-l pl-2">
+      {/* `latest` before `loading`, and both after the error: a live sub-agent re-reads
+          this as it works, and a re-read that blanked the pane back to "Reading the
+          transcript…" every few seconds would make the one card being watched the one
+          card nobody can read. */}
       <Switch>
-        <Match when={session.loading}>
-          <LoadingText label="Reading the transcript…" />
-        </Match>
         <Match when={session.error}>
           <Text variant="micro" tone="alert">
             That sub-agent's transcript could not be read.
           </Text>
         </Match>
-        <Match when={session()}>
+        <Match when={session.latest}>
           {(loaded) => (
             <For each={loaded().messages}>
               {(message) => (
@@ -63,6 +73,9 @@ export function SubagentTranscript(props: { subagent: Subagent }): JSX.Element {
               )}
             </For>
           )}
+        </Match>
+        <Match when={session.loading}>
+          <LoadingText label="Reading the transcript…" />
         </Match>
       </Switch>
       <Show when={isLive(props.subagent)}>

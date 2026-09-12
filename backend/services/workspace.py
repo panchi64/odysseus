@@ -40,7 +40,12 @@ from typing import Literal, Protocol
 from services.modes import mode_spec
 from services.projects.store import ProjectStore
 from services.projects.worktree import WorktreeBusyError, WorktreeManager
-from services.sandbox import LiveWork, SandboxError, SandboxSessionManager
+from services.sandbox import (
+    LiveWork,
+    SandboxError,
+    SandboxSession,
+    SandboxSessionManager,
+)
 from services.sandbox.base import contained_path
 
 logger = logging.getLogger(__name__)
@@ -123,9 +128,54 @@ async def sandbox_workspace(
     ``holder`` is the run this workspace is for, and passing it is what keeps the
     live-session cap from displacing a container the run is still working in between two
     of its tool calls — the seal drops `node_modules`, `.venv` and `.git`, so a shell that
-    just installed or cloned would find them gone on its next call."""
-    session = await sessions.acquire(workspace_key, holder=holder)
+    just installed or cloned would find them gone on its next call.
+
+    A key naming a *delegation* resolves to a fork of the workspace it delegates from,
+    rather than to a session of its own. Read here rather than left to the caller for the
+    reason the worktree half reads it: a delegated run resolves its workspace on every
+    file-tool call, and a plain `acquire` on a delegated key would quietly hand back an
+    empty container — a sub-agent working in a copy of nothing, and a merge at the end
+    with no fork to land."""
+    owner, delegation = split_workspace_key(workspace_key)
+    session = (
+        await _delegated_session(sessions, owner, workspace_key, holder=holder)
+        if delegation is not None
+        else await sessions.acquire(workspace_key, holder=holder)
+    )
     return RunWorkspace(root=session.ensure_workspace(), kind="sandbox", files=session)
+
+
+async def _delegated_session(
+    sessions: SandboxSessionManager,
+    parent_key: str,
+    child_key: str,
+    *,
+    holder: LiveWork | None,
+) -> SandboxSession:
+    """A delegated agent's workspace — forked on first use, reopened on every later one.
+
+    ``fork`` is the *event* of taking the copy, and refuses a key it has already forked;
+    this is the question a delegated run asks on every file-tool call, and they are not the
+    same question. While delegation blocked its parent's turn the two collapsed into one —
+    the copy was taken and handed straight to the child inside a single call — but a
+    sub-agent runs as its own Run and resolves its workspace the way every run does:
+    repeatedly, and from scratch. The counterpart to ``WorktreeManager.open_child``, keyed
+    the same way and there for the same reason.
+
+    Claiming the reused fork matters more here than it does for an ordinary session:
+    displacing a fork *deletes* it, nothing about a fork being sealed, so a copy nobody has
+    claimed is a sub-agent's work the live-session cap may throw away mid-run.
+    """
+    taken = sessions.existing(child_key)
+    if taken is not None and taken.ephemeral:
+        taken.touch()
+        taken.hold(holder)
+        return taken
+    # Either nothing yet, or something that is not a fork sitting under this key. `fork`
+    # takes the copy in the first case and refuses in the second, which is the honest
+    # answer — adopting a non-fork would mean merging a whole conversation's workspace
+    # into another's when the sub-agent ends.
+    return await sessions.fork(parent_key, child_key, holder=holder)
 
 
 #: What separates a workspace's owner from one delegation of it in a workspace key.

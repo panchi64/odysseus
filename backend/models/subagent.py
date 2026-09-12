@@ -42,7 +42,11 @@ class SubagentRecord(SQLModel, table=True):
     child_conversation_id: str = Field(index=True)
     #: Its Run — the live event stream while it works, and the approve endpoint while it
     #: is parked. Stale once the run is gone, which is what ``status`` is for.
-    run_id: str
+    #:
+    #: Indexed because *every* run in the process asks this table "was that one of mine?"
+    #: at its terminal transition — the ordinary chat turns included — so an unindexed
+    #: lookup is a full scan of every sub-agent ever launched, per run that ever ends.
+    run_id: str = Field(index=True)
     #: The run that launched it, so a card ties back to the turn that asked.
     parent_run_id: str | None = Field(default=None)
     #: Which sub-agent this is — a roster name, built-in or project-declared. A plain
