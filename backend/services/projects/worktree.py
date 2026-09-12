@@ -261,6 +261,38 @@ class WorktreeManager:
             # conversation already holds it, which is what `_require_held` just said.
             return WorktreeState(path=child, branch=branch, base_ref=branch_for(conversation_id))
 
+    async def open_child(
+        self, *, project_id: str, root: Path, conversation_id: str, delegation_id: str
+    ) -> WorktreeState:
+        """A delegated child's checkout — cut on first use, reopened on every later one.
+
+        :meth:`fork` is the *event* of taking a copy; this is the question a sub-agent's run
+        asks on every file-tool call, and they are not the same question. Forking is already
+        idempotent in its result, but not in its side effects: it commits the parent's
+        working tree each time (so the child opens on what the parent's transcript
+        describes), and doing that on every resolution would litter the parent's branch with
+        a commit per tool call. While delegation blocked its parent's turn the two questions
+        collapsed into one — the fork was taken and handed straight to the child in the same
+        call — but a sub-agent that runs as its own Run resolves its workspace the way every
+        run does: repeatedly, and from scratch.
+
+        Keyed on the checkout on disk rather than on anything the process is holding, so it
+        answers the same way after a restart.
+        """
+        child = self.fork_path(project_id, conversation_id, delegation_id)
+        if (child / ".git").exists():
+            return WorktreeState(
+                path=child,
+                branch=child_branch_for(conversation_id, delegation_id),
+                base_ref=branch_for(conversation_id),
+            )
+        return await self.fork(
+            project_id=project_id,
+            root=root,
+            conversation_id=conversation_id,
+            delegation_id=delegation_id,
+        )
+
     async def merge_back(
         self, *, project_id: str, root: Path, conversation_id: str, delegation_id: str
     ) -> MergeReport:

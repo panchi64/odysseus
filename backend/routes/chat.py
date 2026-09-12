@@ -313,6 +313,7 @@ def compose_turn(
     inactivity_timeout_s: float | None | object = _UNSET,
     wall_clock_timeout_s: float | None | object = _UNSET,
     kind: str = "chat",
+    workspace_key: str = "",
 ) -> ChatCreated:
     """Build the chat orchestrator from pre-resolved models/capabilities and submit
     the Run — the one composition path a live chat turn (`_submit_turn`, resolving
@@ -370,6 +371,11 @@ def compose_turn(
         # The thread's mode and project. Absent ⇒ an unfiled chat thread, which is what
         # a stateless or unattended turn is.
         binding=binding or ConversationBinding(),
+        # Which workspace this turn's file work happens in. Empty — every turn an operator
+        # sends — means "this conversation's own", filled in by `RunDeps`. A sub-agent's
+        # turn is what passes one: it works in the workspace of the thread that launched
+        # it, or in a delegated child of it (`services/workspace.py`).
+        workspace_key=workspace_key,
     )
     try:
         run = registry.submit(

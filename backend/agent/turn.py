@@ -107,6 +107,7 @@ async def drive_turn(
     compaction: CompactionContext | None = None,
     turn_start: TurnStart | None = None,
     correcting: bool = False,
+    workspace_key: str = "",
 ) -> TurnResult:
     """Drive one turn to its end: an answer, a park, or a stop at a bound.
 
@@ -160,6 +161,12 @@ async def drive_turn(
         # that reach past it, so the level is enforced before a call runs rather than
         # apologised for afterwards.
         permission=binding.permission,
+        # Which workspace this run's file work happens in. Empty — every turn an operator
+        # sends — fills itself in from the conversation, which is the ordinary case and
+        # needs no argument anywhere. A sub-agent's run is the case that passes one: it
+        # works in the workspace of the thread that launched it, or in a delegated child of
+        # it, and neither is named by its own conversation (`services/workspace.py`).
+        workspace_key=workspace_key,
     )
     # A turn may run as several segments: the initial model pass, then a continuation
     # for each batch of deferred calls a conversation grant auto-approves. They share
@@ -394,6 +401,10 @@ async def drive_turn(
                 # have: the operator may take hours to answer, and the thread they come
                 # back to is the one that was already near its ceiling.
                 compaction=compaction,
+                # And the workspace it parked in — `deps.workspace_key` rather than the
+                # argument, so a turn that filled the default in from its conversation
+                # carries the resolved key rather than an empty one.
+                workspace_key=deps.workspace_key,
             )
             return TurnResult(answer=None, messages=messages)
         # Every deferred call settled without the operator — no question was asked, and

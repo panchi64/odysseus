@@ -128,6 +128,27 @@ async def sandbox_workspace(
     return RunWorkspace(root=session.ensure_workspace(), kind="sandbox", files=session)
 
 
+#: What separates a workspace's owner from one delegation of it in a workspace key.
+#:
+#: The convention is not new — a forked sandbox has always been keyed ``<parent>/<child>``
+#: — but it used to be honoured by one workspace kind and ignored by the other, which is
+#: why a delegated run could be given its own container and never its own checkout.
+DELEGATION_SEP = "/"
+
+
+def split_workspace_key(workspace_key: str) -> tuple[str, str | None]:
+    """A workspace key as *whose* workspace, and *which delegation* of it.
+
+    ``"c123"`` → ``("c123", None)``: the conversation's own.
+    ``"c123/w7"`` → ``("c123", "w7")``: a delegated child of it.
+
+    One reading of the key, shared by both kinds, so a sub-agent cannot end up with a
+    container forked from its parent and a checkout that is its parent's own.
+    """
+    owner, separator, delegation = workspace_key.partition(DELEGATION_SEP)
+    return owner, (delegation or None) if separator else None
+
+
 async def worktree_workspace(
     *,
     projects: ProjectStore,
@@ -135,14 +156,35 @@ async def worktree_workspace(
     owner_id: str,
     project_id: str,
     conversation_id: str,
+    delegation_id: str | None = None,
 ) -> RunWorkspace:
     """The project's git worktree, with this conversation's branch checked out.
 
     Idempotent per conversation, and refused (`WorktreeBusyError`) while another code
     conversation holds the project — one checkout, one thread at a time.
+
+    ``delegation_id`` asks for a *delegated child* of that checkout instead: its own
+    worktree on its own branch, cut from the holder's. The holder is still the
+    conversation named above — a fork is one conversation working in two places, not a
+    second thread taking the checkout — which is what lets a sub-agent work beside the
+    thread that launched it rather than being refused as a rival for it.
     """
     project = await projects.get(owner_id, project_id)
     root = Path(project.root_path)
+    if delegation_id is not None:
+        state = await worktrees.open_child(
+            project_id=project_id,
+            root=root,
+            conversation_id=conversation_id,
+            delegation_id=delegation_id,
+        )
+        prepare_worktree_workspace(state.path)
+        return RunWorkspace(
+            root=state.path,
+            kind="worktree",
+            files=HostFiles(state.path),
+            branch=state.branch,
+        )
     state = await worktrees.acquire(
         project_id=project_id,
         root=root,
@@ -212,13 +254,19 @@ async def resolve_workspace(
         # worktree means no workspace, and the tool layer says so in words.
         if projects is None or worktrees is None or not project_id or not conversation_id:
             return None
+        # Which checkout, read off the workspace key rather than off the conversation.
+        # For every ordinary run the two say the same thing (a run's key *is* its
+        # conversation), so this changes nothing for them; a delegated run is the case
+        # where they differ, and it is the whole reason the key is a field of its own.
+        owner_conversation, delegation_id = split_workspace_key(workspace_key)
         try:
             return await worktree_workspace(
                 projects=projects,
                 worktrees=worktrees,
                 owner_id=owner_id,
                 project_id=project_id,
-                conversation_id=conversation_id,
+                conversation_id=owner_conversation or conversation_id,
+                delegation_id=delegation_id,
             )
         except WorktreeBusyError:
             raise
