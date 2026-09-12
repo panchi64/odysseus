@@ -117,6 +117,11 @@ class ParkedTurn:
     # when a request overruns cannot be re-derived here — the resume orchestrator has no
     # settings store, no policy and no utility model. None ⇒ this turn cannot fold.
     compaction: CompactionContext | None = None
+    # Which workspace the turn was working in, carried for exactly the reason `binding` is:
+    # a sub-agent parks on an approval like any other turn, and a resume that let this
+    # default would hand it its own conversation's workspace instead of the one it parked
+    # in — a different filesystem, and for a delegated child an empty one.
+    workspace_key: str = ""
 
 
 def summarize_call(name: str, args: dict[str, Any]) -> str:
@@ -140,6 +145,7 @@ async def park_for_input(
     binding: ConversationBinding = DEFAULT_BINDING,
     vision: bool = True,
     compaction: CompactionContext | None = None,
+    workspace_key: str = "",
 ) -> None:
     # Only the calls still awaiting the operator are announced; the ones a grant or the
     # thread's level already settled ride silently on the parked payload and merge into
@@ -219,5 +225,6 @@ async def park_for_input(
             binding=binding,
             vision=vision,
             compaction=compaction,
+            workspace_key=workspace_key,
         )
     )

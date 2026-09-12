@@ -43,6 +43,7 @@ from models._fields import utcnow
 from models.conversation import Conversation
 from models.corpus import CorpusSource
 from models.project import Project
+from models.subagent import SubagentRecord
 from models.task import ScheduledTask
 from services.settings_store import ACTIVE_PROJECT_KEY, SettingsStore
 
@@ -55,6 +56,7 @@ SCOPED_MODELS: tuple[type[SQLModel], ...] = (
     Conversation,
     ScheduledTask,
     CorpusSource,
+    SubagentRecord,
 )
 
 

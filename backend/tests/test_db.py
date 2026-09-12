@@ -6,11 +6,17 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 from sqlmodel import Session
 
-from core.db import _BUSY_TIMEOUT_MS, get_owned, in_session, init_db, make_engine
+from core.db import _BUSY_TIMEOUT_MS, _LOCK_RETRIES, get_owned, in_session, init_db, make_engine
 from core.exceptions import NotFoundError
 from models.memory import Memory
+
+
+def _locked() -> OperationalError:
+    """SQLite's writer-lock error, as SQLAlchemy wraps it."""
+    return OperationalError("UPDATE …", {}, Exception("database is locked"))
 
 
 def test_file_backed_connections_get_the_busy_timeout(tmp_path: Path):
@@ -76,3 +82,59 @@ async def test_get_owned_returns_the_row_for_its_owner():
 
     row = await get_owned(engine, Memory, memory_id, "operator", what="memory")
     assert row.id == memory_id and row.owner_id == "operator"
+
+
+class TestLosingTheWriteLock:
+    """SQLite admits one writer, and the busy handler is a budget rather than a promise.
+
+    This is the failure mode nothing in the suite would otherwise see: every test runs
+    against `:memory:`, where there is one connection and no contention, while the product
+    runs two agent turns at once against a file — routine now that the agent launches
+    sub-agents — with the write-behind drainers alongside them. What that produced was a
+    hard `database is locked` on an ordinary bookkeeping update.
+    """
+
+    async def test_a_locked_write_is_tried_again(self):
+        engine = make_engine("sqlite:///:memory:")
+        init_db(engine)
+        attempts = 0
+
+        def work(_session) -> str:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise _locked()
+            return "written"
+
+        assert await in_session(engine, work) == "written"
+        assert attempts == 2
+
+    async def test_it_gives_up_rather_than_retrying_forever(self):
+        engine = make_engine("sqlite:///:memory:")
+        init_db(engine)
+        attempts = 0
+
+        def work(_session) -> None:
+            nonlocal attempts
+            attempts += 1
+            raise _locked()
+
+        with pytest.raises(OperationalError):
+            await in_session(engine, work)
+        # A caller blocked forever on a lock nobody is releasing is worse than one told.
+        assert attempts == _LOCK_RETRIES + 1
+
+    async def test_a_real_fault_is_raised_at_once(self):
+        engine = make_engine("sqlite:///:memory:")
+        init_db(engine)
+        attempts = 0
+
+        def work(_session) -> None:
+            nonlocal attempts
+            attempts += 1
+            raise OperationalError("SELECT …", {}, Exception("no such column: nope"))
+
+        with pytest.raises(OperationalError):
+            await in_session(engine, work)
+        # Retrying a missing column turns a fast, legible failure into a slow one.
+        assert attempts == 1

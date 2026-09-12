@@ -133,11 +133,15 @@ SENSITIVITY_CLASSES: Mapping[Sensitivity, frozenset[str]] = {
             "project_active",
             "project_list",
             "repo_inventory_agent_context",
-            "research_read",
             # Reading the status and output of a command someone else started. Starting
             # and stopping one are execution; asking what it printed is not.
             "shell_check_command",
             "skills_open",
+            # Asking how a sub-agent this thread already launched is getting on, and which
+            # of them are still working. Reading transcripts the operator can open
+            # themselves reaches nothing.
+            "subagents_list",
+            "subagents_read",
             "tasks_read",
             # Retrieval over the network. The operator's machine and every service on it
             # are exactly as they were afterwards.
@@ -188,8 +192,16 @@ SENSITIVITY_CLASSES: Mapping[Sensitivity, frozenset[str]] = {
             "shell_start_command",
             # A sub-agent's whole catalog, reached through one call. Its worst case is at
             # least the worst case of running a program, and its arguments say nothing
-            # about which tools it will end up using.
-            "agents_delegate_task",
+            # about which tools it will end up using — and it is asynchronous, so whatever
+            # it does happens after the launching turn has ended, with nobody's turn open
+            # around it.
+            "subagents_launch",
+            # Redirecting one that is already running, which is the same statement: a
+            # direction can point a sub-agent at any work its own catalog covers, and it
+            # is read after the redirecting turn has ended. Classed with the launch rather
+            # than with the reads because what it can cause is bounded by the sub-agent,
+            # not by this call.
+            "subagents_send",
         }
     ),
     Sensitivity.EXTERNAL_EFFECT: frozenset(
@@ -214,8 +226,6 @@ SENSITIVITY_CLASSES: Mapping[Sensitivity, frozenset[str]] = {
             "mail_mark",
             "mail_reply",
             "mail_send",
-            # Starts an autonomous run that reads the web in the operator's name.
-            "research_start",
         }
     ),
     Sensitivity.SECRET: frozenset(

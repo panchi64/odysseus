@@ -722,15 +722,36 @@ class ReviewCompleted(_Body):
     correctness: str | None = None
 
 
+#: Who a queued message came from. ``operator`` is somebody typing while a run is going;
+#: ``subagent`` is a sub-agent's report, delivered into the thread that launched it; and
+#: ``parent`` is the same link read the other way — the launching agent redirecting a
+#: sub-agent that is still working.
+#:
+#: All three ride the same road deliberately — the injection point already guarantees a
+#: queued message never interrupts an in-flight model stream, which is exactly what a
+#: report and a direction both need — but they must not *read* the same. A report rendered
+#: as the operator's own words is a transcript that lies about who said what, to the reader
+#: and to the model.
+#:
+#: This is the load-bearing answer to "who sent this". The envelope
+#: (``services/subagents/report.py``) is a label anyone who can type angle brackets could
+#: forge; this is structural and never arrives from outside.
+MessageSource = Literal["operator", "subagent", "parent"]
+
+
 class MessageQueued(_Body):
-    """The operator sent a message while this run was still executing; it is
-    queued for injection at the run's next model-request boundary. ``text`` rides
-    inline so a reattaching client can rebuild the pending bubble purely from
-    replay. Additive to v1; no bump."""
+    """A message arrived while this run was still executing; it is queued for injection at
+    the run's next model-request boundary. ``text`` rides inline so a reattaching client
+    can rebuild the pending bubble purely from replay.
+
+    ``source`` says whose message it is. It defaults to ``operator``, so a client that
+    predates sub-agents reads every frame exactly as it did before. Additive to v1; no
+    bump."""
 
     type: Literal["message.queued"] = "message.queued"
     message_id: str
     text: str
+    source: MessageSource = "operator"
 
 
 class MessageEdited(_Body):
@@ -759,6 +780,9 @@ class MessageInjected(_Body):
 
     type: Literal["message.injected"] = "message.injected"
     message_id: str
+    #: Repeated from the queue frame rather than looked up, so a client attaching after the
+    #: queue frame scrolled out of its replay window still knows whose message landed.
+    source: MessageSource = "operator"
 
 
 class TasksUpdated(_Body):
@@ -807,70 +831,13 @@ class PermissionChanged(_Body):
     reason: str
 
 
-#: What a sub-agent's report may carry onto the stream. A worker's hand-back is its own
-#: prose plus a merge summary and can run to pages; the *whole* of it is already on the
-#: stream as this delegation's ``tool.completed`` result, so restating it in full here
-#: would double the bytes of the one frame most worth replaying. What a roster of
-#: sub-agents needs is enough to read how one ended, and that fits.
-SUBAGENT_SUMMARY_LIMIT = 4000
-
-
-class SubagentStarted(_Body):
-    """A sub-agent was handed a piece of work.
-
-    The structured half of a delegation. The flattened ``tool.progress`` line beside it
-    is not a legacy of this — the transcript wants one line of prose under the call that
-    made it, and a roster of sub-agents wants name, task and outcome as fields; the two
-    read the same sub-agent events and neither is derivable from the other.
-
-    ``subagent_id`` is ``{run_id}:{tool_call_id}:{seq}``. The call id alone would collide:
-    a delegation the model retries is the *same* call id twice, and two runs sharing an id
-    would fold into one row that finished twice. Additive to v1; no bump.
-    """
-
-    type: Literal["subagent.started"] = "subagent.started"
-    subagent_id: str
-    agent_name: str
-    task: str
-    #: The delegating call, so a roster row can be tied back to the tool card that made it.
-    tool_call_id: str
-
-
-class SubagentProgress(_Body):
-    """One line of what a sub-agent is doing, as it does it.
-
-    Latest-wins rather than a log: a delegation is minutes of a child's own tool calls,
-    and a roster row shows where it has got to, not everywhere it has been. The same
-    underlying event is also flattened onto the parent's ``tool.progress`` — see
-    :class:`SubagentStarted` for why both. Additive to v1; no bump."""
-
-    type: Literal["subagent.progress"] = "subagent.progress"
-    subagent_id: str
-    partial: str
-
-
-class SubagentCompleted(_Body):
-    """A sub-agent finished and reported back.
-
-    ``summary`` is its report, capped at :data:`SUBAGENT_SUMMARY_LIMIT`; the untruncated
-    text is the delegating call's ``tool.completed`` result. Additive to v1; no bump."""
-
-    type: Literal["subagent.completed"] = "subagent.completed"
-    subagent_id: str
-    summary: str
-    duration_ms: int
-
-
-class SubagentFailed(_Body):
-    """A sub-agent raised rather than reporting.
-
-    Rare by design — a delegation that cannot happen degrades to a sentence for the model
-    rather than an exception — so this is the case where a row would otherwise sit
-    "running" forever. Additive to v1; no bump."""
-
-    type: Literal["subagent.failed"] = "subagent.failed"
-    subagent_id: str
-    error: str
+#: The ``subagent.*`` family that used to live here is gone with the blocking delegation
+#: that emitted it. It existed because a delegation was a multi-minute silence *inside*
+#: one tool call, so the parent's own stream had to narrate a child it was holding open.
+#: A sub-agent is now a run of its own: it has a stream, a transcript and a register row,
+#: and the panel reads those directly. Relaying a second copy of them onto whichever
+#: parent run happened to be open would be a feed that stops the moment the parent's turn
+#: ends — which is most of a sub-agent's life.
 
 
 class LimitNotice(_Body):
@@ -922,10 +889,6 @@ EventBody = Annotated[
     | TasksUpdated
     | PlanUpdated
     | PermissionChanged
-    | SubagentStarted
-    | SubagentProgress
-    | SubagentCompleted
-    | SubagentFailed
     | LimitNotice,
     Field(discriminator="type"),
 ]

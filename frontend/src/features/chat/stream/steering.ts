@@ -79,11 +79,19 @@ export function createSteeringOps(deps: SteeringDeps): SteeringOps {
 
   /** Drop any still-pending steering bubbles and hand their text back to the
    *  composer (`undeliveredDraft`). Idempotent — a no-op when nothing is
-   *  pending — so the drive teardown and `cancel` can both call it safely. */
+   *  pending — so the drive teardown and `cancel` can both call it safely.
+   *
+   *  Only the operator's own. A sub-agent's report queues on the same road and can be
+   *  pending at the same moment, and it is neither theirs to have back nor lost: the
+   *  backend re-delivers a report the run dropped as a turn of its own. Putting it in
+   *  their input box would hand them words they never wrote to send back to the agent
+   *  that had already been told them. */
   function restoreUndelivered(): void {
-    const leftovers = deps.messages.filter((m) => m.queuedPending);
+    const mine = (m: ChatMessage): boolean =>
+      m.queuedPending === true && m.role === "user";
+    const leftovers = deps.messages.filter(mine);
     if (leftovers.length === 0) return;
-    deps.setMessages(reconcile(deps.messages.filter((m) => !m.queuedPending)));
+    deps.setMessages(reconcile(deps.messages.filter((m) => !mine(m))));
     stash(leftovers.map((m) => m.content).join("\n"));
     toast.warn(
       "Your queued message wasn't delivered — it's back in the input.",

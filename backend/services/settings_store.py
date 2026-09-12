@@ -63,6 +63,16 @@ INACTIVITY_TIMEOUT_KEY = "chat.inactivity_timeout_s"
 WALL_CLOCK_TIMEOUT_KEY = "chat.wall_clock_timeout_s"
 _DISABLED = ""
 
+# How many sub-agents may be running for the operator at once (services/subagents/). Unset
+# means no cap, which is the default and the honest one: the model launches these to *save*
+# the operator time, and a number chosen in advance without knowing what the work splits
+# into would mostly be wrong. The setting exists for the operator who has watched it launch
+# six at a time and decided that is not what they want their evening spent on. Like the wall
+# clock, "unset" and "off" are the same state here rather than different ones — there is no
+# way to say "no sub-agents at all" with a number, because that is what switching the tool
+# off in the catalog is for.
+SUBAGENT_LIMIT_KEY = "chat.subagent_max_concurrent"
+
 # Offline mode (services/offline.py) persists the operator's two switches here as
 # "true"/"false" strings: the manual force-offline toggle and the auto-detect master
 # switch. Policy, not a secret — stored in the clear like every other app preference.
@@ -172,6 +182,30 @@ async def set_agent_request_limit(store: SettingsStore, owner_id: str, value: in
     The ``ge=1`` body field at the route is what rejects a nonsensical one; a stray
     sub-1 value stored here would simply be ignored by the getter."""
     await store.set(owner_id, AGENT_REQUEST_LIMIT_KEY, str(value))
+    return value
+
+
+async def get_subagent_limit(store: SettingsStore, owner_id: str) -> int | None:
+    """How many sub-agents may run at once, or ``None`` for no cap.
+
+    ``None`` is the default and is not a fallback from a missing config value — there is no
+    config default to fall back to, because "however many the work splits into" is the
+    intended behaviour rather than an unset one. A stored 0, negative or non-numeric value
+    is corruption rather than intent and reads as no cap, which is the same direction every
+    other getter here falls: back to how the product behaves out of the box, rather than to
+    a restriction the operator never asked for.
+    """
+    value = _positive_int_or(await store.get(owner_id, SUBAGENT_LIMIT_KEY), 0)
+    return value or None
+
+
+async def set_subagent_limit(
+    store: SettingsStore, owner_id: str, value: int | None
+) -> int | None:
+    """Persist the cap, or ``None`` to remove it. Returns the stored value. The ``ge=1``
+    body field at the route rejects a nonsensical number; ``None`` is a deliberate choice
+    and the route distinguishes it from an omission before calling this."""
+    await store.set(owner_id, SUBAGENT_LIMIT_KEY, _DISABLED if value is None else str(value))
     return value
 
 

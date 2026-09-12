@@ -9,6 +9,7 @@ as a render-ready projection — the durable record stays full-fidelity
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Mapping
 from datetime import datetime
@@ -532,6 +533,59 @@ async def _image_orphans(
     return await deps.uploads(request).image_ids(OPERATOR_ID, candidates)
 
 
+#: How long a cancelled sub-agent is given to actually stop before its thread is deleted
+#: anyway. Long enough for a cooperative cancel to reach the next step boundary, short
+#: enough that a wedged child never holds up a delete the operator is waiting on.
+_SUBAGENT_STOP_S = 5.0
+
+
+async def _discard_subagents(request: Request, conversation_id: str) -> None:
+    """Stop and forget every sub-agent a thread launched, because the thread is going.
+
+    Cancelling first is the half that is not bookkeeping: a sub-agent is a live Run, and
+    one whose parent has been deleted goes on making model requests to produce a report
+    that will find no thread to reach, while still counting against the operator's cap.
+    Its own conversation goes with it — it is hidden from the session list, so the cards
+    this delete is destroying were the only way in.
+
+    Best-effort throughout, per sub-agent, for the reason every teardown below is: the
+    conversation row is already gone, and a container that would not stop must not turn a
+    delete the operator has already seen succeed into a 500.
+    """
+    records = getattr(request.app.state, "subagent_records", None)
+    if records is None:
+        return  # sub-agents are not wired in this deployment
+    try:
+        rows = await records.for_parent(conversation_id, OPERATOR_ID)
+    except Exception:  # noqa: BLE001 — best-effort; the DB delete already succeeded
+        logger.warning("could not list sub-agents of %s", conversation_id, exc_info=True)
+        return
+    registry = deps.registry(request)
+    store = deps.store(request)
+    for row in rows:
+        try:
+            await registry.cancel(row.run_id)
+            run = registry.get(row.run_id)
+            if run is not None:
+                # Before its thread is deleted, not after: a run finalising into a
+                # conversation that has already gone re-creates a cache entry nothing
+                # ever evicts — the same hazard the claim above protects the parent
+                # from. Bounded, because "it would not stop" is not a reason to leave
+                # the operator's delete hanging.
+                await asyncio.wait_for(run.wait(), timeout=_SUBAGENT_STOP_S)
+        except Exception:  # noqa: BLE001 — one stuck child mustn't strand its siblings
+            logger.warning("could not stop sub-agent %s", row.id, exc_info=True)
+    for row in rows:
+        try:
+            await store.delete_conversation(row.child_conversation_id)
+        except Exception:  # noqa: BLE001 — one stuck child mustn't strand its siblings
+            logger.warning("could not discard sub-agent %s", row.id, exc_info=True)
+    try:
+        await records.delete_for_parent(conversation_id, OPERATOR_ID)
+    except Exception:  # noqa: BLE001 — best-effort; the DB delete already succeeded
+        logger.warning("could not forget sub-agents of %s", conversation_id, exc_info=True)
+
+
 async def _purge_uploads(request: Request, upload_ids: list[str]) -> None:
     """Hard-delete the chosen image uploads (bytes + corpus chunks cascade).
     Best-effort per id, run after the conversation/message is already deleted: one
@@ -636,6 +690,12 @@ async def delete_conversation(
         # restate what was asked for, so neither must outlive the thread.
         await deps.conversation_tasks(request).delete_for_conversation(OPERATOR_ID, conversation_id)
         await deps.plan_mode(request).delete_for_conversation(OPERATOR_ID, conversation_id)
+        # And the sub-agents it launched. Unlike everything else here they are not merely
+        # stored state: a live one is a *running* model, spending the operator's money on
+        # work for a thread that no longer exists and holding a slot against the cap, with
+        # no card left anywhere to show it or stop it. Their own threads go too — hidden
+        # ones, reachable only through the cards this delete just destroyed.
+        await _discard_subagents(request, conversation_id)
         # Delete the conversation's sandbox too (its workspace + sealed archive),
         # otherwise it lingers on disk keyed to a thread that no longer exists. The DB
         # delete above is the authoritative action, so a purge failure must not fail it.

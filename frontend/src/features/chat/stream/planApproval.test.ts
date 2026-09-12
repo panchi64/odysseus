@@ -39,7 +39,6 @@ function harness() {
     patchById: (_id, _mutate) => {},
     setMessages: (() => {}) as never,
     setSnapshots: () => {},
-    setSubagents: () => {},
     setTasks: (items) => {
       tasks = items;
     },

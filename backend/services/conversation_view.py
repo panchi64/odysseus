@@ -32,6 +32,7 @@ from pydantic_ai import (
 
 from core.serde import jsonable
 from core.text import chars_to_tokens
+from services.subagents.report import direction_body, report_body
 
 if TYPE_CHECKING:  # a type, not a dependency — nothing here calls into the run substrate
     from runs import TurnOverhead
@@ -80,7 +81,12 @@ class MessageView:
     # "compaction" is a chassis-authored divider, not a turn either party took: the
     # conversation was folded into a summary here (`content`), and the turns above it are
     # what the model now replays as that summary.
-    role: str  # "user" | "assistant" | "compaction"
+    #
+    # "subagent" is the other turn nobody in the room took: a sub-agent the agent launched
+    # has reported back, and the report reached the thread as the one shape the model has
+    # for a message from outside itself. Left as "user" it would claim the operator typed
+    # something they have not even read.
+    role: str  # "user" | "assistant" | "compaction" | "subagent"
     content: str = ""
     reasoning: str = ""
     tools: list[ToolView] = field(default_factory=list)
@@ -519,10 +525,25 @@ def project_tree(
                 # A new user turn closes any open assistant turn.
                 assistant = None
                 part = user_parts[0]
+                text = flatten_content(part.content)
+                # A sub-agent's report arrives in the one shape the model has for a
+                # message from outside itself, so on the way back out it would claim the
+                # operator typed it — and they have not even seen it. Recognised by the
+                # envelope `agent/injected.py` writes, which is a constant of ours rather
+                # than a shape guessed at from the text.
+                report = report_body(text)
+                # The same link read the other way: the launching agent's mid-flight
+                # direction, in a sub-agent's own thread. Only the envelope is stripped —
+                # the message stays a `user` turn, because in a thread nobody else can type
+                # in, the agent that launched it *is* the one giving it direction, and a
+                # role of its own would be a new vocabulary word for a distinction the
+                # reader of that transcript cannot act on.
+                direction = None if report is not None else direction_body(text)
+                body = report if report is not None else direction
                 views.append(
                     MessageView(
-                        role="user",
-                        content=flatten_content(part.content),
+                        role="subagent" if report is not None else "user",
+                        content=text if body is None else body,
                         timestamp=getattr(part, "timestamp", None),
                         id=node_id,
                     )

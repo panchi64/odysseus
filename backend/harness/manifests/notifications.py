@@ -70,8 +70,28 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
         policy of its own: research was a conversation-less run against a store, so its
         completion had to be special-cased. A research thread is a thread, nobody is
         streaming the run the agent started in the background, and so the ordinary
-        "finished while you weren't watching" branch says exactly the right thing."""
+        "finished while you weren't watching" branch says exactly the right thing.
+
+        A **hidden** thread is the exception. A notification is a deep link, and an
+        ephemeral conversation is deliberately kept out of the session list — so one
+        finishing announces a thread the operator cannot find their way back to.
+
+        Sub-agents are what made this worth fixing: a fan-out of six researchers finishing
+        unwatched is six such notices at once, and what the operator watches is the card,
+        which is where the report lands anyway. The thread that launched them still
+        notifies for itself when its own turn ends.
+
+        **Compare panes are ephemeral too, and are deliberately included.** They lose the
+        `run_failed` notice they used to get unconditionally, which is the right trade for
+        the same reason: the operator is looking at the pane, the failure is on it, and the
+        link would have gone somewhere they cannot reach from the session list."""
         if run.conversation_id is None or run.status in (RunStatus.cancelled, RunStatus.blocked):
+            return
+        try:
+            if await conversations.is_hidden(run.conversation_id):
+                return
+        except Exception:
+            logger.exception("notifications: failed to read run %s's thread", run.id)
             return
         try:
             summary = await conversations.get_summary(run.conversation_id, OPERATOR_ID)

@@ -93,6 +93,27 @@ describe("a queued message the run never consumed comes back", () => {
     h.ops.clearUndeliveredDraft();
     expect(h.ops.undeliveredDraft()).toBeNull();
   });
+
+  test("a sub-agent's report is not theirs to have back", () => {
+    // Reports queue on this same road and can be pending at the same moment. One is
+    // neither the operator's words nor lost — the backend re-delivers a report the run
+    // dropped as a turn of its own — so putting it in their input box would hand them
+    // somebody else's text to send back to the agent already told it, and their own
+    // message would come back with a report stapled to the front of it.
+    const h = harness([
+      queued("u1", "and one more thing"),
+      {
+        id: "s1",
+        role: "subagent",
+        content: "explorer: the parser is in lexer.ts",
+        createdAt: "",
+        queuedPending: true,
+      },
+    ]);
+    h.ops.restoreUndelivered();
+    expect(h.ops.undeliveredDraft()).toBe("and one more thing");
+    expect(h.messages.map((m) => m.id)).toEqual(["s1"]);
+  });
 });
 
 test("steering a thread that has no backend id yet stashes instead of dropping", async () => {

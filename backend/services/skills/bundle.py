@@ -37,6 +37,7 @@ from typing import Any
 import yaml
 
 from core.exceptions import SkillValidationError
+from core.frontmatter import FrontmatterError, split_frontmatter
 
 # ── The standard's constraints ───────────────────────────────────────────────────────────
 SKILL_FILE = "SKILL.md"
@@ -65,7 +66,6 @@ _WHITESPACE_RUN = re.compile(r"\s+")
 # single-top-level-directory check, which they would otherwise fail.
 _SIDECAR_PREFIXES = ("__MACOSX/",)
 _SIDECAR_NAMES = (".DS_Store", "Thumbs.db")
-_FRONTMATTER_FENCE = "---"
 _SYMLINK_MODE = 0o120000
 
 
@@ -185,24 +185,12 @@ def parse_skill_md(text: str, *, warnings: list[str] | None = None) -> ParsedSki
     Raises :class:`SkillValidationError` when the artifact isn't a valid skill; appends to
     ``warnings`` for anything preserved-but-surprising."""
     notes = warnings if warnings is not None else []
-    stripped = text.lstrip("﻿").lstrip()
-    if not stripped.startswith(_FRONTMATTER_FENCE):
-        raise SkillValidationError(
-            "frontmatter", "SKILL.md must open with a '---' YAML frontmatter block"
-        )
-    rest = stripped[len(_FRONTMATTER_FENCE) :].lstrip("\r\n")
-    closing = re.search(r"^---[ \t]*$", rest, re.MULTILINE)
-    if closing is None:
-        raise SkillValidationError("frontmatter", "the '---' frontmatter block is never closed")
-    raw_yaml = rest[: closing.start()]
-    body = rest[closing.end() :].lstrip("\r\n").rstrip()
-
     try:
-        loaded = yaml.safe_load(raw_yaml) or {}
-    except yaml.YAMLError as exc:
-        raise SkillValidationError("frontmatter", f"frontmatter is not valid YAML: {exc}") from None
-    if not isinstance(loaded, dict):
-        raise SkillValidationError("frontmatter", "frontmatter must be a mapping of fields")
+        loaded, body = split_frontmatter(text)
+    except FrontmatterError as exc:
+        # Restated as this format's own error, because the caller is importing a skill and
+        # the field a failure is attributed to is what the operator is shown.
+        raise SkillValidationError("frontmatter", f"SKILL.md {exc}") from None
 
     name = validate_name(loaded.get("name"))
     description = validate_description(loaded.get("description"))

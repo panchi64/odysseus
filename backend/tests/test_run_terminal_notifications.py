@@ -136,6 +136,47 @@ async def test_a_run_with_no_conversation_never_notifies():
         assert await _run_notifications(app, run.id) == []
 
 
+async def test_a_hidden_threads_run_never_notifies():
+    """A notification is a deep link, and a sub-agent's thread is deliberately kept out of
+    the session list — so announcing one sends the operator somewhere they cannot get back
+    from, and a fan-out of six researchers announces six of them at once. What they watch
+    is the card; the thread that launched them notifies for itself."""
+    async with client_app() as (client, app):
+        conv_id = await app.state.conversations.create_conversation(
+            OPERATOR_ID, ephemeral=True
+        )
+
+        async def orch(run):
+            run.emit(AnswerDelta(text="what I found"))
+
+        run = app.state.runs.submit(
+            kind="linked", owner_id=OPERATOR_ID, orchestrator=orch, conversation_id=conv_id
+        )
+        await run.wait()
+
+        assert await _run_notifications(app, run.id) == []
+
+
+async def test_a_hidden_threads_failure_is_silent_too():
+    """The same, for the branch that notifies even when somebody *is* watching. A
+    sub-agent that fails is shown on its card in an error tone and its report says so —
+    a toast pointing at a thread they cannot open adds nothing they can act on."""
+    async with client_app() as (client, app):
+        conv_id = await app.state.conversations.create_conversation(
+            OPERATOR_ID, ephemeral=True
+        )
+
+        async def orch(run):
+            raise ValueError("boom")
+
+        run = app.state.runs.submit(
+            kind="linked", owner_id=OPERATOR_ID, orchestrator=orch, conversation_id=conv_id
+        )
+        await run.wait()
+
+        assert await _run_notifications(app, run.id) == []
+
+
 async def test_a_raising_notifier_never_affects_the_runs_own_outcome(monkeypatch):
     async with client_app() as (client, app):
         conv_id = await app.state.conversations.create_conversation(OPERATOR_ID)

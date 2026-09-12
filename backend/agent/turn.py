@@ -53,6 +53,7 @@ from .compaction_context import CompactionContext
 from .folding import compact_and_retry
 from .gating import settle_deferred
 from .history import TurnStart
+from .injected import injected_text
 from .meta import LoopBreaker, LoopDetected
 from .metrics import turn_metrics
 from .model_errors import (
@@ -107,6 +108,7 @@ async def drive_turn(
     compaction: CompactionContext | None = None,
     turn_start: TurnStart | None = None,
     correcting: bool = False,
+    workspace_key: str = "",
 ) -> TurnResult:
     """Drive one turn to its end: an answer, a park, or a stop at a bound.
 
@@ -160,6 +162,12 @@ async def drive_turn(
         # that reach past it, so the level is enforced before a call runs rather than
         # apologised for afterwards.
         permission=binding.permission,
+        # Which workspace this run's file work happens in. Empty — every turn an operator
+        # sends — fills itself in from the conversation, which is the ordinary case and
+        # needs no argument anywhere. A sub-agent's run is the case that passes one: it
+        # works in the workspace of the thread that launched it, or in a delegated child of
+        # it, and neither is named by its own conversation (`services/workspace.py`).
+        workspace_key=workspace_key,
     )
     # A turn may run as several segments: the initial model pass, then a continuation
     # for each batch of deferred calls a conversation grant auto-approves. They share
@@ -215,7 +223,7 @@ async def drive_turn(
         if queued:
             node.request.parts = [
                 *node.request.parts,
-                *(UserPromptPart(message.text) for message in queued),
+                *(UserPromptPart(injected_text(message)) for message in queued),
             ]
 
     if partial_history_ref is not None:
@@ -341,16 +349,22 @@ async def drive_turn(
             output.approvals or output.calls
         )
         if not deferred:
-            # The model finished, but the operator queued more while it was working:
-            # instead of ending the run, continue it with the queued text as the next
-            # user request(s) — same run id, same stream, same usage/loop budget (so
-            # a steady drip of messages still trips the turn's bounds rather than
-            # extending them). `prompt=None` + a history ending in a user request is
-            # the same continuation shape a regenerate uses.
+            # The model finished, but something queued while it was working: instead of
+            # ending the run, continue it with the queued text as the next user
+            # request(s) — same run id, same stream, same usage/loop budget (so a steady
+            # drip of messages still trips the turn's bounds rather than extending them).
+            # `prompt=None` + a history ending in a user request is the same continuation
+            # shape a regenerate uses.
+            #
+            # Through `injected_text` like the boundary above, and for the reason there is
+            # only one of it: this is where most sub-agent reports actually land — one
+            # that finishes while the parent is mid-answer arrives *here*, not at a
+            # mid-stream boundary — and a report handed over bare is the operator credited
+            # with words they have not read, in the history every later turn replays.
             pending = run.drain_messages()
             if pending:
                 message_history = messages + [
-                    ModelRequest(parts=[UserPromptPart(m.text)]) for m in pending
+                    ModelRequest(parts=[UserPromptPart(injected_text(m))]) for m in pending
                 ]
                 prompt = None
                 deferred_results = None
@@ -394,6 +408,10 @@ async def drive_turn(
                 # have: the operator may take hours to answer, and the thread they come
                 # back to is the one that was already near its ceiling.
                 compaction=compaction,
+                # And the workspace it parked in — `deps.workspace_key` rather than the
+                # argument, so a turn that filled the default in from its conversation
+                # carries the resolved key rather than an empty one.
+                workspace_key=deps.workspace_key,
             )
             return TurnResult(answer=None, messages=messages)
         # Every deferred call settled without the operator — no question was asked, and

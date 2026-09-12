@@ -77,6 +77,13 @@ class Settings(BaseSettings):
     # is volume, and slots they can never hold are slots the operator always can.
     run_max_concurrency: int = 8
     run_background_concurrency: int = 2
+    # Also the number of sub-agents that actually *execute* at once, since they share the
+    # linked lane with the research threads. Deliberately left as one knob rather than
+    # widened for them: the lane's narrowness is what guarantees the operator's own turn a
+    # floor of slots, so a burst of sub-agents queues instead of crowding the person out.
+    # The operator's `chat.subagent_max_concurrent` setting is a different bound and does
+    # not feed this one — that caps how many may *exist*, which is about the operator's
+    # attention and their bill; this caps how many may run, which is about the host.
     run_linked_concurrency: int = 3
     # Off by default: a turn is already bounded by `agent_request_limit` (it cannot loop
     # forever), so a wall clock mostly fires on a run that is legitimately slow — a local

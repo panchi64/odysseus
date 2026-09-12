@@ -43,8 +43,6 @@ from services.permissions import beyond_scope
 from services.tool_policy import permission_disabled_tools
 from services.tool_sensitivity import declared_sensitivity
 
-from .agents import GATED_TOOLS as _AGENTS_GATED
-from .agents import agents_toolset
 from .builtin import builtin_toolset
 from .code import code_toolset
 from .deps import RunDeps
@@ -63,7 +61,7 @@ from .tasks import tasks_toolset
 #: manifest; the core ones have no manifest, so they are collected here and seeded into
 #: `app.state.gated_tools` at assembly. A name missing from that union is missing from the
 #: operator's approval-scope vocabulary, which is what makes a grant possible.
-CORE_GATED_TOOLS: frozenset[str] = _SHELL_GATED | _AGENTS_GATED | _PLAN_GATED
+CORE_GATED_TOOLS: frozenset[str] = _SHELL_GATED | _PLAN_GATED
 
 
 def _enabled_gate(ctx: RunContext[RunDeps], tool_def: ToolDefinition) -> bool:
@@ -126,9 +124,6 @@ def core_categories() -> dict[str, AbstractToolset[RunDeps]]:
         # every level, `plan` the written document a Plan-level turn submits for approval.
         "tasks": tasks_toolset(),
         "plan": plan_toolset(),
-        # Core rather than a manifest's, for the same reason `tasks` and `files` are: it
-        # is bound to the run's own workspace, which no feature owns.
-        "agents": agents_toolset(),
         # Coding mode's two categories. Registered unconditionally like every other, and
         # withheld from a chat run by `mode_disabled_tools` rather than by assembling a
         # different mapping — one catalog, so the operator's settings list and the

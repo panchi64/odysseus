@@ -60,6 +60,14 @@ export {
 } from "./branch";
 
 export {
+  fetchSubagents,
+  isLive,
+  type Subagent,
+  type SubagentsRead,
+  type SubagentStatus,
+} from "./subagents";
+
+export {
   fetchSnapshotDiffs,
   fetchSnapshotFiles,
   fetchSnapshotFileText,

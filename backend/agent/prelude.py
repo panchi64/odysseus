@@ -104,6 +104,7 @@ async def prepare_turn(
     context_window: int | None,
     title_model: Model | None,
     title_settings: ModelSettings | None,
+    workspace_key: str = "",
 ) -> None:
     """Settle everything one chat turn needs before the agent runs, onto ``setup``.
 
@@ -191,7 +192,7 @@ async def prepare_turn(
                 mode=binding.mode,
                 project_id=binding.project_id,
                 conversation_id=conversation_id,
-                workspace_key=default_workspace_key(conversation_id, run),
+                workspace_key=workspace_key or default_workspace_key(conversation_id, run),
                 owner_id=run.owner_id,
                 sessions=caps.get_optional(SandboxSessionManager),
                 projects=caps.get_optional(ProjectStore),

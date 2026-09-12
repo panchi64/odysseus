@@ -390,8 +390,8 @@ def shell_toolset(
 
     ``shells`` collects every shell this toolset binds, for the one caller that owns their
     lifetime: a conversation's shell outlives its turns on purpose and is stopped through
-    `stop_command`, while a delegated run's workspace is taken away when it ends, so what
-    it left running has to be reaped with it (``tools/worker.py``).
+    `stop_command`, while a run whose workspace is taken away when it ends — an isolated
+    sub-agent's fork — has to have what it left running reaped with it.
     """
     settings = get_settings()
     build = partial(

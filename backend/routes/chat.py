@@ -54,11 +54,13 @@ from services.settings_store import (
     get_auto_compact,
     get_context_thresholds,
     get_inactivity_timeout,
+    get_subagent_limit,
     get_wall_clock_timeout,
     set_agent_request_limit,
     set_auto_compact,
     set_context_thresholds,
     set_inactivity_timeout,
+    set_subagent_limit,
     set_wall_clock_timeout,
 )
 from services.uploads import UploadStore
@@ -195,6 +197,12 @@ class ChatSettings(BaseModel):
     # streaming tokens) and so refreshes the inactivity watchdog forever without spending
     # a model request. ``gt=0`` for the same reason as above; ``null`` removes the bound.
     wall_clock_timeout_s: float | None = Field(default=None, gt=0)
+    # How many sub-agents the agent may have running at once. ``null`` is *no cap*, which
+    # is the default — so this is the second field where ``null`` is a value rather than an
+    # omission, and the handler reads ``model_fields_set`` for it too. ``ge=1``: a cap of 0
+    # would be a way of disabling the feature through a number, and the tool catalog
+    # already disables it honestly.
+    subagent_max_concurrent: int | None = Field(default=None, ge=1)
 
 
 async def resolve_turn_models(
@@ -313,6 +321,7 @@ def compose_turn(
     inactivity_timeout_s: float | None | object = _UNSET,
     wall_clock_timeout_s: float | None | object = _UNSET,
     kind: str = "chat",
+    workspace_key: str = "",
 ) -> ChatCreated:
     """Build the chat orchestrator from pre-resolved models/capabilities and submit
     the Run — the one composition path a live chat turn (`_submit_turn`, resolving
@@ -370,6 +379,11 @@ def compose_turn(
         # The thread's mode and project. Absent ⇒ an unfiled chat thread, which is what
         # a stateless or unattended turn is.
         binding=binding or ConversationBinding(),
+        # Which workspace this turn's file work happens in. Empty — every turn an operator
+        # sends — means "this conversation's own", filled in by `RunDeps`. A sub-agent's
+        # turn is what passes one: it works in the workspace of the thread that launched
+        # it, or in a delegated child of it (`services/workspace.py`).
+        workspace_key=workspace_key,
     )
     try:
         run = registry.submit(
@@ -709,6 +723,7 @@ def _settings_response(
     steps: int,
     inactivity: float | None,
     wall_clock: float | None,
+    subagents: int | None,
 ) -> ChatSettings:
     return ChatSettings(
         auto_compact_enabled=auto.enabled,
@@ -719,6 +734,7 @@ def _settings_response(
         agent_request_limit=steps,
         inactivity_timeout_s=inactivity,
         wall_clock_timeout_s=wall_clock,
+        subagent_max_concurrent=subagents,
     )
 
 
@@ -731,7 +747,8 @@ async def get_chat_settings(request: Request) -> ChatSettings:
     inactivity = await get_inactivity_timeout(store, OPERATOR_ID)
     wall_clock = await get_wall_clock_timeout(store, OPERATOR_ID)
     context = await get_context_thresholds(store, OPERATOR_ID)
-    return _settings_response(auto, context, steps, inactivity, wall_clock)
+    subagents = await get_subagent_limit(store, OPERATOR_ID)
+    return _settings_response(auto, context, steps, inactivity, wall_clock, subagents)
 
 
 @router.put("/settings", response_model=ChatSettings)
@@ -755,6 +772,12 @@ async def update_chat_settings(body: ChatSettings, request: Request) -> ChatSett
         wall_clock = await set_wall_clock_timeout(store, OPERATOR_ID, body.wall_clock_timeout_s)
     else:
         wall_clock = await get_wall_clock_timeout(store, OPERATOR_ID)
+    # `null` removes the cap here too, so presence rather than a non-None value is what
+    # says the client touched it.
+    if "subagent_max_concurrent" in body.model_fields_set:
+        subagents = await set_subagent_limit(store, OPERATOR_ID, body.subagent_max_concurrent)
+    else:
+        subagents = await get_subagent_limit(store, OPERATOR_ID)
 
     auto = await get_auto_compact(store, OPERATOR_ID)
     if (
@@ -800,4 +823,4 @@ async def update_chat_settings(body: ChatSettings, request: Request) -> ChatSett
                 ),
             ) from exc
         context = await set_context_thresholds(store, OPERATOR_ID, thresholds)
-    return _settings_response(auto, context, steps, inactivity, wall_clock)
+    return _settings_response(auto, context, steps, inactivity, wall_clock, subagents)

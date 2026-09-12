@@ -8,11 +8,11 @@
  *
  * **The silent mistake is the falsy value.** A PUT here carries only the keys the
  * caller touched, and "touched" has to be an `!== undefined` test rather than a
- * truthiness one, because two of these settings have a meaningful falsy value: keeping
+ * truthiness one, because three of these settings have a meaningful falsy value: keeping
  * **0** exchanges verbatim past a fold is a real choice (let the summary stand for
- * everything), and a **null** wall clock is the value that removes the bound. Under a
- * truthiness test both are dropped on the way out, with no error and no sign — and only
- * for the operators who chose them.
+ * everything), and a **null** wall clock or **null** sub-agent cap is the value that
+ * removes the bound. Under a truthiness test all three are dropped on the way out, with no
+ * error and no sign — and only for the operators who chose them.
  */
 
 import type { ChatSettings } from "./model";
@@ -26,6 +26,7 @@ export interface ChatSettingsDTO {
   agent_request_limit: number;
   inactivity_timeout_s: number;
   wall_clock_timeout_s: number | null;
+  subagent_max_concurrent: number | null;
 }
 
 /** The single snake_case→camel mapper for the stored chat preferences. */
@@ -39,6 +40,7 @@ export function toChatSettings(dto: ChatSettingsDTO): ChatSettings {
     agentRequestLimit: dto.agent_request_limit,
     inactivityTimeoutS: dto.inactivity_timeout_s,
     wallClockTimeoutS: dto.wall_clock_timeout_s,
+    subagentMaxConcurrent: dto.subagent_max_concurrent,
   };
 }
 
@@ -64,5 +66,7 @@ export function toChatSettingsBody(
     body.inactivity_timeout_s = patch.inactivityTimeoutS;
   if (patch.wallClockTimeoutS !== undefined)
     body.wall_clock_timeout_s = patch.wallClockTimeoutS;
+  if (patch.subagentMaxConcurrent !== undefined)
+    body.subagent_max_concurrent = patch.subagentMaxConcurrent;
   return body;
 }

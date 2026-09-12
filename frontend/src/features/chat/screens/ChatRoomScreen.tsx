@@ -40,6 +40,7 @@ import { conversationModel } from "../conversationModel";
 import { registerChatRoomKeymap } from "../chatRoomKeymap";
 import { useChatViewport } from "../useChatViewport";
 import { createBranchState } from "../branchState";
+import { createSubagentsState } from "../subagentsState";
 import { createTranscriptFollow } from "../transcriptScroll";
 import { createRenameConversation } from "../components/RenameConversationModal";
 
@@ -222,6 +223,13 @@ export function ChatRoomScreen(): JSX.Element {
   // settles, since that is when the agent has just changed something.
   const branch = createBranchState(currentId, () => (stream.sending() ? 0 : 1));
 
+  // The thread's sub-agents. Re-read when a turn settles for the same reason as the
+  // branch — that is the moment a launch has most likely just happened — and it keeps
+  // itself current on its own while any of them is still working.
+  const subagents = createSubagentsState(currentId, () =>
+    stream.sending() ? 0 : 1,
+  );
+
   // The viewport pane beside the conversation — everything about what it holds, how
   // wide it is, whether it renders as an aside or a sheet, and where focus goes when
   // it closes. It is a concern of its own, so it lives in one.
@@ -229,6 +237,8 @@ export function ChatRoomScreen(): JSX.Element {
     ...stream,
     branch: branch.latest,
     refetchBranch: branch.refetch,
+    subagents: subagents.latest,
+    refetchSubagents: subagents.refetch,
     // A submitted plan is answered in the panel that renders it rather than in the
     // dock — see `PlanSurface`. It is the same park and the same single resume, so it
     // goes back through the same settle the dock uses.

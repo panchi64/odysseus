@@ -63,6 +63,7 @@ async def verify_and_correct(
     drop_ref: list[tuple[int, int]] | None = None,
     context_threshold: float | None = None,
     turn_start: TurnStart | None = None,
+    workspace_key: str = "",
 ) -> TurnResult:
     """Judge the answer; on failure make a single bounded corrective re-attempt.
 
@@ -124,6 +125,8 @@ async def verify_and_correct(
         turn_start=turn_start,
         # No fold under a correction: `clean_drop` indexes the pre-fold history.
         correcting=True,
+        # The correction is this turn continuing, so it works where the turn worked.
+        workspace_key=workspace_key,
     )
     if run.status is RunStatus.awaiting_input:
         # The correction needs approval: carry the drop range on the parked turn

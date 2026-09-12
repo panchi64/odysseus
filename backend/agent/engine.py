@@ -125,6 +125,7 @@ def build_chat_orchestrator(
     disabled_tools: frozenset[str] = frozenset(),
     binding: ConversationBinding = DEFAULT_BINDING,
     request_limit: int | None = None,
+    workspace_key: str = "",
 ) -> Orchestrator:
     """Build the orchestrator for one chat turn (one always-agent path).
 
@@ -297,6 +298,7 @@ def build_chat_orchestrator(
             context_window=context_window,
             title_model=title_model,
             title_settings=title_settings,
+            workspace_key=workspace_key,
         )
 
         try:
@@ -317,6 +319,7 @@ def build_chat_orchestrator(
                 request_limit=request_limit,
                 compaction=setup.compaction,
                 turn_start=setup.turn_start,
+                workspace_key=workspace_key,
             )
 
             # Verify only a completed turn (not one parked for approval or stopped at
@@ -363,6 +366,7 @@ def build_chat_orchestrator(
                         # The correction is this turn continuing, so a call it defers is
                         # reviewed against the same opening request the first pass was.
                         turn_start=setup.turn_start,
+                        workspace_key=workspace_key,
                     )
 
             finalize(
@@ -528,6 +532,9 @@ def build_resume_orchestrator(
                 compaction=parked.compaction,
                 turn_start=turn_start,
                 correcting=parked.clean_drop is not None,
+                # From the parked payload for the same reason `binding` is: the resumed
+                # turn must work in the same place the parked one did.
+                workspace_key=parked.workspace_key,
             )
             finalize(run, turn, store=store, context=parked_context(parked, turn_start))
             # Disarm the flush hooks now the turn is recorded — a bound or cancel

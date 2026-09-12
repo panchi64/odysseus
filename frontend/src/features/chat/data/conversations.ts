@@ -53,9 +53,23 @@ async function fetchSession(id: string): Promise<ChatSession> {
 }
 
 /** Loads a session. A null id means a new, unsaved conversation — the resource
- *  doesn't fetch, so the screen renders an empty thread. */
-export function useChatSession(id: () => string | null): Resource<ChatSession> {
-  const [data] = createResource(id, fetchSession);
+ *  doesn't fetch, so the screen renders an empty thread.
+ *
+ *  `revision` re-reads the same thread when it changes. The main room does not need it —
+ *  its transcript is fed by the run stream, and a re-read there would fight the stream —
+ *  but a thread nobody is streaming has no other way to move: a sub-agent's transcript is
+ *  read from outside its own run, and the panel's poll is what knows it has got further. */
+export function useChatSession(
+  id: () => string | null,
+  revision: () => unknown = () => null,
+): Resource<ChatSession> {
+  const [data] = createResource(
+    () => {
+      const value = id();
+      return value === null ? null : ([value, revision()] as const);
+    },
+    ([value]) => fetchSession(value),
+  );
   return data;
 }
 

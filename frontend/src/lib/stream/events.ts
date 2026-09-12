@@ -422,13 +422,29 @@ export interface ReviewCompleted extends Base {
   authorization: "explicitly_no" | "neutral" | "explicitly_yes" | null;
   correctness: string | null;
 }
-/** The operator sent a message while the run was still executing; it is queued
- *  for injection at the run's next model-request boundary. `text` rides inline
- *  so a reattaching client rebuilds the pending bubble purely from replay. */
+/** Who a queued message is from. `operator` is somebody typing while a run is going;
+ *  `subagent` is a report from one the agent launched, delivered into the thread that
+ *  launched it; `parent` is that same link the other way — the launching agent redirecting
+ *  a sub-agent while it works, so it only ever appears in a sub-agent's own run. They ride
+ *  the same road on purpose — a queued message is handed to the *next, not-yet-sent*
+ *  request, so none can interrupt a model mid-stream — but they must not read the same,
+ *  because a report shown as the operator's own words is a transcript lying about who said
+ *  what. Absent on an older backend, which only ever sent the operator's.
+ *
+ *  Only `subagent` changes how anything renders. A direction arrives in a thread nobody
+ *  else can type in, where the agent that launched it *is* the one giving it direction —
+ *  so it stays an ordinary incoming message, exactly as the transcript projects it on the
+ *  way back out (`services/conversation_view.py`). It is in the union because the wire
+ *  carries it, not because there is a branch for it. */
+export type MessageSource = "operator" | "subagent" | "parent";
+/** A message arrived while the run was still executing; it is queued for injection
+ *  at the run's next model-request boundary. `text` rides inline so a reattaching
+ *  client rebuilds the pending bubble purely from replay. */
 export interface MessageQueued extends Base {
   type: "message.queued";
   message_id: string;
   text: string;
+  source?: MessageSource;
 }
 /** The operator rewrote a queued message's text before the run consumed it.
  *  `text` is the full replacement (not a delta), inline so a reattaching client
@@ -448,6 +464,9 @@ export interface MessageWithdrawn extends Base {
 export interface MessageInjected extends Base {
   type: "message.injected";
   message_id: string;
+  /** Repeated from the queue frame rather than looked up, so a client attaching after
+   *  that frame scrolled out of its replay window still knows whose message landed. */
+  source?: MessageSource;
 }
 /** One task on the agent's running list for this conversation. `blocked` only occurs
  *  when the backend enables subtasks/dependencies; it is carried here so a future flip
@@ -492,48 +511,10 @@ export interface PermissionChanged extends Base {
   /** Why, in one line, for the transcript — "entering plan mode", "plan approved". */
   reason: string;
 }
-/** A sub-agent was handed a piece of work.
- *
- *  The structured half of a delegation. The `tool.progress` line beside it is not a
- *  leftover: the transcript wants one sentence of prose under the call that made it,
- *  and a roster of sub-agents wants name, task and outcome as fields. Every delegation
- *  on one tool call flattens onto the same `tool_call_id`, so neither surface can be
- *  rebuilt from the other's frames.
- *
- *  `subagent_id` is `{run_id}:{tool_call_id}:{seq}` — the call id alone collides, since
- *  a delegation the model retries is the same call id twice. */
-export interface SubagentStarted extends Base {
-  type: "subagent.started";
-  subagent_id: string;
-  agent_name: string;
-  task: string;
-  /** The delegating call, so a roster row ties back to the tool card that made it. */
-  tool_call_id: string;
-}
-/** One line of what a sub-agent is doing, as it does it. Latest-wins rather than a log:
- *  a delegation is minutes of a child's own tool calls, and the row shows where it has
- *  got to, not everywhere it has been. */
-export interface SubagentProgress extends Base {
-  type: "subagent.progress";
-  subagent_id: string;
-  partial: string;
-}
-/** A sub-agent finished and reported back. `summary` is capped backend-side; the
- *  untruncated text is the delegating call's `tool.completed` result. */
-export interface SubagentCompleted extends Base {
-  type: "subagent.completed";
-  subagent_id: string;
-  summary: string;
-  duration_ms: number;
-}
-/** A sub-agent raised rather than reporting. Rare by design — a delegation that cannot
- *  happen degrades to a sentence for the model — so this is the case where a row would
- *  otherwise sit on "running" forever. */
-export interface SubagentFailed extends Base {
-  type: "subagent.failed";
-  subagent_id: string;
-  error: string;
-}
+/* The `subagent.*` family is gone with the blocking delegation that emitted it. A
+   sub-agent is a run of its own now — the panel reads its register row, its transcript
+   and its own event stream, none of which a parent turn's stream could carry past the end
+   of that turn. Mirrors backend/runs/events.py. */
 export interface LimitNotice extends Base {
   type: "limit.notice";
   /** "context" = the model's context window was exceeded; the run stops (it isn't
@@ -606,10 +587,6 @@ export type RunEvent =
   | TasksUpdated
   | PlanUpdated
   | PermissionChanged
-  | SubagentStarted
-  | SubagentProgress
-  | SubagentCompleted
-  | SubagentFailed
   | LimitNotice;
 
 /** A run is over after one of these — the stream reader stops. */
