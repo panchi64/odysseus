@@ -1,4 +1,4 @@
-import { For, Show, type JSX } from "solid-js";
+import { createSignal, For, Show, type JSX } from "solid-js";
 import { Markdown, Stack, StatusFlag, Text } from "~/ui";
 import type { ApprovalDecision, PlanDocument, PlanStatus } from "../model";
 import type { Park } from "../stream/approvals";
@@ -50,6 +50,22 @@ export function PlanSurface(props: {
     props.plan()?.status === "pending"
       ? (props.park()?.planApproval ?? null)
       : null;
+
+  // One submission per park, exactly as the dock guards itself. The three buttons decide
+  // and send in one gesture, so an operator who clicks Approve and immediately changes
+  // their mind to Reject would otherwise post twice — and the second lands on a run that
+  // has already resumed, which comes back 409 and marks the park stale over a decision
+  // that in fact succeeded.
+  const [submitting, setSubmitting] = createSignal(false);
+  const submit = async (decisions: ApprovalDecision[]) => {
+    if (submitting()) return;
+    setSubmitting(true);
+    try {
+      await props.onSubmit(decisions);
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   return (
     <Show
@@ -118,7 +134,7 @@ export function PlanSurface(props: {
                       // twice, once unreadably.
                       renderBody={() => <></>}
                       onChange={(decisions, allDecided) => {
-                        if (allDecided) void props.onSubmit(decisions);
+                        if (allDecided) void submit(decisions);
                       }}
                     />
                   </div>

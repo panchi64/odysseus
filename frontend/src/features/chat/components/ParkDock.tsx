@@ -73,11 +73,12 @@ export function ParkDock(props: {
 
   const hasApprovals = () => approvals().length > 0;
   const hasQuestions = () => props.park.questions.length > 0;
-  /** Nothing left for the dock to ask: the panel has the only decision in the park —
-   *  which is every time in practice, since plan mode withholds every other tool that
-   *  could defer. It stands down to its Stop control and points at the panel rather
-   *  than putting a second, emptier copy of the question under it. */
-  const planOnly = () => deferToPanel() && !hasApprovals() && !hasQuestions();
+  /** Nothing left for the dock to ask: a park carrying `planApproval` carries nothing
+   *  else (`stream/approvals.ts` splits it out only when it is the whole park), so
+   *  deferring to the panel empties the dock. It stands down to its Stop control and
+   *  points at the panel rather than putting a second, emptier copy of the question
+   *  under it. */
+  const planOnly = () => deferToPanel();
 
   /** Every question in the park answered — each with a selection or something written.
    *  The backend refuses a question answered with neither, so the button refuses first

@@ -24,8 +24,7 @@ from runs import PermissionChanged, PlanUpdated, Run, RunStream, TasksUpdated
 from services.conversations import ConversationStore
 from services.plan_mode import PlanMode
 from services.task_list import ConversationTasks
-from services.tool_policy import permission_disabled_tools
-from tools import RunDeps, build_agent_toolsets
+from tools import RunDeps, build_agent_toolsets, core_categories
 from tools.plan import plan_toolset
 
 OWNER = "operator"
@@ -62,7 +61,12 @@ def _ctx(
         caps=caps,
         conversation_id=conversation_id,
         permission=permission,
-        disabled_tools=permission_disabled_tools(permission),
+        # Empty, and that is the point: `disabled_tools` carries the six sources that are
+        # settled for the whole turn, and the level is **not** one of them — the gate reads
+        # it live off `permission` above. A fixture that baked it in here would withhold
+        # the Plan set for the rest of the run however the level moved, which is the bug
+        # this file exists to catch.
+        disabled_tools=frozenset(),
     )
     return RunContext(deps=deps, model=TestModel(), usage=RunUsage()), run
 
@@ -73,38 +77,68 @@ async def _call(name: str, args: dict, ctx: RunContext[RunDeps]):
     return await toolset.call_tool(name, args, ctx, tools[name])
 
 
+async def _offered(ctx: RunContext[RunDeps]) -> set[str]:
+    """What the model is actually handed right now, through the real gates.
+
+    The whole core catalog rather than just the plan category, because the question these
+    tests ask is what the *level* did to the catalog, and the level's effect is only
+    visible on the tools it withholds."""
+    stack = build_agent_toolsets(core_categories())[0]
+    return set(await stack.get_tools(ctx))
+
+
 def _bodies(run: Run) -> list:
     return [e.body for e in run.stream.replay()]
 
 
 async def test_entering_narrows_this_turns_catalog_not_just_the_next(wired):
     """The load-bearing half. Both gates re-read `ctx.deps` on every model request, so
-    editing it in place is what makes the narrowing bind before the turn ends — without
-    it the model announces plan mode and keeps its editing tools until the next turn."""
+    moving the level in place is what makes the narrowing bind before the turn ends —
+    without it the model announces plan mode and keeps its editing tools until the next
+    turn.
+
+    Asserted against the **resolved catalog** rather than against `disabled_tools`,
+    because what matters is what the model is actually offered: the level reaches the gate
+    live now, and a test that read the stored set would pass on a build where the gate had
+    stopped consulting it."""
     plans, tasks, conversations, conversation_id = wired
     ctx, run = _ctx(plans, tasks, conversation_id, "auto")
-    assert "files_write_file" not in ctx.deps.disabled_tools
+    assert "files_write_file" in await _offered(ctx)
 
     await _call("plan_enter", {"reason": "this rewrites the parser"}, ctx)
 
     assert ctx.deps.permission == "plan"
-    assert "files_write_file" in ctx.deps.disabled_tools
+    assert "files_write_file" not in await _offered(ctx)
     # ...and durably, so the next turn starts where this one left off.
     assert (await conversations.binding(conversation_id)).permission == "plan"
     assert [b.level for b in _bodies(run) if isinstance(b, PermissionChanged)] == ["plan"]
 
 
-async def test_entering_leaves_the_other_withholding_reasons_alone(wired):
-    """`disabled_tools` is a union of seven sources. Only the level's contribution is this
-    tool's to move — rebuilding the whole set, or adding without subtracting, would either
-    drop the operator's own choices or make the change one-way."""
+async def test_moving_the_level_leaves_the_other_withholding_reasons_alone(wired):
+    """The bug this shape exists to prevent, in both directions.
+
+    `disabled_tools` is a **union** of six sources and records no provenance, so a level
+    that edited it could add names but never correctly take them back out: subtracting the
+    Plan set on approval would lift every other source's hold on the same names. The
+    witness is a tool that is withheld for *two* reasons at once — the operator switched it
+    off by hand, and Plan withholds it too — which is exactly the overlap a set difference
+    cannot see.
+    """
     plans, tasks, _, conversation_id = wired
     ctx, _ = _ctx(plans, tasks, conversation_id, "auto")
-    ctx.deps.disabled_tools = ctx.deps.disabled_tools | {"builtin_now"}
+    # The operator's own choice, which no level may overturn in either direction.
+    ctx.deps.disabled_tools = ctx.deps.disabled_tools | {"files_write_file"}
+    assert "files_write_file" not in await _offered(ctx)
 
     await _call("plan_enter", {"reason": "why not"}, ctx)
+    assert "files_write_file" not in await _offered(ctx)
 
-    assert "builtin_now" in ctx.deps.disabled_tools
+    # ...and still gone after a plan is approved, which is where the old code handed it
+    # back: the level widened, but the operator never said this tool could return.
+    from tools.plan import _retarget
+
+    _retarget(ctx, "auto")
+    assert "files_write_file" not in await _offered(ctx)
 
 
 async def test_submitting_records_the_plan_and_then_parks(wired):
@@ -233,9 +267,10 @@ async def test_approving_is_one_act(wired):
         "change it",
     ]
     assert (await conversations.binding(conversation_id)).permission == "auto"
-    # The turn that resumes is the turn that executes, so the tools have to be back now.
+    # The turn that resumes is the turn that executes, so the tools have to be back now —
+    # read through the gate, which is where the level is applied.
     assert ctx.deps.permission == "auto"
-    assert "files_write_file" not in ctx.deps.disabled_tools
+    assert "files_write_file" in await _offered(ctx)
     assert "auto" in result
 
     bodies = _bodies(run)
@@ -304,6 +339,31 @@ async def test_an_unattended_run_is_not_offered_plan_mode_at_all(wired):
     # Nothing moved: no plan recorded, and the level is where it was.
     assert await plans.current(OWNER, conversation_id) is None
     assert ctx.deps.permission == "auto"
+
+
+async def test_a_plan_that_could_not_be_stored_is_not_put_to_the_operator(wired):
+    """No document, no question.
+
+    A locked vault drops the write *and* the announcement, so parking anyway would face
+    the operator with an approval whose panel says there is no plan — the store is also
+    what a reload reads — leaving Stop as the only way out. It says so to the model
+    instead, and the turn carries on able to act.
+    """
+    plans, tasks, conversations, conversation_id = wired
+    ctx, run = _ctx(plans, tasks, conversation_id, "plan")
+    plans._vault.lock()  # noqa: SLF001 - simulating the locked state
+
+    before = (await conversations.binding(conversation_id)).permission
+    result = await _call("plan_submit", {"title": "T", "body": "B", "steps": ["s"]}, ctx)
+
+    assert "could not be stored" in result
+    # No document, and nothing announced either — the panel is not told to draw a plan
+    # that was never written.
+    assert not [b for b in _bodies(run) if isinstance(b, PlanUpdated)]
+    assert await plans.current(OWNER, conversation_id) is None
+    # And nothing moved: a refusal is not an approval, so the level stays put.
+    assert (await conversations.binding(conversation_id)).permission == before
+    assert not [b for b in _bodies(run) if isinstance(b, PermissionChanged)]
 
 
 async def test_a_locked_vault_does_not_block_the_yes(wired):

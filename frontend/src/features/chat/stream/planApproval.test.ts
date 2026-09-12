@@ -14,7 +14,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { createFolder, type FoldState } from "./fold";
-import { PLAN_SUBMIT_TOOL } from "./approvals";
+import { createApprovalOps, PLAN_SUBMIT_TOOL } from "./approvals";
 import type { PermissionLevel, PlanDocument } from "../model";
 import type { RunEvent } from "~/lib/stream";
 
@@ -140,6 +140,16 @@ describe("folding a level the run moved", () => {
     );
     expect(h.level()).toBe("auto");
   });
+
+  test("a level this build has no rule for degrades to the strictest", () => {
+    // It matters *because* the level is sent back: a raw cast would seat the unknown
+    // string, ride it on the next message and have it refused at the edge — the
+    // operator's message failing for a reason nothing on screen explains. The strictest
+    // reading is the only one that cannot widen a thread.
+    const h = harness();
+    h.fold({ type: "permission.changed", level: "root", reason: "?" }, 1);
+    expect(h.level()).toBe("plan");
+  });
 });
 
 describe("the tool name the park splits on", () => {
@@ -148,5 +158,52 @@ describe("the tool name the park splits on", () => {
     // is the only thing standing between a rename and a plan that silently renders as
     // an ordinary approval in the dock.
     expect(PLAN_SUBMIT_TOOL).toBe("plan_submit");
+  });
+});
+
+describe("splitting the plan off the park", () => {
+  const approval = (name: string) => ({
+    kind: "approval" as const,
+    approval: { toolCallId: `c-${name}`, name, args: {}, summary: name },
+  });
+  const question = () => ({
+    kind: "question" as const,
+    question: { toolCallId: "q1", questions: [] },
+  });
+
+  /** The park memo, over a single live message carrying `blocks`. */
+  const parkOf = (blocks: unknown[]) => {
+    const messages = [{ id: "m1", streaming: true, blocks }] as never;
+    return createApprovalOps({
+      messages,
+      patchById: () => {},
+      sending: () => true,
+      reconcileStaleDecision: async () => {},
+    }).park();
+  };
+
+  test("a plan alone is split out for the panel", () => {
+    const park = parkOf([approval(PLAN_SUBMIT_TOOL)]);
+    expect(park?.planApproval?.name).toBe(PLAN_SUBMIT_TOOL);
+    // ...and removed from the dock's list, or it would be decided twice.
+    expect(park?.approvals).toEqual([]);
+  });
+
+  test("a plan with anything beside it stays in the batch", () => {
+    // The run resumes on ONE body covering every parked call, so a park split across
+    // two surfaces would be two submissions, each naming half the batch and each
+    // refused for not covering the rest. Unreachable today — plan mode withholds
+    // everything else that could defer — and the plainer answer if it ever is.
+    for (const extra of [approval("shell_run_command"), question()]) {
+      const park = parkOf([approval(PLAN_SUBMIT_TOOL), extra]);
+      expect(park?.planApproval).toBeNull();
+      expect(park?.approvals.map((a) => a.name)).toContain(PLAN_SUBMIT_TOOL);
+    }
+  });
+
+  test("an ordinary approval is never mistaken for a plan", () => {
+    const park = parkOf([approval("shell_run_command")]);
+    expect(park?.planApproval).toBeNull();
+    expect(park?.approvals).toHaveLength(1);
   });
 });

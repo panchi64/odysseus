@@ -128,7 +128,6 @@ class ConversationResearchThreads(ResearchThreads):
             self._offline,
             owner_id,
             mode=binding.mode,
-            permission=binding.permission,
             vision=models[4],
             # A thread the agent opened for itself: foreground for the model, background
             # for the operator. Nothing says they are looking at it, so it is not offered

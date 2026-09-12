@@ -430,7 +430,7 @@ async def _submit_turn(
         # `compose_turn` passes to the engine for attachments. A tool that answers with
         # an image is withheld from a model that can't read one.
         disabled_tools=await deps.disabled_tools(
-            request, binding.mode, permission=binding.permission, vision=models[4]
+            request, binding.mode, vision=models[4]
         ),
         binding=binding,
         attachment_ids=attachment_ids,

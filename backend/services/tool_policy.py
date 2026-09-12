@@ -5,7 +5,7 @@ disabled tool from the catalog the model is offered, so the agent can neither se
 invoke it. This module is the **operator's half** — which tools they turned off, made
 durable, and composed with the suspensions the system decides on its own.
 
-Seven independent sources feed one set:
+Six independent sources feed one set:
 
 - **the operator's explicit choices**, persisted through ``settings_store`` under
   ``tools.disabled`` as a plain JSON list of namespaced tool names. Policy, not content,
@@ -14,8 +14,6 @@ Seven independent sources feed one set:
   connectivity rather than chosen;
 - **the run's mode** — whether a tool belongs in this kind of thread, read off the mode
   registry (``services/modes.py``) rather than restated here;
-- **the run's permission level** — under Plan, every tool that would change something is
-  withheld outright, classified by ``services/tool_sensitivity.py``;
 - **the model's own reach** — a tool that answers with an image is withheld from a model
   that cannot see one;
 - **whether anyone is watching** — a tool that suspends the turn on the operator is
@@ -28,6 +26,16 @@ They **union**: :func:`effective_disabled_tools` is the one place that rule live
 run path can apply one source and silently drop the others. Every site that fills
 ``RunDeps.disabled_tools`` calls it — the live chat turn, the approval-resume path, and
 the scheduler's unattended task executor.
+
+**The permission level is deliberately not one of them**, though it withholds too
+(:func:`permission_disabled_tools`, Plan only). It is applied *live*, at the enabled gate,
+from ``RunDeps.permission`` — because unlike the six above it can **move inside a turn**:
+``tools/plan.py`` narrows a thread to Plan and an approved plan widens it again, both
+taking effect on the next model request. A union cannot be undone — nothing in a set of
+names records *which* source put each one there — so a level folded in here could be added
+but never correctly removed, and taking the Plan set back out would lift every other
+source's hold on the same names with it: a tool the operator switched off by hand, or one
+this mode has no business offering, would come back the moment a plan was approved.
 
 **Mode is a filter, not a second catalog.** ``app.state.tool_categories`` is assembled
 once at startup and ``tools/catalog.py`` derives the operator's settings list from it;
@@ -52,7 +60,6 @@ from core.container import ServiceContainer
 from runs.lanes import lane_for
 from services.modes import DEFAULT_MODE, MODE_SCOPED_TOOLS, mode_spec
 from services.permissions import (
-    DEFAULT_PERMISSION,
     ApprovalPolicy,
     permission_spec,
     tools_beyond_scope,
@@ -181,6 +188,10 @@ def mode_disabled_tools(mode: str) -> frozenset[str]:
 def permission_disabled_tools(level: str) -> frozenset[str]:
     """The tools a run at ``level`` must not even be offered.
 
+    Applied at the enabled gate from the run's live level rather than folded into
+    :func:`effective_disabled_tools` — see the module note on why a level that can move
+    mid-turn must not enter that union.
+
     Only **Plan** narrows the catalog, and it is the reason the sensitivity classes exist:
     a read-only turn is the one case where withholding beats asking. The other three levels
     decide *at the call* — they let the model see a tool and then gate its execution — so
@@ -287,37 +298,39 @@ async def effective_disabled_tools(
     owner_id: str,
     *,
     mode: str = DEFAULT_MODE,
-    permission: str = DEFAULT_PERMISSION,
     vision: bool = True,
     kind: str = "chat",
     availability: Sequence[CategoryAvailability] = (),
     caps: ServiceContainer | None = None,
 ) -> frozenset[str]:
-    """Everything hidden from the agent this run: the operator's set **unioned** with
-    offline mode's automatic web suspension, the tools that don't belong in ``mode``, the
-    ones this run's ``permission`` level does not let it act with, the ones whose results
-    this run's model cannot read, the ones that need an operator this run doesn't have,
-    and the ones whose feature the operator has never set up.
+    """Everything hidden from the agent this run *for reasons that cannot change mid-turn*:
+    the operator's set **unioned** with offline mode's automatic web suspension, the tools
+    that don't belong in ``mode``, the ones whose results this run's model cannot read, the
+    ones that need an operator this run doesn't have, and the ones whose feature the
+    operator has never set up.
 
-    A union, never a replacement — the seven answer different questions ("the operator
-    does not want this tool", "this tool cannot work right now", "this tool is not part of
-    this kind of thread", "this thread may not act at all", "this model cannot read what
-    this tool returns", "nobody is sitting in front of this run", "there is no mailbox for
-    this tool to read"), and any one of them alone is enough to withhold a tool.
+    A union, never a replacement — the six answer different questions ("the operator does
+    not want this tool", "this tool cannot work right now", "this tool is not part of this
+    kind of thread", "this model cannot read what this tool returns", "nobody is sitting in
+    front of this run", "there is no mailbox for this tool to read"), and any one of them
+    alone is enough to withhold a tool.
 
-    ``permission`` defaults to the level that withholds nothing, so a caller with no level
-    to pass is unaffected; ``vision`` defaults to True — permissive — because the callers
-    that cannot know (a background agent that resolves its own model) should not have tools
-    taken away by an assumption; the interactive paths, which do know, pass the resolved
-    answer. ``kind`` defaults to the operator's own turn for the same reason, and the two
-    unattended composers (the scheduler, the research threads) name themselves.
-    ``availability`` and ``caps`` travel together and default to asking nothing.
+    The **permission level is not here** and is applied live at the gate instead; the
+    module note says why, and it is the one thing about this function worth knowing before
+    adding a seventh source: anything that can move inside a turn does not belong in a
+    union, because a union cannot be taken apart again.
+
+    ``vision`` defaults to True — permissive — because the callers that cannot know (a
+    background agent that resolves its own model) should not have tools taken away by an
+    assumption; the interactive paths, which do know, pass the resolved answer. ``kind``
+    defaults to the operator's own turn for the same reason, and the two unattended
+    composers (the scheduler, the research threads) name themselves. ``availability`` and
+    ``caps`` travel together and default to asking nothing.
     """
     return (
         await get_disabled_tools(settings, owner_id)
         | offline.web_tools_disabled()
         | mode_disabled_tools(mode)
-        | permission_disabled_tools(permission)
         | vision_disabled_tools(vision)
         | lane_disabled_tools(kind)
         | await unavailable_tools(availability, caps, owner_id)

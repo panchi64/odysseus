@@ -60,13 +60,16 @@ export interface Park {
   /** The message the park belongs to; every submit is addressed to its run. */
   messageId: string;
   approvals: Approval[];
-  /** A submitted plan awaiting an answer, held apart from `approvals` because a
-   *  different surface renders it. Everything else about it is identical — same park,
-   *  same single resume — and the dock still refuses to submit until it is decided,
-   *  because the run resumes on one body covering every parked call.
+  /** A submitted plan awaiting an answer, held apart from `approvals` because a different
+   *  surface renders it. Everything else about it is identical — same park, same single
+   *  resume.
    *
-   *  In practice it is never accompanied: plan mode withholds every tool that could
-   *  defer, so a park holding this holds nothing else. The code does not rely on that. */
+   *  **Split out only when it is the whole park.** In practice it always is: plan mode
+   *  withholds every other tool that could defer. But the run resumes on *one* body
+   *  covering every parked call, so a park split across two surfaces would be two
+   *  submissions, each naming half the batch and each refused for not covering the rest.
+   *  Where anything accompanies it, it stays in `approvals` and the dock decides the
+   *  batch as a whole — which is the plainer answer to a case that should not arise. */
   planApproval: Approval | null;
   questions: QuestionBlock["question"][];
   /** True once a submitted decision for this park 409'd. The dock stays up, inert and
@@ -120,25 +123,29 @@ export function createApprovalOps(deps: ApprovalDeps): ApprovalOps {
     if (!live) return null;
     const approvals: Approval[] = [];
     const questions: QuestionBlock["question"][] = [];
-    let planApproval: Approval | null = null;
     for (const b of live.blocks ?? []) {
-      if (b.kind === "approval")
-        if (b.approval.name === PLAN_SUBMIT_TOOL) planApproval = b.approval;
-        else approvals.push(b.approval);
+      if (b.kind === "approval") approvals.push(b.approval);
       else if (b.kind === "question") questions.push(b.question);
     }
-    if (!approvals.length && !questions.length && !planApproval) return null;
+    if (!approvals.length && !questions.length) return null;
+    // Split out only when the plan is the *whole* park — see `Park.planApproval`. The
+    // check is on the batch rather than on the block, so a park that somehow held more
+    // than the plan falls back to deciding all of it in one place.
+    const plan =
+      approvals.length === 1 &&
+      !questions.length &&
+      approvals[0].name === PLAN_SUBMIT_TOOL
+        ? approvals[0]
+        : null;
     return {
       messageId: live.id,
-      approvals,
-      planApproval,
+      approvals: plan ? [] : approvals,
+      planApproval: plan,
       questions,
       // One flag for the park, not one per call: the whole batch resumes on one
-      // submission, so a 409 stales all of it at once.
-      stale:
-        approvals.some((a) => a.stale) ||
-        questions.some((q) => q.stale) ||
-        Boolean(planApproval?.stale),
+      // submission, so a 409 stales all of it at once. Read off `approvals` before the
+      // split, which is every call either way.
+      stale: approvals.some((a) => a.stale) || questions.some((q) => q.stale),
     };
   });
 

@@ -92,8 +92,10 @@ async def _catalog(mode: str, permission: str) -> tuple[tuple[int, int], tuple[i
     same subtraction the request performs, not a second opinion about it."""
     engine = make_engine("sqlite:///:memory:")
     init_db(engine)
+    # The level is deliberately absent here and rides on `RunDeps.permission` below: it is
+    # applied live at the enabled gate, not folded into this set (`services/tool_policy`).
     disabled = await effective_disabled_tools(
-        SettingsStore(engine), _AllOnline(), "operator", mode=mode, permission=permission
+        SettingsStore(engine), _AllOnline(), "operator", mode=mode
     )
     run = Run(id="t", kind="chat", owner_id="operator", stream=RunStream())
     deps = RunDeps(

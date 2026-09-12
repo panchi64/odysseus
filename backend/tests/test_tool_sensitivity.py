@@ -216,19 +216,30 @@ class TestWhatAPlanTurnActuallySees:
 
 
 class TestTheUnion:
-    async def test_the_level_composes_with_the_other_sources(self):
+    async def test_the_sources_compose(self):
         store = _store()
         await set_tool_enabled(store, OWNER, "builtin_now", False)
         offline = _StubOffline(frozenset({"web_search"}))
-        disabled = await effective_disabled_tools(
-            store, offline, OWNER, mode="code", permission="plan"
-        )
+        disabled = await effective_disabled_tools(store, offline, OWNER, mode="code")
         assert "builtin_now" in disabled  # the operator's
         assert "web_search" in disabled  # offline's
         assert "code_execute" in disabled  # the mode's
-        assert "files_write_file" in disabled  # the level's
-        # ...and the level does not take back what nothing withheld.
+        # ...and nothing takes back what nothing withheld.
         assert "files_read_file" not in disabled
+
+    async def test_the_level_is_not_one_of_them(self):
+        """It withholds too, but it is applied live at the gate rather than unioned here.
+
+        The distinction is the whole reason plan mode can be entered and left inside a
+        turn: a union records no provenance, so a level folded in could be added and never
+        correctly removed — and taking the Plan set back out would lift the operator's own
+        hold on any name they had also switched off. Pinned as an absence because that is
+        the property a future "just add it to the union" would quietly break."""
+        store = _store()
+        await set_tool_enabled(store, OWNER, "files_write_file", False)
+        disabled = await effective_disabled_tools(store, _StubOffline(frozenset()), OWNER)
+        assert "files_write_file" in disabled  # the operator's, and *only* theirs
+        assert permission_disabled_tools("plan") - disabled
 
     async def test_a_caller_with_no_level_is_unaffected(self):
         store = _store()

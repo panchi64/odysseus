@@ -31,6 +31,7 @@ import type { SetStoreFunction } from "solid-js/store";
 import { produce } from "solid-js/store";
 import { CONTEXT_OVERFLOW_AFTER_FOLD_DETAIL } from "~/lib/stream";
 import type { ContextWindow, RunEvent, TaskItem } from "~/lib/stream";
+import { permissionLevel } from "../model";
 import type { PermissionLevel, PlanDocument } from "../model";
 import { toast } from "~/ui";
 import {
@@ -368,7 +369,13 @@ export function createFolder(
         // The level moved from inside the run. Seated as though it had been read off the
         // thread, because that is what it now is: the row says so, and the composer must
         // send this level rather than the one it was holding.
-        deps.setPermission(ev.level as PermissionLevel);
+        //
+        // Validated rather than cast, and that matters *because* it is sent back: a level
+        // this build has no rule for would be seated, ridden on the next message, and
+        // refused at the edge — the operator's message failing for a reason nothing on
+        // screen explains. `permissionLevel` degrades an unreadable value to the
+        // strictest one, which is the only reading that cannot widen a thread.
+        deps.setPermission(permissionLevel(ev.level));
         break;
       case "subagent.started":
         // Conversation-scoped, like the plan and the version list above: a delegation is

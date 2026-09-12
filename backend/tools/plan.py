@@ -40,7 +40,6 @@ from pydantic_ai.exceptions import ApprovalRequired
 
 from runs.lanes import lane_for
 from services.plan_mode import ACTING_LEVEL, PLAN_SUBMIT_TOOL, PLANNING_LEVEL, PlanMode
-from services.tool_policy import permission_disabled_tools
 
 from .deps import RunDeps
 
@@ -67,6 +66,14 @@ NO_OPERATOR = (
     "Carry the work out directly, and say what you assumed."
 )
 
+#: What a submission that could not be stored gets back instead of parking on it. The
+#: operator would be asked to approve a document the panel cannot show them — the store is
+#: also what the panel reads on a reload — so there is nothing to decide about.
+NO_RECORD = (
+    "This plan could not be stored, so it cannot be put to the operator (the vault is "
+    "locked). Ask them to unlock it, then submit again."
+)
+
 
 def _unattended(ctx: RunContext[RunDeps]) -> bool:
     """Whether this run has nobody in front of it to answer a plan. See :data:`NO_OPERATOR`."""
@@ -77,16 +84,18 @@ def _retarget(ctx: RunContext[RunDeps], level: str) -> None:
     """Point this run's deps at ``level``, so the change binds for the rest of the turn.
 
     The conversation row is the durable half and the next turn reads it; this is the half
-    that matters *now*. ``disabled_tools`` is rebuilt rather than added to, because the
-    union it carries has six other sources (``services/tool_policy.py``) and the level's
-    contribution is the only one this may touch: subtracting the old level's withheld set
-    and adding the new one's is the one edit that leaves the other five alone.
+    that matters *now*: both gates in ``tools/toolsets.py`` re-read ``deps`` on every model
+    request, so the narrowed — or widened — catalog lands on the next one.
+
+    **One assignment, and `disabled_tools` is not touched.** It used to rebuild that set by
+    subtracting the old level's withheld names and adding the new level's, which was wrong
+    in a way nothing visible caught: the set is a *union* of six other sources and records
+    no provenance, so subtracting the Plan set also lifted every other source's hold on the
+    same names. Approving a plan handed back tools the operator had switched off by hand
+    and shell tools to a thread whose mode must never reach the host. The level is read
+    live at the gate instead (``services/tool_policy.py``), which leaves nothing to undo.
     """
-    previous = permission_disabled_tools(ctx.deps.permission)
     ctx.deps.permission = level  # type: ignore[assignment]
-    ctx.deps.disabled_tools = (ctx.deps.disabled_tools - previous) | permission_disabled_tools(
-        level
-    )
 
 
 def plan_toolset() -> FunctionToolset[RunDeps]:
@@ -181,7 +190,7 @@ def plan_toolset() -> FunctionToolset[RunDeps]:
         if not ctx.tool_call_approved:
             # Record and announce first, *then* park: the panel renders the plan the
             # operator is being asked about, and it has to exist before they are asked.
-            await plans.submit(
+            recorded = await plans.submit(
                 owner_id,
                 conversation_id,
                 title=title,
@@ -189,6 +198,12 @@ def plan_toolset() -> FunctionToolset[RunDeps]:
                 steps=list(steps),
                 run=ctx.deps.run,
             )
+            if recorded is None:
+                # Nothing was stored and nothing was announced (a locked vault). Parking
+                # anyway would put the turn in front of an operator with no plan on screen
+                # to read — the panel would say there is none while the dock pointed at it
+                # — and leave Stop as the only way out. Say so instead.
+                return NO_RECORD
             raise ApprovalRequired()
         _, level = await plans.approve(owner_id, conversation_id, run=ctx.deps.run)
         _retarget(ctx, ACTING_LEVEL)

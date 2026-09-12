@@ -40,6 +40,7 @@ from dataclasses import replace
 from pydantic_ai import AbstractToolset, CombinedToolset, RunContext, ToolDefinition
 
 from services.permissions import beyond_scope
+from services.tool_policy import permission_disabled_tools
 from services.tool_sensitivity import declared_sensitivity
 
 from .agents import GATED_TOOLS as _AGENTS_GATED
@@ -66,8 +67,20 @@ CORE_GATED_TOOLS: frozenset[str] = _SHELL_GATED | _AGENTS_GATED | _PLAN_GATED
 
 
 def _enabled_gate(ctx: RunContext[RunDeps], tool_def: ToolDefinition) -> bool:
-    """Operator-disabled tools are not offered to or invoked by the agent."""
-    return tool_def.name not in ctx.deps.disabled_tools
+    """Withheld tools are not offered to or invoked by the agent.
+
+    Two sources, kept apart on purpose. ``disabled_tools`` is the union of everything that
+    is settled for the whole turn (``services/tool_policy.py``). The **level** is the one
+    that can move inside a turn — ``tools/plan.py`` narrows a thread to Plan and an
+    approved plan widens it again — so it is read live from ``deps.permission`` on every
+    request rather than folded into that union, where it could be added and never
+    correctly taken back out.
+    """
+    name = tool_def.name
+    return (
+        name not in ctx.deps.disabled_tools
+        and name not in permission_disabled_tools(ctx.deps.permission)
+    )
 
 
 def _approval_gate(
