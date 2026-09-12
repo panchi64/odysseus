@@ -58,6 +58,12 @@ LANE_BY_KIND: Mapping[str, Lane] = {
     "chat": "interactive",
     "task": "background",
     "linked": "linked",
+    # A thread continuing itself: a sub-agent it launched has reported, and the turn that
+    # launched one has long since ended. Foreground for the model and background for the
+    # operator, exactly like the ``linked`` threads it shares a lane with — and emphatically
+    # not interactive, because nobody is sitting in front of it and a burst of sub-agents
+    # finishing at once must not put the operator's own message in a queue.
+    "wake": "linked",
 }
 
 #: The kinds that are a chat turn — the ones composed by ``compose_turn``, and therefore

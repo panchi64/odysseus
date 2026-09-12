@@ -37,6 +37,8 @@ def upgrade() -> None:
     sa.Column('workspace_policy', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
     sa.Column('workspace_key', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('delegation_id', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+    sa.Column('workspace_kind', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+    sa.Column('project_id', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('context_used', sa.Integer(), nullable=True),
     sa.Column('context_window', sa.Integer(), nullable=True),
     sa.Column('started_at', sa.DateTime(), nullable=False),

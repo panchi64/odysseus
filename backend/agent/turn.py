@@ -53,6 +53,7 @@ from .compaction_context import CompactionContext
 from .folding import compact_and_retry
 from .gating import settle_deferred
 from .history import TurnStart
+from .injected import injected_text
 from .meta import LoopBreaker, LoopDetected
 from .metrics import turn_metrics
 from .model_errors import (
@@ -222,7 +223,7 @@ async def drive_turn(
         if queued:
             node.request.parts = [
                 *node.request.parts,
-                *(UserPromptPart(message.text) for message in queued),
+                *(UserPromptPart(injected_text(message)) for message in queued),
             ]
 
     if partial_history_ref is not None:

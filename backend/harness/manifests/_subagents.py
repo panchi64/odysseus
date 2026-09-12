@@ -223,6 +223,10 @@ class ConversationSubagents(SubagentLauncher):
             workspace_policy=policy,
             workspace_key=workspace_key,
             delegation_id=delegation_id if policy == "isolated" else None,
+            # Stored, not re-derived later: the fork is landed from a terminal hook, long
+            # after the binding and the mode registry that knew these are out of reach.
+            workspace_kind=mode_spec(mode).workspace,
+            project_id=parent.project_id,
         )
         return LaunchedSubagent(
             subagent_id=subagent_id,

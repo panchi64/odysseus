@@ -722,15 +722,29 @@ class ReviewCompleted(_Body):
     correctness: str | None = None
 
 
+#: Who a queued message came from. ``operator`` is somebody typing while a run is going;
+#: ``subagent`` is a sub-agent's report, delivered into the thread that launched it.
+#:
+#: The two ride the same road deliberately — the injection point already guarantees a
+#: queued message never interrupts an in-flight model stream, which is exactly what a
+#: report needs — but they must not *read* the same. A report rendered as the operator's
+#: own words is a transcript that lies about who said what, to the reader and to the model.
+MessageSource = Literal["operator", "subagent"]
+
+
 class MessageQueued(_Body):
-    """The operator sent a message while this run was still executing; it is
-    queued for injection at the run's next model-request boundary. ``text`` rides
-    inline so a reattaching client can rebuild the pending bubble purely from
-    replay. Additive to v1; no bump."""
+    """A message arrived while this run was still executing; it is queued for injection at
+    the run's next model-request boundary. ``text`` rides inline so a reattaching client
+    can rebuild the pending bubble purely from replay.
+
+    ``source`` says whose message it is. It defaults to ``operator``, so a client that
+    predates sub-agents reads every frame exactly as it did before. Additive to v1; no
+    bump."""
 
     type: Literal["message.queued"] = "message.queued"
     message_id: str
     text: str
+    source: MessageSource = "operator"
 
 
 class MessageEdited(_Body):
@@ -759,6 +773,9 @@ class MessageInjected(_Body):
 
     type: Literal["message.injected"] = "message.injected"
     message_id: str
+    #: Repeated from the queue frame rather than looked up, so a client attaching after the
+    #: queue frame scrolled out of its replay window still knows whose message landed.
+    source: MessageSource = "operator"
 
 
 class TasksUpdated(_Body):

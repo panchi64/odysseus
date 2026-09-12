@@ -26,6 +26,7 @@ from .events import (
     MessageEdited,
     MessageInjected,
     MessageQueued,
+    MessageSource,
     MessageWithdrawn,
     RunMetrics,
     now_utc,
@@ -60,12 +61,20 @@ TERMINAL_STATUSES = {
 
 @dataclass(frozen=True)
 class QueuedMessage:
-    """An operator message sent while the run was still executing, waiting to be
-    handed to the model at the next model-request boundary."""
+    """A message that arrived while the run was still executing, waiting to be handed to
+    the model at the next model-request boundary.
+
+    Two things queue here: the operator typing mid-turn, and a sub-agent's report arriving
+    for the thread that launched it. They share this road on purpose — the injection point
+    hands a queued message to the *next, not-yet-sent* request, so neither can interrupt a
+    model that is mid-stream — and ``source`` is what keeps them distinguishable
+    afterwards, in the transcript and in what becomes of one left undelivered.
+    """
 
     id: str
     text: str
     queued_at: datetime
+    source: MessageSource = "operator"
 
 
 @dataclass
@@ -226,14 +235,27 @@ class Run:
         self.status = RunStatus.awaiting_input
         self.parked_payload = payload
 
-    def enqueue_message(self, text: str) -> QueuedMessage:
-        """Queue an operator message for injection at the next model-request
-        boundary. Synchronous (no ``await`` between append and emit), so under
-        single-threaded asyncio it can never interleave with a concurrent
-        ``drain_messages`` and lose the message."""
-        message = QueuedMessage(id=uuid4().hex, text=text, queued_at=now_utc())
+    def enqueue_message(
+        self, text: str, *, source: MessageSource = "operator"
+    ) -> QueuedMessage:
+        """Queue a message for injection at the next model-request boundary.
+
+        Synchronous (no ``await`` between append and emit), so under single-threaded
+        asyncio it can never interleave with a concurrent ``drain_messages`` and lose the
+        message.
+
+        ``source`` is who it is from — the operator by default, or a sub-agent reporting
+        back to the thread that launched it. It rides on the message because what becomes
+        of one still queued at terminal depends on it: the operator's client can rebuild
+        their own undelivered text from the replay, and nothing but this holds a report.
+        """
+        message = QueuedMessage(
+            id=uuid4().hex, text=text, queued_at=now_utc(), source=source
+        )
         self.pending_messages.append(message)
-        self.emit(MessageQueued(message_id=message.id, text=message.text))
+        self.emit(
+            MessageQueued(message_id=message.id, text=message.text, source=message.source)
+        )
         return message
 
     def edit_message(self, message_id: str, text: str) -> bool:
@@ -265,7 +287,7 @@ class Run:
         for each — the caller is committing to hand them to the model."""
         drained, self.pending_messages = self.pending_messages, []
         for message in drained:
-            self.emit(MessageInjected(message_id=message.id))
+            self.emit(MessageInjected(message_id=message.id, source=message.source))
         return drained
 
     def set_metrics(self, metrics: RunMetrics) -> None:

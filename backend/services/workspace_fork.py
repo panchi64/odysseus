@@ -49,9 +49,6 @@ class ForkTarget:
     how a checkout gets stranded.
     """
 
-    #: The workspace being forked — the parent's own, already resolved by the caller so a
-    #: child can never end up on a different filesystem than the agent that launched it.
-    parent: RunWorkspace
     #: The parent's workspace key (its conversation, normally), and the child's own.
     parent_key: str
     child_key: str
@@ -82,15 +79,22 @@ class Fork:
 
 
 async def fork_workspace(
-    caps: ServiceContainer, target: ForkTarget, *, holder: LiveWork | None = None
+    caps: ServiceContainer,
+    parent: RunWorkspace,
+    target: ForkTarget,
+    *,
+    holder: LiveWork | None = None,
 ) -> Fork | None:
     """The child's workspace, forked the way its kind is forked.
+
+    ``parent`` is the workspace being copied — already resolved by the caller, so a child
+    can never end up on a different filesystem than the agent that launched it.
 
     ``None`` when the handles that would do it are absent — the same degrade every
     capability-backed feature makes. Raising is reserved for a fork that *should* have
     worked and didn't; the caller reports either as a sentence.
     """
-    if target.parent.kind == "worktree":
+    if parent.kind == "worktree":
         return await _fork_worktree(caps, target)
     return await _fork_sandbox(caps, target, holder=holder)
 
@@ -135,6 +139,65 @@ async def _fork_worktree(caps: ServiceContainer, target: ForkTarget) -> Fork | N
         discard=lambda: worktrees.discard_child(**where),
         # A checkout is not subject to the live-session cap, so nothing claims it.
         hold=lambda _: None,
+    )
+
+
+@dataclass
+class OpenFork:
+    """An existing fork's two endings, for a caller that did not take it.
+
+    Separate from :class:`Fork` because it answers a different question at a different
+    time. Taking a copy needs a resolved workspace to copy *from*; landing one needs only
+    the names, and happens long after the run that took it is gone — from a terminal hook
+    with no ``RunContext``, no deps and no workspace left to resolve. Insisting on a
+    workspace there would mean re-resolving one just to throw it away, which is how a
+    merge ends up cutting a second fork.
+    """
+
+    merge: Callable[[], Awaitable[MergeReport]]
+    discard: Callable[[], Awaitable[None]]
+
+
+def reopen_fork(
+    caps: ServiceContainer,
+    *,
+    kind: str,
+    target: ForkTarget,
+) -> OpenFork | None:
+    """Handles for landing a fork somebody else took, or None when its manager is absent.
+
+    ``kind`` is the workspace kind the fork was taken in — stored when it was taken, not
+    guessed from the mode here, because this runs after everything that knew is gone.
+    """
+    if kind == "worktree":
+        projects = caps.get_optional(ProjectStore)
+        worktrees = caps.get_optional(WorktreeManager)
+        if projects is None or worktrees is None or not target.project_id:
+            return None
+
+        async def where() -> dict:
+            project = await projects.get(target.owner_id, target.project_id or "")
+            return {
+                "project_id": target.project_id,
+                "root": Path(project.root_path),
+                "conversation_id": target.conversation_id,
+                "delegation_id": target.delegation_id,
+            }
+
+        async def merge_worktree() -> MergeReport:
+            return await worktrees.merge_back(**await where())
+
+        async def discard_worktree() -> None:
+            await worktrees.discard_child(**await where())
+
+        return OpenFork(merge=merge_worktree, discard=discard_worktree)
+
+    sessions = caps.get_optional(SandboxSessionManager)
+    if sessions is None:
+        return None
+    return OpenFork(
+        merge=lambda: sessions.merge_back(target.child_key, target.parent_key),
+        discard=lambda: sessions.purge(target.child_key),
     )
 
 

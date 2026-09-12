@@ -23,6 +23,9 @@ The things worth pinning are the ones that would quietly stop being true:
 
 from __future__ import annotations
 
+import asyncio
+from uuid import uuid4
+
 import pytest
 
 from services.subagent_store import SubagentStore
@@ -54,11 +57,27 @@ def _records(app) -> SubagentStore:
 
 
 async def _settle(app, run_id: str) -> None:
-    """Let the submitted run finish — it is a real Run on the real registry."""
+    """Let the submitted run finish, *and* let the hooks that react to it finish too.
+
+    A run's terminal hooks are background tasks, so awaiting the run alone leaves the wake
+    — which settles the sub-agent's row — still in flight. A test that read the register
+    there would be racing it.
+    """
     run = app.state.runs.get(run_id)
     assert run is not None
     if run.task is not None:
         await run.task
+    # Looped, not a single gather: the dispatcher is invoked as the run settles, so a
+    # snapshot taken the instant the task returns can still be empty, and a hook that
+    # schedules nothing on its first pass may on its second.
+    for _ in range(5):
+        pending = list(app.state.run_terminal_tasks)
+        if not pending:
+            await asyncio.sleep(0)
+            if not app.state.run_terminal_tasks:
+                return
+            continue
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 class TestLaunching:
@@ -189,23 +208,33 @@ class TestTheRegister:
             # transcript nothing can name.
             assert rows[0].spec_name == "explorer"
 
-    async def test_a_stranded_row_is_reconciled_rather_than_left_running(self, monkeypatch):
+    async def test_a_stranded_row_is_reconciled_rather_than_left_running(self):
         async with client_app() as (_client, app):
-            patch_model_resolution(monkeypatch, output_text="done")
-            started = await _launcher(app).launch(
-                "operator",
-                EXPLORER,
-                "look",
-                parent=SubagentParent(conversation_id="parent-1"),
-            )
-            await _settle(app, started.run_id)
             records = _records(app)
-            # However it ended, put it back to how a process that died would leave it.
-            await records.set_status(started.subagent_id, "running")
+            # Written directly rather than by launching one: what a restart leaves behind
+            # is a row with no run, which is exactly this and nothing else. Going through
+            # a real launch would mean racing the very hook that settles it.
+            subagent_id = f"stranded-{uuid4().hex}"
+            await records.record(
+                subagent_id=subagent_id,
+                owner_id="operator",
+                parent_conversation_id="parent-1",
+                child_conversation_id="child-1",
+                run_id="gone-with-the-process",
+                parent_run_id=None,
+                spec_name="explorer",
+                task="look",
+                workspace_policy="shared",
+                workspace_key="parent-1",
+                delegation_id=None,
+            )
 
-            assert await records.reconcile_stranded() >= 1
+            await records.reconcile_stranded()
 
-            row = await records.get(started.subagent_id, "operator")
+            # The count is deliberately not asserted: the pass is global, so it reflects
+            # whatever else the suite has left lying around. What matters is what happened
+            # to *this* row.
+            row = await records.get(subagent_id, "operator")
             assert row is not None
             # A row still live after a restart describes work that stopped when the
             # process did: left alone it counts against the cap and promises a report
