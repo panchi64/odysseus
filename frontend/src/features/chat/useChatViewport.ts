@@ -155,6 +155,9 @@ export interface ChatViewport {
   hasFocus: () => boolean;
   panelRef: (el: HTMLDivElement) => void;
   focusPanel: () => void;
+  /** Give the caret back to the control that opens the panel. What a close does once
+   *  there is no panel left to focus — the same restore `closeSheet` performs. */
+  focusTrigger: () => void;
   /** For the row the conversation and the pane share their width in. */
   rowRef: (el: HTMLDivElement) => void;
   /** For the header control that opens the pane, so closing can restore focus. */
@@ -265,7 +268,20 @@ export function useChatViewport(
     // on arrival, and only upward: a surface opened and closed repeatedly must not
     // ratchet the panel wider each time.
     widenFor(panelSurfacesOf(next));
-    patch({ layout: next, lastLayout: next, focused: id });
+    // Which surface is now current. Opening one makes it current; *closing* one must
+    // not, and it used to — `focused` was left pointing at the pane that had just gone,
+    // so the full-screen sheet titled itself after it and the surface-scoped bindings
+    // gated on it. On a close the operator's own pane keeps the caret whenever it
+    // survives: closing something they were not working in is not a reason to move
+    // them, and `surfacesOf` lists strips first, so falling back unconditionally would
+    // hand a stack of panels to the task strip above them.
+    const current = state().focused;
+    const focused = hasSurface(next, id)
+      ? id
+      : current !== null && hasSurface(next, current)
+        ? current
+        : (surfacesOf(next)[0] ?? null);
+    patch({ layout: next, lastLayout: next, focused });
   };
 
   // Which surface the operator is in. Persisted rather than held in a signal of its
@@ -505,6 +521,7 @@ export function useChatViewport(
     hasFocus,
     panelRef: setPanelEl,
     focusPanel: () => panelEl()?.focus(),
+    focusTrigger: () => trigger?.focus(),
     rowRef: (el) => {
       rowEl = el;
     },

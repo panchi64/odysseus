@@ -1,0 +1,79 @@
+import { children, Show, type JSX } from "solid-js";
+import { Button, Icon, Text, Tooltip } from "~/ui";
+import { surfaceSpec, type SurfaceId } from "../viewport/surfaces";
+
+/**
+ * What every pane wears, drawn by the host rather than by the surface inside it.
+ *
+ * A pane could be dismissed three ways — the header button that opened it, a right-click,
+ * or `shift+w` — and **none of them was visible from the pane itself**. Only the View
+ * carried a close control, because the View was the whole panel back when the panel held
+ * exactly one thing. A region the operator cannot see how to shut is one they stop
+ * opening, so the affordance belongs on every pane; and since the host is the one place
+ * that knows a pane's identity (`surfaceSpec`) and how to close it (`closeSurface`), it is
+ * the host that draws it. A surface does not get to forget.
+ *
+ * **The label is the host's, so a surface must not print its own.** Tasks, Agents and
+ * Files each drew a title row of their own, which is why those rows are gone: two headings
+ * an inch apart saying the same word is worse than either alone. What is left of those
+ * rows — a progress figure, a count — arrives here as `meta`, opaque JSX the frame places
+ * and never inspects. That is the whole of what keeps this component surface-agnostic.
+ *
+ * **`header={false}` is for a pane inside a stack**, where the tab strip is already the
+ * label and the close rides at its end. The frame still wraps the body, so the box a
+ * stacked surface is laid out in is the same box a leaf gets.
+ */
+export function PaneFrame(props: {
+  id: SurfaceId;
+  /** Right-aligned, before the close button — the surface's own figures. */
+  meta?: JSX.Element;
+  /** Draw the header. Default true; false inside a tabbed stack. */
+  header?: boolean;
+  onClose: () => void;
+  children: JSX.Element;
+}): JSX.Element {
+  const spec = () => surfaceSpec(props.id);
+  // Resolved once: a slot prop is a getter, so guarding on it and then rendering it
+  // builds the same elements twice.
+  const meta = children(() => props.meta);
+  // No height of its own: the frame is a flex child of the box the host lays panes out
+  // in, so it stretches to that. An `h-full` here would be a percentage of a strip's
+  // content-sized parent — the one case where it means nothing.
+  return (
+    <div class="flex min-h-0 min-w-0 flex-1 flex-col">
+      <Show when={props.header !== false}>
+        <div class="flex shrink-0 items-center gap-2 px-3 py-2">
+          <Icon name={spec().icon} class="shrink-0 text-dim" />
+          <Text variant="label" tone="bright">
+            {spec().label}
+          </Text>
+          <div class="ml-auto flex shrink-0 items-center gap-2">
+            <Show when={meta()}>{meta()}</Show>
+            <PaneCloseButton label={spec().label} onClose={props.onClose} />
+          </div>
+        </div>
+      </Show>
+      <div class="flex min-h-0 min-w-0 flex-1">{props.children}</div>
+    </div>
+  );
+}
+
+/** The close itself, shared with the tab strip a stacked pane wears instead of a
+ *  header — one button in two places, so they cannot drift into two gestures. */
+export function PaneCloseButton(props: {
+  /** The surface's label, spoken to a screen reader: "Close Changes". */
+  label: string;
+  onClose: () => void;
+}): JSX.Element {
+  return (
+    <Tooltip label="Close" side="bottom">
+      <Button
+        variant="ghost"
+        size="sm"
+        leading="close"
+        aria-label={`Close ${props.label}`}
+        onClick={() => props.onClose()}
+      />
+    </Tooltip>
+  );
+}

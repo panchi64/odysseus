@@ -18,9 +18,11 @@ import {
   type MenuItem,
 } from "~/ui";
 import {
+  SURFACE_META,
   SURFACE_RENDERERS,
   type SurfaceContext,
 } from "../viewport/surfaceRenderers";
+import { PaneCloseButton, PaneFrame } from "./PaneFrame";
 import {
   isSurfaceId,
   surfacesOf,
@@ -85,6 +87,22 @@ export function ViewportHost(props: {
    *  each for a thing only one of them can be showing. */
   const menu = createContextMenu();
 
+  /**
+   * Close one pane, from its own chrome or from its menu.
+   *
+   * Focus is handed on afterwards, because the element that held it has just been
+   * removed and would otherwise leave the caret on `<body>` — silently disarming every
+   * panel-scoped binding the operator would reach for next, and restarting the next Tab
+   * at the top of the document. To the panel while there is still one; to the control
+   * that opens it once the last pane has closed the region, which is where `closeSheet`
+   * already puts it.
+   */
+  const closePane = (id: SurfaceId): void => {
+    vp().closeSurface(id);
+    if (vp().shown()) vp().focusPanel();
+    else vp().focusTrigger();
+  };
+
   /** What right-clicking a pane offers. Built when the menu opens, so it describes
    *  the layout as it is at that moment rather than as it was at render. */
   const paneMenu = (id: SurfaceId): MenuItem[] => {
@@ -94,7 +112,7 @@ export function ViewportHost(props: {
       {
         label: `Close ${surfaceSpec(id).label}`,
         icon: "close",
-        onSelect: () => vp().closeSurface(id),
+        onSelect: () => closePane(id),
       },
       {
         label: "Close others",
@@ -130,22 +148,48 @@ export function ViewportHost(props: {
    * deepest pane wins, which is what `stopPropagation` buys — a pane inside the
    * panel offers its own actions and the panel behind it must not answer the same
    * gesture.
+   *
+   * The chrome around it is `PaneFrame`'s and never the surface's — every pane is
+   * named and closable in the same place, whatever it holds. Inside a stack the tab
+   * strip is already the name, so the header is suppressed there and the close rides
+   * at the strip's end instead.
    */
-  const renderSurface = (id: Accessor<SurfaceId>): JSX.Element => (
-    <div
-      class="flex min-h-0 min-w-0 flex-1"
-      onContextMenu={(e) => {
-        e.stopPropagation();
-        menu.openAt(e, id());
-      }}
-      onFocusIn={() => vp().setFocusedSurface(id())}
-    >
-      {SURFACE_RENDERERS[id()](props.ctx)}
-    </div>
-  );
+  const renderSurface = (
+    id: Accessor<SurfaceId>,
+    opts?: { header?: boolean },
+  ): JSX.Element => {
+    // Whether this pane draws its own header is fixed by the call site, not reactive —
+    // and where it does not, the meta is left unbuilt rather than built and dropped:
+    // the strip beside it is already rendering the same figures, and for Tasks each
+    // build is a whole pass over the thread's task list.
+    const framed = opts?.header !== false;
+    return (
+      <div
+        class="flex min-h-0 min-w-0 flex-1"
+        onContextMenu={(e) => {
+          e.stopPropagation();
+          menu.openAt(e, id());
+        }}
+        onFocusIn={() => vp().setFocusedSurface(id())}
+      >
+        <PaneFrame
+          id={id()}
+          header={framed}
+          meta={framed ? SURFACE_META[id()]?.(props.ctx) : undefined}
+          onClose={() => closePane(id())}
+        >
+          {SURFACE_RENDERERS[id()](props.ctx)}
+        </PaneFrame>
+      </div>
+    );
+  };
 
   const renderStack = (node: Accessor<StackPane>): JSX.Element => (
     <div class="flex min-h-0 min-w-0 flex-1 flex-col">
+      {/* The strip is this pane's header, so it carries what a leaf's header would:
+          the active surface's own figures, and the close for that surface. Not an
+          `×` per tab — three hit targets in a two-tab strip, on a strip that already
+          scrolls when the labels outgrow it. */}
       <Tabs
         fill
         items={node().surfaces.map((s) => ({
@@ -154,6 +198,15 @@ export function ViewportHost(props: {
         }))}
         value={node().active}
         onChange={(v) => vp().revealSurface(v as SurfaceId)}
+        trailing={
+          <>
+            {SURFACE_META[node().active]?.(props.ctx)}
+            <PaneCloseButton
+              label={surfaceSpec(node().active).label}
+              onClose={() => closePane(node().active)}
+            />
+          </>
+        }
       />
       {/* Every member stays mounted; only the active one is shown. */}
       <div class="relative min-h-0 flex-1">
@@ -166,7 +219,7 @@ export function ViewportHost(props: {
               )}
               aria-hidden={s !== node().active}
             >
-              {renderSurface(() => s)}
+              {renderSurface(() => s, { header: false })}
             </div>
           )}
         </For>

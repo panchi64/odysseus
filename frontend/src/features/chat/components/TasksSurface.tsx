@@ -1,9 +1,9 @@
 import { createMemo, Index, Show, type JSX } from "solid-js";
-import { ListGroupHeader, Text } from "~/ui";
+import { ListGroupHeader } from "~/ui";
 import type { TaskItem } from "~/lib/stream/events";
 import type { Subagent } from "../data";
-import { flattenGroups, groupTasks } from "../taskGroups";
-import { TaskRows, taskSummary } from "./TaskRows";
+import { groupTasks } from "../taskGroups";
+import { TaskRows } from "./TaskRows";
 
 /**
  * The agent's task list, as a surface — **and its sub-agents' lists under it**.
@@ -38,23 +38,11 @@ export function TasksSurface(props: {
 }): JSX.Element {
   const groups = createMemo(() => groupTasks(props.items(), props.subagents()));
 
-  // Cancelled tasks are already out of `total`, so this counts what the lists are
-  // still claiming they will do rather than everything anyone ever said.
-  const progress = (): string => {
-    const { done, total } = taskSummary(flattenGroups(groups()));
-    return `${done}/${total}`;
-  };
-
   return (
-    <div class="flex flex-col gap-1 px-3 py-2">
-      <div class="flex items-baseline justify-between gap-2">
-        <Text variant="label" tone="bright">
-          Tasks
-        </Text>
-        <Text variant="micro" tone="dim">
-          {progress()}
-        </Text>
-      </div>
+    // No title and no progress figure: the pane's frame draws both, for every surface
+    // rather than for the three that happened to draw their own. The count it shows is
+    // this same derivation — see `SURFACE_META`.
+    <div class="flex w-full flex-col gap-1 px-3 pb-2">
       <div
         class="overflow-y-auto"
         style={{ "max-height": `${props.maxRows * 1.75}rem` }}

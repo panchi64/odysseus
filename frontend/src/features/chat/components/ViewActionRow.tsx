@@ -28,10 +28,10 @@ function ToggleAction(props: {
 }
 
 /** The viewer's action row — one flex row of ghost controls mounted in the
- *  panel header: DOWNLOAD, the KEEPER pin, font size, soft-wrap, REFRESH, the
- *  fullscreen toggle, and COLLAPSE. Presentation-only: every control relays
- *  operator intent through props or the shared viewer-persistence seam; nothing
- *  here decides anything. */
+ *  panel header: DOWNLOAD, the KEEPER pin, font size, soft-wrap, REFRESH and the
+ *  fullscreen toggle. Presentation-only: every control relays operator intent
+ *  through props or the shared viewer-persistence seam; nothing here decides
+ *  anything. */
 export function ViewActionRow(props: {
   /** Rendered only when provided — P5 wires the backend keeper flip. */
   keeper?: boolean;
@@ -45,7 +45,6 @@ export function ViewActionRow(props: {
   onRefresh?: () => void;
   fullscreen: boolean;
   onToggleFullscreen: () => void;
-  onClose: () => void;
 }): JSX.Element {
   const download = () => activeDownload();
   const decFont = () =>
@@ -120,21 +119,15 @@ export function ViewActionRow(props: {
           />
         </Tooltip>
       </Show>
+      {/* No collapse here any more: the pane's own frame carries the close, for
+          every surface rather than for the one that grew a control of its own back
+          when it *was* the panel. Two closes an inch apart is one too many. */}
       <ToggleAction
         label="Expand"
         active={props.fullscreen}
         ariaLabel="Toggle fullscreen"
         onToggle={props.onToggleFullscreen}
       />
-      <Tooltip label="Collapse" side="bottom">
-        <Button
-          variant="ghost"
-          size="sm"
-          leading="panel-right"
-          aria-label="Collapse viewport"
-          onClick={props.onClose}
-        />
-      </Tooltip>
     </div>
   );
 }

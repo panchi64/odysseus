@@ -167,10 +167,9 @@ export function FilesSurface(props: {
           />
         }
       >
-        <div class="flex shrink-0 items-center justify-between gap-2 px-3 py-2">
-          <Text variant="label" tone="bright">
-            Files
-          </Text>
+        {/* The name is the pane frame's; what stays here is the one control, which
+            is a control over this surface's own state rather than a figure about it. */}
+        <div class="flex shrink-0 items-center justify-end gap-2 px-3 pb-2">
           <Button
             variant="ghost"
             size="sm"

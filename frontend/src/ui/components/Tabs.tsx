@@ -1,4 +1,4 @@
-import { For, splitProps, type JSX } from "solid-js";
+import { children, For, Show, splitProps, type JSX } from "solid-js";
 import { cx } from "../cx";
 
 export interface TabItem {
@@ -20,6 +20,11 @@ export interface TabsProps {
    *  tabs sized to their labels read as a pair of buttons that happen to be
    *  there. */
   fill?: boolean;
+  /** Controls parked at the end of the strip — a close for the pane the tabs
+   *  name, a count. For a strip that *is* a region's header: the actions belong
+   *  on the same rule as the tabs, and a row of their own under it would be a
+   *  second band of chrome for one button. */
+  trailing?: JSX.Element;
   class?: string;
 }
 
@@ -31,53 +36,73 @@ export function Tabs(props: TabsProps): JSX.Element {
     "value",
     "onChange",
     "fill",
+    "trailing",
     "class",
   ]);
+  const trailing = children(() => local.trailing);
   return (
+    // The strip, which is the tablist *and* whatever is parked at its end. Those are
+    // two elements rather than one because `role="tablist"` may hold tabs and nothing
+    // else — a close button inside it is announced as part of the tab set and counted
+    // in "tab N of M". Without a `trailing` the extra box changes nothing: the rule and
+    // the padding stay out here, the scrolling and the gap stay on the tabs.
     <div
       class={cx(
-        // Scrolls rather than wrapping or clipping when the labels outgrow the
-        // container — a tab strip that silently hides its last tab is worse than one
-        // with a scrollbar.
-        // No rule under the strip (§7): the selected tab's own fill marks the
-        // set, and the old border-b drew a line across every screen that had
-        // tabs whether or not anything needed dividing there.
-        "scrollbar-thin flex items-stretch gap-1 overflow-x-auto",
+        "flex items-stretch",
         // A filling strip draws the one rule §7 sanctions: it is not decoration
         // between two regions that space already separates, it is the edge of
         // the header itself, and the content below starts against it.
         local.fill && "border-b border-line px-2 py-1.5",
         local.class,
       )}
-      role="tablist"
     >
-      <For each={local.items}>
-        {(tab) => {
-          const active = () => tab.value === local.value;
-          return (
-            <button
-              type="button"
-              role="tab"
-              aria-selected={active()}
-              onClick={() => local.onChange(tab.value)}
-              class={cx(
-                "rounded-ctl px-3 py-1.5 text-body font-sans whitespace-nowrap transition-colors",
-                "outline-none focus-visible:shadow-focus",
-                local.fill && "min-w-0 flex-1",
-                // Selected reads on three axes at once — raised fill, `shadow-1`'s
-                // hairline ring so it is an object rather than a tint, and the
-                // only medium weight in the strip. The fill alone was too small a
-                // step off the surface behind it to find at a glance.
-                active()
-                  ? "bg-raised text-bright font-medium shadow-1"
-                  : "font-normal text-dim hover:bg-raised hover:text-text",
-              )}
-            >
-              {tab.label}
-            </button>
-          );
-        }}
-      </For>
+      {/* Scrolls rather than wrapping or clipping when the labels outgrow the
+          container — a tab strip that silently hides its last tab is worse than one
+          with a scrollbar.
+          No rule under the strip (§7): the selected tab's own fill marks the set, and
+          the old border-b drew a line across every screen that had tabs whether or not
+          anything needed dividing there. */}
+      <div
+        class="scrollbar-thin flex min-w-0 flex-1 items-stretch gap-1 overflow-x-auto"
+        role="tablist"
+      >
+        <For each={local.items}>
+          {(tab) => {
+            const active = () => tab.value === local.value;
+            return (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={active()}
+                onClick={() => local.onChange(tab.value)}
+                class={cx(
+                  "rounded-ctl px-3 py-1.5 text-body font-sans whitespace-nowrap transition-colors",
+                  "outline-none focus-visible:shadow-focus",
+                  local.fill && "min-w-0 flex-1",
+                  // Selected reads on three axes at once — raised fill, `shadow-1`'s
+                  // hairline ring so it is an object rather than a tint, and the
+                  // only medium weight in the strip. The fill alone was too small a
+                  // step off the surface behind it to find at a glance.
+                  active()
+                    ? "bg-raised text-bright font-medium shadow-1"
+                    : "font-normal text-dim hover:bg-raised hover:text-text",
+                )}
+              >
+                {tab.label}
+              </button>
+            );
+          }}
+        </For>
+      </div>
+      {/* `items-center` because the strip itself stretches its tabs, and `shrink-0`
+          so the controls hold their size while the tablist beside them scrolls.
+
+          Resolved through `children()` rather than read twice: a slot prop is a
+          getter, and asking for it in the guard *and* in the body builds the
+          elements twice — once only to be thrown away. */}
+      <Show when={trailing()}>
+        <div class="flex shrink-0 items-center gap-2 pl-2">{trailing()}</div>
+      </Show>
     </div>
   );
 }

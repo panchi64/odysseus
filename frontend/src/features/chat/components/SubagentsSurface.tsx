@@ -1,5 +1,5 @@
 import { For, Show, createMemo, createSignal, type JSX } from "solid-js";
-import { Disclosure, EmptyState, Text } from "~/ui";
+import { Disclosure, EmptyState } from "~/ui";
 import { isLive, type Subagent } from "../data";
 import { SubagentCard } from "./SubagentCard";
 import { SubagentDetail } from "./SubagentDetail";
@@ -70,17 +70,13 @@ export function SubagentsSurface(props: {
       .sort(byUrgency);
   const finished = (): Subagent[] =>
     props.subagents().filter((s) => s.status === "done");
-  // Derived once and read twice, and it is the count that decides the wording as well as
-  // supplying its number — a thread with nothing in the panel has neither "0 working" nor
-  // "0 done" to say, and says nothing.
-  const working = (): number => props.subagents().filter(isLive).length;
 
   const card = (subagent: Subagent): JSX.Element => (
     <SubagentCard subagent={subagent} onOpen={() => setOpenId(subagent.id)} />
   );
 
   return (
-    <div class="flex h-full min-h-0 flex-col gap-2 px-3 py-2">
+    <div class="flex h-full min-h-0 w-full flex-col gap-2 px-3 pb-2">
       {/* One sub-agent, or all of them — never both. A sub-agent that is closed out
           while its view is open (a thread switch, a cancel) resolves to nothing and
           drops back to the list rather than holding a stale card on screen.
@@ -101,21 +97,11 @@ export function SubagentsSurface(props: {
         )}
       </Show>
 
+      {/* No title row and no count: the pane's frame carries both now, so they are
+          there whichever surface is in the pane and whether or not a sub-agent's own
+          view is open over the list. */}
       <Show when={!open()}>
         <div class="flex min-h-0 flex-col gap-2 overflow-y-auto">
-          <div class="flex items-baseline justify-between gap-2">
-            <Text variant="label" tone="bright">
-              Agents
-            </Text>
-            <Show when={props.subagents().length > 0}>
-              <Text variant="micro" tone="dim">
-                {working() > 0
-                  ? `${working()} working`
-                  : `${props.subagents().length} done`}
-              </Text>
-            </Show>
-          </div>
-
           <Show
             when={showing().length > 0 || finished().length > 0}
             fallback={

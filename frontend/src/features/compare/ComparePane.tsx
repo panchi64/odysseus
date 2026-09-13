@@ -219,7 +219,6 @@ export function ComparePaneView(props: {
             onToggleWrap={() => setSoftWrap((on) => !on)}
             fullscreen={wide()}
             onToggleFullscreen={() => setWide((on) => !on)}
-            onClose={() => setOpenKey(null)}
           />
         </div>
       </Modal>

@@ -45,7 +45,6 @@ export function ViewportPanel(props: {
   onToggleWrap: () => void;
   fullscreen: boolean;
   onToggleFullscreen: () => void;
-  onClose: () => void;
   /** Rendered only when provided — P5 wires the backend keeper flip. */
   onKeeper?: (item: ViewItem) => void;
 }): JSX.Element {
@@ -97,8 +96,13 @@ export function ViewportPanel(props: {
           no ring of its own. A card here was the parent container with rounded
           corners — a second box wrapped *around* the frame, when the frame is
           meant to be the edge of the thing itself. */}
+      {/* No `label`: the pane frame around this surface already names it, and a
+          second "View" an inch below the first is chrome arguing with itself. What
+          is left in the header is the action row, which is a toolbar rather than a
+          title — the frame's own `meta` slot is for a surface's *figures*, and these
+          controls read the panel's local stage state (the selected version, the
+          reload nonce) that only this component holds. */}
       <Panel
-        label="View"
         meta={
           <ViewActionRow
             keeper={selected()?.keeper}
@@ -116,7 +120,6 @@ export function ViewportPanel(props: {
             }
             fullscreen={props.fullscreen}
             onToggleFullscreen={props.onToggleFullscreen}
-            onClose={props.onClose}
           />
         }
         bare
