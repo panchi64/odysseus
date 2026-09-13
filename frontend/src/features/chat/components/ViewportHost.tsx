@@ -262,10 +262,18 @@ export function ViewportHost(props: {
         <div class="flex min-h-0 min-w-0" style={{ flex: `${ratio()} 1 0%` }}>
           {renderPane(() => node().a, [...path, "a"])}
         </div>
+        {/* The rule paints at rest, unlike the panel's own outer splitter. That
+            one sits beside a region that already brackets itself, so a second
+            line three pixels outside the frame would be the doubled border §7
+            exists to stop. Here nothing else draws the boundary: two panes tile
+            the same frosted region flush against each other, with no gap to
+            separate them and no fill to tell them apart — a bare surface inside
+            a framed region is the rule, so surface value is not available
+            either. That is precisely §7's last case, where a line does work
+            nothing else can. */}
         <ResizeHandle
           aria-label="Resize panes"
           orientation={node().dir === "col" ? "vertical" : "horizontal"}
-          divider="hover"
           onResize={onResize}
           onResizeEnd={onResizeEnd}
         />
@@ -326,8 +334,25 @@ export function ViewportHost(props: {
           gate its own branches in Solid — the child expression compiles to a
           computation of its own and re-runs when the layout changes, so a panel
           region that has just emptied reaches the renderer as null. */}
+      {/* A strip is separated from what follows it by a hairline, for the same
+          reason the splitter between two panes paints one: strips tile the
+          region flush, and a strip's last row against the next surface's header
+          is two surfaces with nothing between them. The rule is suppressed on
+          the last thing in the host — a line under the bottom-most strip when
+          no panels follow brackets the frame rather than dividing anything. */}
       <For each={props.layout.strips}>
-        {(id) => <div class="shrink-0">{renderSurface(() => id)}</div>}
+        {(id, i) => (
+          <div
+            class={cx(
+              "shrink-0",
+              (i() < props.layout.strips.length - 1 ||
+                props.layout.panels !== null) &&
+                "border-b border-line",
+            )}
+          >
+            {renderSurface(() => id)}
+          </div>
+        )}
       </For>
       <Show when={props.layout.panels}>
         {(panels) => (

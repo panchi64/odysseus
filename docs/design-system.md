@@ -338,7 +338,8 @@ The order of preference for separating two things:
 
 - it is a cell edge in a **ruled data grid** — a table, an instrument band, a genuinely tabular list, where the rule aligns values across rows and is doing structural work;
 - it is a **control's own edge**, where the border *is* the affordance (a secondary button, a text field's resting state);
-- it is a **process timeline** rail, where an unbroken vertical line is the thing being communicated.
+- it is a **process timeline** rail, where an unbroken vertical line is the thing being communicated;
+- it is the **boundary between two tiled panes** — a splitter, or a strip stacked on the region below it. Panes fill one surface edge to edge, so there is no gap for space to work in, and anything inside a framed region is bare (§8), so there is no fill for surface value to work with. Both of the other devices are unavailable by construction, which is exactly the case this last resort is for. The splitter's own hairline is that line; it does not draw a second one.
 
 **A border is not justified** under a page title, under a tab strip, around every panel, under every list row, between a panel's header and its body, around a chip, or down the side of a nav rail. All of those were borders drawn where the eye had already found the break.
 
