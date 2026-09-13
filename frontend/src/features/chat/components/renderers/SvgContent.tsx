@@ -13,6 +13,7 @@ import {
 } from "solid-js";
 import { ErrorState, Lightbox, LoadingText } from "~/ui";
 import { rememberScroll } from "../../scrollMemory";
+import { settled } from "~/lib/resource";
 
 async function toSvgObjectUrl(blob: Blob): Promise<string> {
   const bytes = await blob.arrayBuffer();
@@ -40,7 +41,7 @@ export function SvgContent(props: {
       when={!url.error}
       fallback={<ErrorState message="Could not load this file." />}
     >
-      <Show when={url()} fallback={<LoadingText />}>
+      <Show when={settled(url)} fallback={<LoadingText />}>
         {(u) => (
           <div
             ref={(el) => rememberScroll(el, scrollKey)}

@@ -4,6 +4,7 @@ import {
   type JSX,
   type Resource as SolidResource,
 } from "solid-js";
+import { settled } from "~/lib/resource";
 import { LoadingText } from "./LoadingText";
 import { EmptyState } from "./EmptyState";
 import { ErrorState } from "./ErrorState";
@@ -39,6 +40,13 @@ export function Resource<T>(props: ResourceProps<T>): JSX.Element {
   // falsy — 0, "", false). Use `state`, not truthiness, to tell loading apart.
   const resolved = () =>
     props.data.state === "ready" || props.data.state === "refreshing";
+  // **Never call the resource itself** (`~/lib/resource` says why): read inside a
+  // tracked scope mid-fetch, it suspends the nearest boundary, which for a screen
+  // is the shell's around the whole route. A refetch behind an already-rendered
+  // list would then pull the entire page offscreen behind the shell's Loading
+  // line, rather than leaving the list up the way the `refreshing` arm above
+  // intends.
+  const value = (): T => settled(props.data) as T;
   return (
     <Show
       when={!props.data.error}
@@ -55,14 +63,14 @@ export function Resource<T>(props: ResourceProps<T>): JSX.Element {
         fallback={props.loading ?? <LoadingText label={props.loadingLabel} />}
       >
         <Show
-          when={!props.isEmpty?.(props.data() as T)}
+          when={!props.isEmpty?.(value())}
           fallback={
             props.empty ?? (
               <EmptyState message={props.emptyMessage} hint={props.emptyHint} />
             )
           }
         >
-          {props.children(() => props.data() as NonNullable<T>)}
+          {props.children(() => value() as NonNullable<T>)}
         </Show>
       </Show>
     </Show>

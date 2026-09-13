@@ -25,6 +25,7 @@ import {
 import { rememberScroll } from "../../scrollMemory";
 import { downloadBlob } from "../../viewport/downloadRegistry";
 import { fontStepClass } from "./fontStep";
+import { settled } from "~/lib/resource";
 
 const ROW_CAP = 5_000;
 
@@ -114,7 +115,7 @@ export function CsvTable(props: {
     (blob) => blob.text(),
   );
 
-  const rows = createMemo(() => parseCsv(text() ?? ""));
+  const rows = createMemo(() => parseCsv(settled(text) ?? ""));
   const header = createMemo(() => rows()[0] ?? []);
   const body = createMemo(() => rows().slice(1));
 
@@ -160,7 +161,7 @@ export function CsvTable(props: {
       when={!text.error}
       fallback={<ErrorState message="Could not load this file." />}
     >
-      <Show when={text() !== undefined} fallback={<LoadingText />}>
+      <Show when={settled(text) !== undefined} fallback={<LoadingText />}>
         <div class="flex h-full min-h-0 flex-col">
           <Show when={truncated()}>
             <div class="flex shrink-0 items-center justify-between gap-2 px-2 py-1.5">

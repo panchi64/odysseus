@@ -1,6 +1,7 @@
 import { createResource, For, Show, type JSX } from "solid-js";
 import { Chip, confirm, Icon, MetaAction, Popover, Text, toast } from "~/ui";
 import { fetchGrants, revokeGrant } from "../data";
+import { settled } from "~/lib/resource";
 import { MetaSep } from "./MetaSep";
 import type { ApprovalGrant } from "../model";
 
@@ -44,10 +45,10 @@ export function ConversationGrants(props: {
     }),
   );
 
-  // `.latest`, not the resource — reading it while pending would suspend the
+  // `settled`, not the resource — reading it while pending would suspend the
   // content region on every thread switch.
   const current = () => {
-    const g = grants.latest;
+    const g = settled(grants);
     return g && g.id === props.conversationId() ? g : undefined;
   };
   const items = (): ApprovalGrant[] => current()?.items ?? [];

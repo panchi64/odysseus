@@ -31,6 +31,7 @@ import { extensionOf, type PriorVersion } from "../viewport/viewItems";
 import { rememberScroll } from "../scrollMemory";
 import { createDownloadSlot } from "../viewport/downloadRegistry";
 import { SnapshotFileTree } from "./SnapshotFileTree";
+import { settled } from "~/lib/resource";
 
 /** "Compare vs" value for plain code (no diff). */
 const NO_DIFF = "";
@@ -118,9 +119,14 @@ export function ViewSnapshotCode(props: {
         : undefined,
     ([snapshotId, b]) => fetchSnapshotDiffs(snapshotId, b),
   );
+  // `latest` throughout this file, never the resource itself: a resource read
+  // mid-fetch inside a tracked scope suspends the nearest `Suspense` — the
+  // pane's — so picking a file or a compare base would drop the whole pane to a
+  // Loading line instead of holding the file that is on screen until the next
+  // one arrives. The arms below already say what to render with nothing in hand.
   const selectedDiff = createMemo(() => {
     const path = props.selectedPath;
-    return path ? diffs()?.find((d) => d.path === path) : undefined;
+    return path ? settled(diffs)?.find((d) => d.path === path) : undefined;
   });
 
   const toOptions = createMemo<SelectOption[]>(() =>
@@ -223,10 +229,10 @@ export function ViewSnapshotCode(props: {
                             onRetry={() => void refetchText()}
                           />
                         </Match>
-                        <Match when={text() !== undefined}>
+                        <Match when={settled(text) !== undefined}>
                           <CodeBlock
                             ref={scrollRef}
-                            code={text()!}
+                            code={settled(text)!}
                             lang={extensionOf(path) ?? undefined}
                             fontStep={props.fontStep}
                             softWrap={props.softWrap}
@@ -244,7 +250,7 @@ export function ViewSnapshotCode(props: {
                             onRetry={() => void refetchDiffs()}
                           />
                         </Match>
-                        <Match when={diffs() && selectedDiff()?.diff}>
+                        <Match when={settled(diffs) && selectedDiff()?.diff}>
                           <DiffView
                             ref={scrollRef}
                             diff={selectedDiff()!.diff}
@@ -252,7 +258,7 @@ export function ViewSnapshotCode(props: {
                             softWrap={props.softWrap}
                           />
                         </Match>
-                        <Match when={diffs() && !selectedDiff()?.diff}>
+                        <Match when={settled(diffs) && !selectedDiff()?.diff}>
                           <EmptyState
                             message="No diff"
                             hint="This file is unchanged between the selected versions (or its diff is empty)."

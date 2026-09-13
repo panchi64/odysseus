@@ -19,6 +19,7 @@ import type { ViewItem } from "../viewport/viewItems";
 import { extensionOf } from "../viewport/viewItems";
 import { createDownloadSlot } from "../viewport/downloadRegistry";
 import { isEdited, SnapshotFileTree } from "./SnapshotFileTree";
+import { settled } from "~/lib/resource";
 
 /** Below this the tree and a file cannot share a row, so the pane shows one at a
  *  time. `w-56` of tree against a 320px pane leaves ~96px for the file. */
@@ -133,9 +134,13 @@ export function FilesSurface(props: {
         </div>
       </Show>
       <div class="min-h-0 flex-1 overflow-auto">
-        <Show when={text() !== undefined} fallback={<LoadingText />}>
+        {/* `latest`, not the resource: read mid-fetch inside a tracked scope it
+            suspends the nearest `Suspense` — the pane's — so picking the next
+            file would blank the pane rather than hold the current file until
+            the new one lands. */}
+        <Show when={settled(text) !== undefined} fallback={<LoadingText />}>
           <CodeBlock
-            code={text() ?? ""}
+            code={settled(text) ?? ""}
             lang={extensionOf(selectedPath()) ?? undefined}
             fontStep={props.fontStep}
             softWrap={props.softWrap}

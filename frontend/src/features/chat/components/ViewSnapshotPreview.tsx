@@ -14,6 +14,7 @@ import type { SnapshotFile, ViewSnapshotRef } from "../model";
 import { pickEntryHtml } from "../viewport/viewItems";
 import { createDownloadSlot } from "../viewport/downloadRegistry";
 import { SandboxedFrame } from "./SandboxedFrame";
+import { settled } from "~/lib/resource";
 
 /**
  * Renders a workspace snapshot's PREVIEW — its entry HTML page (index.html, else the
@@ -35,7 +36,11 @@ export function ViewSnapshotPreview(props: {
   fontStep?: number;
 }): JSX.Element {
   const entry = createMemo(() => {
-    const list = props.files();
+    // `latest`, not the resource itself: reading a resource mid-fetch inside a
+    // tracked scope suspends the nearest `Suspense` boundary, and this one's is
+    // the pane's — so a list refetch would blank the pane it is rendering into
+    // rather than leaving the page on screen until the new list lands.
+    const list = settled(props.files);
     return list ? pickEntryHtml(list) : undefined;
   });
   const renderUrl = useAuthedBlobUrl(() => {
@@ -69,7 +74,7 @@ export function ViewSnapshotPreview(props: {
           onRetry={props.onRetryFiles}
         />
       </Match>
-      <Match when={props.files() && !entry()}>
+      <Match when={settled(props.files) && !entry()}>
         <EmptyState
           message="No preview"
           hint="This version has no HTML page — use CODE to browse its files."
@@ -78,7 +83,7 @@ export function ViewSnapshotPreview(props: {
       <Match when={renderUrl.error}>
         <ErrorState message="Could not render this version." />
       </Match>
-      <Match when={renderUrl()}>
+      <Match when={settled(renderUrl)}>
         {(url) => (
           <SandboxedFrame
             src={url()}

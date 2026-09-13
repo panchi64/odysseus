@@ -25,6 +25,7 @@ import {
 } from "~/ui";
 import { rememberScroll } from "../../scrollMemory";
 import { fontStepMetrics } from "./fontStep";
+import { settled } from "~/lib/resource";
 
 const MAX_BYTES = 10 * 1024 * 1024; // 10 MB
 const MAX_LINES = 200_000;
@@ -69,12 +70,12 @@ export function RawTextViewer(props: {
   const font = createMemo(() => fontStepMetrics(props.fontStep));
 
   const lines = createMemo(() => {
-    const l = loaded();
+    const l = settled(loaded);
     if (!l) return [];
     return l.lines.length > MAX_LINES ? l.lines.slice(0, MAX_LINES) : l.lines;
   });
   const lineCountTruncated = createMemo(
-    () => (loaded()?.lines.length ?? 0) > MAX_LINES,
+    () => (settled(loaded)?.lines.length ?? 0) > MAX_LINES,
   );
 
   const wrapCapped = createMemo(
@@ -178,7 +179,7 @@ export function RawTextViewer(props: {
   };
 
   const truncationBanner = (): string | null => {
-    const l = loaded();
+    const l = settled(loaded);
     if (!l) return null;
     if (l.truncatedBytes) {
       return `SHOWING FIRST ${bytesLabel(MAX_BYTES)} OF ${bytesLabel(l.originalBytes)} — DOWNLOAD FOR THE FULL FILE`;
@@ -197,7 +198,10 @@ export function RawTextViewer(props: {
       when={!loaded.error}
       fallback={<ErrorState message="Could not load this file." />}
     >
-      <Show when={loaded()} fallback={<LoadingText label="Loading view…" />}>
+      <Show
+        when={settled(loaded)}
+        fallback={<LoadingText label="Loading view…" />}
+      >
         <div class="flex h-full min-h-0 flex-col">
           <div class="flex shrink-0 items-center gap-2 px-2 py-1.5">
             <Input

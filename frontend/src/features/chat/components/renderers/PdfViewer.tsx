@@ -15,6 +15,7 @@ import type {
   RenderTask,
 } from "pdfjs-dist/types/src/display/api";
 import { Button, ErrorState, LoadingText, Text } from "~/ui";
+import { settled } from "~/lib/resource";
 
 export function PdfViewer(props: {
   data: Blob;
@@ -110,7 +111,10 @@ export function PdfViewer(props: {
       when={!doc.error}
       fallback={<ErrorState message="Could not load this PDF." />}
     >
-      <Show when={doc()} fallback={<LoadingText label="Loading view…" />}>
+      <Show
+        when={settled(doc)}
+        fallback={<LoadingText label="Loading view…" />}
+      >
         {(d) => (
           <div class="flex h-full min-h-0 flex-col">
             <div class="flex shrink-0 items-center justify-center gap-3 px-2 py-1.5">

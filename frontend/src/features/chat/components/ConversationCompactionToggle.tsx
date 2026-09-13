@@ -1,6 +1,7 @@
 import { createResource, For, Show, type JSX } from "solid-js";
 import { MetaAction, Popover, Text, Tooltip, toast } from "~/ui";
 import { fetchAutoCompactOverride, setAutoCompactOverride } from "../data";
+import { settled } from "~/lib/resource";
 import { MetaSep } from "./MetaSep";
 
 const TOOLTIP =
@@ -36,10 +37,10 @@ export function ConversationCompactionToggle(props: {
       return s ? { id, ...s } : null;
     },
   );
-  // `.latest`, not the resource — reading it while pending would suspend the
+  // `settled`, not the resource — reading it while pending would suspend the
   // content region on every thread switch.
   const current = () => {
-    const s = state.latest;
+    const s = settled(state);
     return s && s.id === props.conversationId() ? s : undefined;
   };
 

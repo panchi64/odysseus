@@ -3,6 +3,7 @@ import { LoadingText, Text } from "~/ui";
 import { useChatSession, type Subagent } from "../data";
 import { isLive } from "../data";
 import { TurnBlocks } from "./TurnBlocks";
+import { settled } from "~/lib/resource";
 
 /**
  * What a sub-agent actually did — the body of its own view (`SubagentDetail`).
@@ -56,7 +57,7 @@ export function SubagentTranscript(props: { subagent: Subagent }): JSX.Element {
             That sub-agent's transcript could not be read.
           </Text>
         </Match>
-        <Match when={session.latest}>
+        <Match when={settled(session)}>
           {(loaded) => (
             <For each={loaded().messages}>
               {(message) => (

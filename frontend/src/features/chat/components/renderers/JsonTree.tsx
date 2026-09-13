@@ -14,6 +14,7 @@ import {
 import { cx, ErrorState, Icon, LoadingText, Text } from "~/ui";
 import { rememberScroll } from "../../scrollMemory";
 import { fontStepClass } from "./fontStep";
+import { settled } from "~/lib/resource";
 
 type JsonValue =
   string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
@@ -194,7 +195,7 @@ export function JsonTree(props: {
       | { ok: true; value: JsonValue }
       | { ok: false; raw: string }
       | undefined => {
-      const t = text();
+      const t = settled(text);
       if (t === undefined) return undefined;
       try {
         return { ok: true, value: JSON.parse(t) as JsonValue };

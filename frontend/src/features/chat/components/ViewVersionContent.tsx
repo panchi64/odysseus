@@ -21,6 +21,7 @@ import { PdfViewer } from "./renderers/PdfViewer";
 import { RawTextViewer } from "./renderers/RawTextViewer";
 import { SandboxedFrame } from "./SandboxedFrame";
 import { SvgContent } from "./renderers/SvgContent";
+import { settled } from "~/lib/resource";
 
 /** Text/code under this size render inline (existing `pre` / `CodeBlock`); at or
  *  over it, the same bytes hand off to `RawTextViewer`'s virtualized rendering. */
@@ -83,10 +84,11 @@ export function ViewVersionContent(props: {
   // Assume inline while the size isn't known yet, so the small/common case never
   // flashes the RawTextViewer arm first; a genuinely large file flips this once
   // `blob()` resolves with its real size.
-  const inline = (): boolean => (blob()?.size ?? 0) < INLINE_TEXT_THRESHOLD;
+  const inline = (): boolean =>
+    (settled(blob)?.size ?? 0) < INLINE_TEXT_THRESHOLD;
 
   const [text] = createResource(
-    () => (isTextLike() && inline() ? blob() : undefined),
+    () => (isTextLike() && inline() ? settled(blob) : undefined),
     (b) => b.text(),
   );
 
@@ -98,7 +100,7 @@ export function ViewVersionContent(props: {
       <Match when={objectUrl.error}>
         <ErrorState message="Could not load this version." />
       </Match>
-      <Match when={objectUrl()}>{(url) => render(url())}</Match>
+      <Match when={settled(objectUrl)}>{(url) => render(url())}</Match>
     </Switch>
   );
 
@@ -110,7 +112,7 @@ export function ViewVersionContent(props: {
           onRetry={() => void refetchBlob()}
         />
       </Match>
-      <Match when={blob()}>{(b) => render(b())}</Match>
+      <Match when={settled(blob)}>{(b) => render(b())}</Match>
     </Switch>
   );
 
@@ -195,7 +197,7 @@ export function ViewVersionContent(props: {
           <Match when={text.error}>
             <ErrorState message="Could not load this version." />
           </Match>
-          <Match when={text() !== undefined}>
+          <Match when={settled(text) !== undefined}>
             <Show
               when={kind() === "code"}
               fallback={
@@ -205,12 +207,12 @@ export function ViewVersionContent(props: {
                     "font-size": `${fontStepMetrics(props.fontStep).size}px`,
                   }}
                 >
-                  {text()}
+                  {settled(text)}
                 </pre>
               }
             >
               <CodeBlock
-                code={text() ?? ""}
+                code={settled(text) ?? ""}
                 lang={codeLang()}
                 fontStep={props.fontStep}
                 softWrap={props.softWrap}

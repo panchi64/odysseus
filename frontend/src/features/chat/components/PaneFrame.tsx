@@ -1,5 +1,5 @@
-import { children, Show, type JSX } from "solid-js";
-import { Button, Icon, Text, Tooltip } from "~/ui";
+import { children, Show, Suspense, type JSX } from "solid-js";
+import { Button, Icon, LoadingText, Text, Tooltip } from "~/ui";
 import { surfaceSpec, type SurfaceId } from "../viewport/surfaces";
 
 /**
@@ -59,7 +59,25 @@ export function PaneFrame(props: {
           preview in a column the width of its PREVIEW/CODE tabs and left the rest
           of the pane empty. A column stretches its child across instead, which is
           the box claiming the space rather than every surface remembering to. */}
-      <div class="flex min-h-0 min-w-0 flex-1 flex-col">{props.children}</div>
+      {/* **A pane's own fetches stop here, and that is the point.** Every one of
+          these surfaces reads a resource straight into its markup — a file list,
+          an artifact's bytes, a diff — and in Solid a read of a *pending* resource
+          suspends the nearest boundary, wherever that happens to be. The nearest
+          one was the shell's, around the whole route: opening a pane for the first
+          time fetched, suspended, and blanked the entire room — header, transcript
+          and composer — to the shell's "Loading" line for as long as the pane's
+          own request took. Every surface already carries a local loading arm it
+          never got to render.
+
+          So the boundary belongs to the pane, at the same box the surface is laid
+          out in, and it is drawn here rather than in each surface for the reason
+          the header is: the host is what guarantees a pane wears this, so a
+          surface cannot forget it and a new one gets it for nothing. */}
+      <div class="flex min-h-0 min-w-0 flex-1 flex-col">
+        <Suspense fallback={<LoadingText class="px-3 py-2" />}>
+          {props.children}
+        </Suspense>
+      </div>
     </div>
   );
 }
