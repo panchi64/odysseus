@@ -35,6 +35,7 @@ from pydantic_ai.tools import ToolDefinition
 
 from runs import BriefBlock, ToolGroupOverhead, TurnOverhead
 
+from .assembled import declared_function_tools
 from .emit import OverheadMeasured
 
 #: The block the fixed prompt is filed under — everything in the brief that no named
@@ -67,7 +68,15 @@ class MeasureOverhead(AbstractCapability[Any]):
         await ctx.emit(
             OverheadMeasured(
                 overhead=measure_overhead(
-                    params.instruction_parts, request_context.messages, params.function_tools
+                    params.instruction_parts,
+                    request_context.messages,
+                    # The tools actually rendered, **not** `params.function_tools`. That list
+                    # is every definition the stack produced, dormant categories included —
+                    # so measuring it reported a fresh request as costing the whole corpus
+                    # and handed the gauge back exactly the figure deferral exists to remove.
+                    # See `agent/assembled.py` for why the library's own filter is not the
+                    # answer either at this point in the request.
+                    declared_function_tools(params),
                 )
             )
         )

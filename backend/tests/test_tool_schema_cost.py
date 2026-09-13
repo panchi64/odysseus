@@ -29,9 +29,12 @@ deliberately.
 from __future__ import annotations
 
 from pydantic_ai import RunContext
+from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
+from agent import stream_agent_run
+from agent.factory import NO_DORMANT, build_agent
 from agent.overhead import measure_overhead
 from core.db import init_db, make_engine
 from core.text import CHARS_PER_TOKEN_JSON
@@ -41,7 +44,7 @@ from services.modes import MODES
 from services.permissions import PERMISSION_LEVELS
 from services.settings_store import SettingsStore
 from services.tool_policy import effective_disabled_tools
-from tools import RunDeps, build_agent_toolsets
+from tools import RunDeps, build_agent_toolsets, core_categories
 
 from ._helpers import full_tool_categories
 
@@ -175,3 +178,72 @@ async def test_only_plan_narrows_the_catalog():
         if level != "plan"
     }
     assert len(set(acting.values())) == 1, acting
+
+
+# --- and that a real request performs the subtraction these figures assume -------------
+
+
+async def _measured_tools(*, dormant, reveal: bool) -> int:
+    """The schema cost a **real turn** records on its Run, in characters.
+
+    Everything above computes the subtraction itself, from `defer_loading`, and then measures
+    the list it produced. That is the right way to pin a ceiling and a blind spot for the
+    claim underneath it: production does not perform this subtraction in the toolset stack, it
+    performs it in the capability that reads the assembled request — and the two can disagree.
+    They did. `ModelRequestParameters.function_tools` carries every definition the stack
+    produced, dormant ones included, so measuring it reported a fresh request as costing the
+    whole corpus, and the library's own `declared_function_tools` cannot be substituted
+    blindly either (`agent/assembled.py`).
+    """
+    steps: list[object] = []
+
+    async def stream_fn(_messages, info):
+        steps.append(info)
+        if reveal and len(steps) == 1:
+            yield {0: DeltaToolCall(name="search_tools", json_args='{"queries": ["tasks"]}')}
+        else:
+            yield "done"
+
+    agent = build_agent(
+        FunctionModel(stream_function=stream_fn), categories=core_categories(), dormant=dormant
+    )
+    run = Run(id="t", kind="chat", owner_id="operator", stream=RunStream())
+    async with agent.iter("go", deps=RunDeps(run=run, owner_id="operator")) as agent_run:
+        await stream_agent_run(agent_run, run)
+    assert run.context_overhead is not None, "no request was measured, so this asserted nothing"
+    return run.context_overhead.tools
+
+
+async def test_a_real_request_is_measured_without_the_schemas_it_withheld():
+    everything = await _measured_tools(dormant=NO_DORMANT, reveal=False)
+    withholding = await _measured_tools(dormant={"tasks": "the checklist"}, reveal=False)
+
+    assert withholding < everything, (
+        f"a turn withholding a category measured {withholding} characters of schema against "
+        f"{everything} with the category offered — the gauge is charging the operator for "
+        "schemas deferral kept off the wire"
+    )
+
+
+async def test_revealing_a_group_is_measured_as_costing_what_it_costs():
+    """The other direction, and the one a naive fix gets wrong: `defer_loading` stays set
+    after a reveal, so a measurement that trusts that flag alone goes on reporting the cheap
+    figure for the rest of a turn that is paying the full one.
+
+    Not asserted as *equal* to the up-front figure: a turn with anything dormant also carries
+    `search_tools`, which a turn with nothing dormant has no reason to offer. So the revealed
+    turn legitimately costs a little more than the same tools offered from the start, and the
+    claim is a floor rather than an identity."""
+    everything = await _measured_tools(dormant=NO_DORMANT, reveal=False)
+    withholding = await _measured_tools(dormant={"tasks": "the checklist"}, reveal=False)
+    revealed = await _measured_tools(dormant={"tasks": "the checklist"}, reveal=True)
+
+    assert revealed > withholding, (
+        f"a turn that revealed the withheld category still measured {revealed} characters "
+        f"against {withholding} before the reveal — the gauge stopped noticing schemas the "
+        "model asked for and is now on the wire"
+    )
+    assert revealed >= everything, (
+        f"the revealed turn measured {revealed} characters against {everything} for the whole "
+        "catalog offered up front, so some of what it revealed is going uncounted"
+    )
