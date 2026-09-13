@@ -32,6 +32,7 @@ from .events import (
     now_utc,
 )
 from .overhead import TurnOverhead
+from .prefix import PrefixVerdict
 from .stream import RunStream
 from .timings import TimingTotals, TurnTimer
 
@@ -126,6 +127,13 @@ class Run:
     # request, and on any turn whose measurement failed; the composition readout is absent
     # rather than guessed in that case.
     context_overhead: TurnOverhead | None = None
+    # How much of the previous request's cacheable prefix this turn's most recent request
+    # could have reused, and what moved if it couldn't (`runs/prefix.py`). Sits beside the
+    # overhead because it is read off the same assembled request by the same kind of
+    # capability, and for the same reason: neither the brief nor the tool array reaches the
+    # message history, so whether *this* brief is the same brief as last time is knowable
+    # only while a request is being assembled. None until the turn makes its first request.
+    prefix_verdict: PrefixVerdict | None = None
     # How many messages at the head of the current replay predate this run's most recent
     # compaction — 0 when nothing has folded. A response *before* the boundary reported its
     # prompt size against a history that no longer exists, so reading the footprint off it

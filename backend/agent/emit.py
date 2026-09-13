@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from pydantic import BaseModel
 from pydantic_ai import CapabilityEvent
 
-from runs import TurnOverhead
+from runs import PrefixVerdict, TurnOverhead
 
 #: Namespace for every capability event this codebase defines. The library requires one
 #: and uses it to prefix the event's kind (``odysseus.chassis_event``), which is what
@@ -65,3 +65,17 @@ class OverheadMeasured(CapabilityEvent, namespace=NAMESPACE):
     """
 
     overhead: TurnOverhead
+
+
+@dataclass(kw_only=True)
+class PrefixWatched(CapabilityEvent, namespace=NAMESPACE):
+    """How much of the previous request's cacheable prefix the outgoing one could reuse.
+
+    State the run holds rather than something the operator is shown, exactly like
+    :class:`OverheadMeasured` above — it is read at step end into the diagnostic line, not
+    rendered in the work log. A prefill spike is a question about the *engine*, and the
+    operator's answer to it is a server flag or a thread they stop editing skills in the
+    middle of; neither is served by a row in the transcript.
+    """
+
+    verdict: PrefixVerdict

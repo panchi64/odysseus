@@ -399,3 +399,75 @@ async def test_an_unresolvable_role_reports_no_window_rather_than_raising(tmp_pa
     registry, _ = await _registry(tmp_path, monkeypatch, window=None)
     await _bind(registry, context_window=None)
     assert await registry.role_context_window("operator", "main") is None
+
+
+# ── What the same /props response says about prompt caching ──────────────────────
+#
+# Diagnostic, not a decision: nothing branches on any of this. It is read because the
+# magnitude of one cause of a slow local turn — a background call on the shared endpoint
+# evicting the chat thread's cached prefix — depends entirely on the build the operator is
+# running, and that is the one input the codebase cannot reason its way to. Read off the
+# response the window probe already fetched, so it costs no extra request.
+
+
+async def test_the_props_response_also_yields_the_servers_cache_posture():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/props"
+        return httpx.Response(
+            200,
+            json={
+                "default_generation_settings": {"n_ctx": 32768, "cache_reuse": 256},
+                "total_slots": 4,
+                "build_info": "b7412-abcdef1",
+                "cache_ram": -1,
+            },
+        )
+
+    async with _client(handler) as client:
+        posture = await llm._llama_cpp_props("http://s", None, client=client)
+
+    assert posture is not None
+    assert posture.context_window == 32768
+    assert posture.total_slots == 4
+    assert posture.build_info == "b7412-abcdef1"
+    # Read from the top level *and* from the generation settings, because which of the two
+    # carries a given knob has moved between builds and neither placement is promised.
+    assert posture.cache_settings == {"cache_ram": -1, "cache_reuse": 256}
+    assert "cache_ram=-1" in posture.summary()
+
+
+async def test_a_server_that_mentions_no_cache_settings_says_so_rather_than_guessing():
+    """Absent has to read as "did not say". A default filled in here would be a claim about
+    a build nobody looked at — which is exactly the guess this probe exists to replace."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"default_generation_settings": {"n_ctx": 8192}})
+
+    async with _client(handler) as client:
+        posture = await llm._llama_cpp_props("http://s", None, client=client)
+
+    assert posture is not None
+    assert posture.cache_settings == {}
+    assert posture.total_slots is None
+    assert posture.build_info is None
+    assert "no cache settings reported" in posture.summary()
+
+
+async def test_the_posture_probe_never_changes_the_window_that_is_returned():
+    """The window is load-bearing — every guard measures against it — and the posture is
+    not. So the probe is additive by construction: same response, same answer."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/props":
+            return httpx.Response(
+                200,
+                json={
+                    "default_generation_settings": {"n_ctx": 16384},
+                    "total_slots": 1,
+                    "build_info": "b1-old",
+                },
+            )
+        return httpx.Response(200, json={"data": []})
+
+    async with _client(handler) as client:
+        assert await llm.discover_openai_context_window("http://s/v1", "m", client=client) == 16384

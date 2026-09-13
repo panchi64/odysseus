@@ -43,7 +43,7 @@ from routes import (
     tokens,
     tools,
 )
-from runs import LaneLimits, RunRegistry
+from runs import LaneLimits, PrefixLedger, RunRegistry
 from services.api_token_store import ApiTokenStore
 from services.approval_grants import ApprovalGrantStore
 from services.conversations import ConversationStore
@@ -332,6 +332,12 @@ async def _wire(app: FastAPI, settings: Settings, lifecycle: LifecycleRegistry) 
     )
     container.add(app.state.plan_mode)
     agent_capabilities.add(app.state.plan_mode)
+    # The prefix-cache diagnostic's cross-turn memory: the last request fingerprint each
+    # conversation sent, so the first request of a turn can say what moved in the head since
+    # the previous one. In the agent bag rather than on `app.state` because the capability
+    # that reads it resolves it from the run's own bag like every other handle, and absent
+    # means "within-turn comparison only" rather than a failure (`runs/prefix.py`).
+    agent_capabilities.add(PrefixLedger())
 
     # Feature manifests build last, in dependency (`after`) order — everything
     # hand-wired above is the core they resolve from the container. What a build

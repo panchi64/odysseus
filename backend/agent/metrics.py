@@ -14,10 +14,12 @@ already resolved one settings object measures every frame of a turn against it.
 
 from __future__ import annotations
 
+import logging
+
 from pydantic_ai import ModelMessage, ModelRequest, UserPromptPart
 
 from core.config import Settings
-from runs import Run, RunMetrics, total_timings
+from runs import LastRequestUsage, Run, RunMetrics, total_timings
 from services.context_budget import compose
 from services.conversation_view import estimate_footprint, estimate_tokens
 from services.conversations import (
@@ -25,6 +27,8 @@ from services.conversations import (
     footprint_or_estimate,
     last_request_usage,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def turn_metrics(run: Run, messages: list[ModelMessage], *, settings: Settings) -> RunMetrics:
@@ -69,6 +73,8 @@ def turn_metrics(run: Run, messages: list[ModelMessage], *, settings: Settings) 
         fallback_overhead_tokens=settings.context_overhead_fallback_tokens,
         reported_from=messages[min(run.fold_boundary, len(messages)) :],
     )
+    last_request = _with_prefill(last_request_usage(messages), run, footprint)
+    _log_prefill_diagnostic(run, last_request)
     return RunMetrics(
         steps=counts.steps,
         tool_calls=counts.tool_calls,
@@ -90,7 +96,69 @@ def turn_metrics(run: Run, messages: list[ModelMessage], *, settings: Settings) 
         context_parts=compose(footprint, run.context_overhead, messages),
         # The last request on its own — read off the same path as everything else, so a
         # reload reports the route and the cache figures the live turn did.
-        last_request=last_request_usage(messages),
+        last_request=last_request,
+    )
+
+
+def _with_prefill(
+    last_request: LastRequestUsage | None, run: Run, footprint: int | None
+) -> LastRequestUsage | None:
+    """Attach the prompt size and time-to-first-token the apparent prefill rate is over.
+
+    Added here rather than inside ``last_request_usage`` because neither figure is in the
+    message history: the timings are on the run's own stopwatch, and the prompt size is the
+    measured-or-estimated footprint this function just computed. That is also why this is a
+    *live* enrichment — a cold load reports the route and the cache figures a reload can
+    derive, and no prefill rate, which is honest: nothing persisted says how long that
+    request waited.
+
+    The numerator is the footprint **less the response's own output**, because the footprint
+    is prompt plus generation and only the prompt is prefilled. Where the provider reported
+    no output count the subtraction is skipped and the figure runs one response's generation
+    high — bounded, and the reason the rate is labelled apparent rather than exact.
+    """
+    if last_request is None or footprint is None or not run.timer.responses:
+        return last_request
+    timing = run.timer.responses[-1]
+    if timing.ttft_ms is None:
+        return last_request
+    prompt = max(0, footprint - (last_request.output_tokens or 0))
+    return last_request.model_copy(update={"prefill_tokens": prompt, "prefill_ms": timing.ttft_ms})
+
+
+def _log_prefill_diagnostic(run: Run, last_request: LastRequestUsage | None) -> None:
+    """One line per response correlating the wait with what moved in the request's prefix.
+
+    The whole point of the prefix watch is that a ``ttft_ms`` spike and its cause have to be
+    readable *on the same line* — a verdict in one log and a duration in another is a
+    correlation the reader has to do by hand, at which point they won't. So this puts the
+    route, the prompt size, the provider's cache figure, the wait, the apparent rate and the
+    prefix verdict together, with the brief/schema split that says how much of the head there
+    was to invalidate in the first place.
+
+    At ``debug`` deliberately, and gated by nothing else. Logging levels are the mechanism
+    that already exists for "I am investigating something"; a settings field would make an
+    instrument into an installation property, and would have to be threaded down to a module
+    whose defining constraint is that it reads no settings for itself.
+    """
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
+    overhead = run.context_overhead
+    verdict = run.prefix_verdict
+    logger.debug(
+        "prefix run=%s route=%s prompt=%s cached=%s ttft_ms=%s prefill_tok_s=%s "
+        "brief=%s schemas=%s %s",
+        run.id,
+        last_request.route if last_request else None,
+        last_request.prefill_tokens if last_request else None,
+        last_request.cache_read_tokens if last_request else None,
+        last_request.prefill_ms if last_request else None,
+        round(last_request.prefill_tokens_per_second)
+        if last_request and last_request.prefill_tokens_per_second
+        else None,
+        overhead.system if overhead else None,
+        overhead.tools if overhead else None,
+        verdict.summary() if verdict else "head=unwatched",
     )
 
 

@@ -195,6 +195,46 @@ class LastRequestUsage(_Body):
     cache_read_tokens: int | None = None
     cache_write_tokens: int | None = None
 
+    # The two figures behind `prefill_tokens_per_second` below. Kept as plain fields, with
+    # the arithmetic as a computed property, on the same pattern the frame's throughput
+    # figure follows: the client renders a rate, it never derives one.
+    #
+    # `prefill_tokens` is deliberately **not** `input_tokens`. A local server routinely
+    # reports `input_tokens=0` meaning "not measured", which is the whole reason the
+    # composition readout estimates a footprint at all — so the numerator here is that
+    # measured-or-estimated prompt size, which is the one figure available on every endpoint.
+    prefill_tokens: int | None = None
+    #: Time to the first content of any kind on that response — connect, queue and prefill,
+    #: which is why the rate below is *apparent*.
+    prefill_ms: int | None = None
+
+    @computed_field
+    @property
+    def prefill_tokens_per_second(self) -> float | None:
+        """The **apparent** prompt-processing rate — prompt tokens over time to first token.
+
+        Apparent, and the word is load-bearing. Time to first token is connect plus queue
+        plus prefill, and on a single local server shared with the utility role the queue
+        term is exactly what a background review or a summarizer puts there. So a figure
+        that halves between two turns of the same thread may mean the prompt cache missed,
+        or may mean something else was mid-generation when this request arrived — this
+        cannot tell them apart, and claiming a "prefill rate" flatly would invite reading it
+        as the former.
+
+        It is still the most useful single number for the question it serves, because the
+        alternative is nothing: no endpoint this codebase talks to reports its own prefill
+        time in a standard field, and llama.cpp's own `timings.prompt_ms` — which is the
+        unconfounded measurement — arrives in a non-standard block outside the OpenAI shape.
+        Where that is read, prefer it over this.
+
+        Null whenever either term is missing or non-positive: a response with no first token
+        (a bare tool call the timer saw no content from), a thread whose prompt size could
+        not be estimated, or a sub-millisecond round trip whose division we would not trust.
+        """
+        if not self.prefill_tokens or not self.prefill_ms or self.prefill_ms <= 0:
+            return None
+        return self.prefill_tokens / (self.prefill_ms / 1000)
+
 
 class RunMetrics(_Body):
     """What the thread has cost so far — the readout under the composer.

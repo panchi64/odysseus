@@ -50,7 +50,7 @@ from runs import (
 from services.conversation_view import tool_images
 from tools.emit import RunEventEmitted
 
-from .emit import ChassisEvent, OverheadMeasured
+from .emit import ChassisEvent, OverheadMeasured, PrefixWatched
 from .meta import LoopBreaker
 
 
@@ -86,6 +86,9 @@ def _on_chassis_event(event: object, run: Run) -> bool:
         return True
     if isinstance(event, OverheadMeasured):
         run.context_overhead = event.overhead
+        return True
+    if isinstance(event, PrefixWatched):
+        run.prefix_verdict = event.verdict
         return True
     return False
 

@@ -19,7 +19,10 @@ from pydantic_ai import ModelRequest, ModelResponse
 from pydantic_ai.messages import TextPart, ToolCallPart, UserPromptPart
 from pydantic_ai.usage import RequestUsage
 
-from runs.events import RunMetrics
+from agent.metrics import turn_metrics
+from core.config import Settings
+from runs import Run, RunStream
+from runs.events import LastRequestUsage, RunMetrics
 from runs.timings import ResponseTiming, TimingTotals, TurnTimer, total_timings
 from services.conversations import conversation_totals
 
@@ -308,3 +311,66 @@ def test_throughput_is_null_when_nothing_was_left_to_generate_in():
 
 def test_ttft_average_is_null_without_samples():
     assert RunMetrics(ttft_ms_total=None, ttft_samples=0).ttft_avg_ms is None
+
+
+# ── The apparent prefill rate ────────────────────────────────────────────────────
+
+
+def test_the_apparent_prefill_rate_divides_the_prompt_by_the_wait_for_it():
+    # 12k tokens of prompt, first content 4s later: ~3,000 tok/s of apparent prefill. The
+    # figure an operator watches across the turns of one thread to see a cache miss.
+    assert LastRequestUsage(prefill_tokens=12_000, prefill_ms=4_000).prefill_tokens_per_second == (
+        3000.0
+    )
+
+
+def test_the_prefill_rate_is_null_whenever_a_term_is_missing():
+    """Absent, never a guess. A response that emitted no content at all has no time to first
+    token; a thread whose prompt size could not be estimated has no numerator. Either way the
+    honest answer is nothing — this figure is read as a cache diagnosis, and a fabricated one
+    would be read as a diagnosis too."""
+    assert LastRequestUsage(prefill_ms=4_000).prefill_tokens_per_second is None
+    assert LastRequestUsage(prefill_tokens=12_000).prefill_tokens_per_second is None
+    assert LastRequestUsage(prefill_tokens=12_000, prefill_ms=0).prefill_tokens_per_second is None
+
+
+def test_the_prefill_rate_is_not_taken_from_the_reported_prompt_tokens():
+    """The reason there is a second numerator at all. A local server routinely reports
+    `input_tokens=0` meaning "not measured", so a rate over `input_tokens` would be absent on
+    exactly the endpoints this figure exists for. `prefill_tokens` carries the
+    measured-or-estimated prompt size instead, and the two are independent by design."""
+    usage = LastRequestUsage(input_tokens=0, prefill_tokens=8_000, prefill_ms=2_000)
+    assert usage.prefill_tokens_per_second == 4000.0
+
+
+def _measured_turn(*, ttft_ms: int | None) -> RunMetrics:
+    """One response's worth of turn, with the stopwatch reporting ``ttft_ms``."""
+    run = Run(id="r", kind="chat", owner_id="operator", stream=RunStream())
+    run.timer.responses.append(ResponseTiming(llm_ms=5_000, ttft_ms=ttft_ms))
+    messages = [_prompt("hi"), _response(input_tokens=1_000, output_tokens=120)]
+    return turn_metrics(run, messages, settings=Settings())
+
+
+def test_the_turn_attaches_the_prompt_size_and_the_wait_it_measured():
+    """The two figures the rate is over are not in the message history — the timings are on
+    the run's own stopwatch and the prompt size is the footprint the frame just computed — so
+    the metrics builder is where they are joined."""
+    metrics = _measured_turn(ttft_ms=2_000)
+
+    assert metrics.last_request is not None
+    assert metrics.last_request.prefill_ms == 2_000
+    # The numerator is the footprint **less this response's own output**: the footprint is
+    # prompt plus generation, and only the prompt is prefilled.
+    assert metrics.last_request.prefill_tokens == metrics.context_used - 120
+    assert metrics.last_request.prefill_tokens_per_second is not None
+
+
+def test_a_response_that_produced_no_first_token_reports_no_prefill_figures():
+    """A bare tool call the timer saw no content from. The route and the cache figures still
+    stand — they are properties of the request — but there is no wait to divide by."""
+    metrics = _measured_turn(ttft_ms=None)
+
+    assert metrics.last_request is not None
+    assert metrics.last_request.prefill_ms is None
+    assert metrics.last_request.prefill_tokens is None
+    assert metrics.last_request.prefill_tokens_per_second is None

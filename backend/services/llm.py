@@ -23,8 +23,9 @@ user has seen partial output.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+import logging
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 
 import httpx
 from pydantic_ai.models import Model
@@ -33,6 +34,8 @@ from pydantic_ai.settings import ModelSettings
 
 from core.exceptions import DegradedCapabilityError
 from services import reasoning
+
+logger = logging.getLogger(__name__)
 
 ROLES = frozenset({"main", "utility", "embedding"})
 # Roles that drive the agent loop must support native tool-calling (AE-8.1).
@@ -285,19 +288,83 @@ async def discover_openai_context_window(
             return loaded
         if maximum is None:
             maximum = _context_from_row(row, _MAX_CONTEXT_KEYS)
-    loaded = await _llama_cpp_context_window(base_url, api_key, client=client)
-    return loaded if loaded is not None else maximum
+    props = await _llama_cpp_props(base_url, api_key, client=client)
+    if props is not None:
+        # The cache posture rides on the same response and is worth nothing except in a log
+        # beside a slow turn, so that is where it goes. Debug, like the rest of the prefix
+        # diagnostic: an installation property nobody is investigating is noise.
+        logger.debug("prompt cache posture base=%s %s", base_url, props.summary())
+        return props.context_window
+    return maximum
 
 
-async def _llama_cpp_context_window(
+#: Settings a llama.cpp-derived server may report that decide what happens to a slot's KV
+#: cache when the slot is retasked — which is the whole of whether a background utility call
+#: on the same server costs the chat thread its cached prefix. `cache_ram` (and its `-1` for
+#: unlimited) checkpoints a displaced slot into host memory instead of destroying it;
+#: `cache_reuse` is what lets an *insertion* near the front of the prompt — a revealed tool
+#: group, a permission-level line — be recovered by shifting the KV rather than re-read;
+#: `kv_unified` decides whether `-c` is divided between slots or shared.
+#:
+#: Read by name rather than schema because there is no schema: `/props` is llama.cpp's own
+#: route, its shape moves between builds, and forks report their own subsets. So what is
+#: recorded is *whichever of these the server mentioned*, at whatever value — a fact about
+#: what the server said, never an inference about what it does.
+_PROMPT_CACHE_KEYS = (
+    "cache_ram",
+    "cache_ram_mib",
+    "cache_reuse",
+    "cache_idle_slots",
+    "kv_unified",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class PromptCachePosture:
+    """What a local server said about how it treats a prompt prefix between requests.
+
+    Diagnostic only — nothing branches on it. It exists because the *magnitude* of one of
+    the three causes of a slow local turn (a background call on the shared endpoint evicting
+    the chat's cached prefix) depends entirely on the build the operator is running, and that
+    is the one input to the diagnosis this codebase cannot reason its way to. An older
+    single-slot llama.cpp with no host-RAM checkpoint loses the chat's KV on every review; a
+    current build with `--cache-ram` and a unified KV largely does not.
+
+    Every field is optional because every field is a thing a given server may simply not
+    say, and absent has to read as "did not say" rather than as zero.
+    """
+
+    context_window: int | None = None
+    #: How many parallel slots the server runs. One slot means every background call is
+    #: served by evicting whatever the chat thread left there.
+    total_slots: int | None = None
+    #: The build string, verbatim. The only handle on "which llama.cpp is this".
+    build_info: str | None = None
+    #: Whichever of :data:`_PROMPT_CACHE_KEYS` the server reported, and what it said.
+    cache_settings: Mapping[str, object] = field(default_factory=dict)
+
+    def summary(self) -> str:
+        """One line for the diagnostic log."""
+        stated = " ".join(f"{key}={value}" for key, value in sorted(self.cache_settings.items()))
+        return (
+            f"n_ctx={self.context_window} slots={self.total_slots} "
+            f"build={self.build_info or '?'} {stated or 'no cache settings reported'}"
+        )
+
+
+async def _llama_cpp_props(
     base_url: str, api_key: str | None, *, client: httpx.AsyncClient | None = None
-) -> int | None:
-    """The context llama.cpp's server was started with, from its own `/props`.
+) -> PromptCachePosture | None:
+    """llama.cpp's own `/props`, read for the context window **and** its cache posture.
 
     `default_generation_settings.n_ctx` is the per-slot window a request actually gets
-    (llama.cpp divides the total context between its parallel slots), so it is a *loaded*
-    figure in the strong sense — the number the very next completion will be measured
-    against.
+    (llama.cpp divides the total context between its parallel slots unless the KV is
+    unified), so it is a *loaded* figure in the strong sense — the number the very next
+    completion will be measured against.
+
+    The three cache-posture facts ride along because the request is already being made. They
+    are read from the top level and from the generation settings alike, since which of the
+    two carries a given knob has moved between builds and neither placement is promised.
 
     Tried at the root as well as under the base URL: llama.cpp registers `/props` at the
     top level while the endpoint an operator configures ends in `/v1`, so the obvious URL
@@ -308,11 +375,23 @@ async def _llama_cpp_context_window(
         if not isinstance(payload, dict):
             continue
         settings = payload.get("default_generation_settings")
-        if not isinstance(settings, dict):
-            continue
+        settings = settings if isinstance(settings, dict) else {}
         window = _positive_int(settings.get("n_ctx"))
-        if window is not None:
-            return window
+        if window is None:
+            continue
+        build = payload.get("build_info")
+        stated = {
+            key: source[key]
+            for source in (payload, settings)
+            for key in _PROMPT_CACHE_KEYS
+            if key in source
+        }
+        return PromptCachePosture(
+            context_window=window,
+            total_slots=_positive_int(payload.get("total_slots")),
+            build_info=build if isinstance(build, str) else None,
+            cache_settings=stated,
+        )
     return None
 
 

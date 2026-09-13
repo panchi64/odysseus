@@ -50,6 +50,7 @@ from tools.describe import category_names
 
 from .injections import AnnounceInjections, contributor_id
 from .overhead import MeasureOverhead
+from .prefix_watch import WatchPrefix, watch_prefix_enabled
 
 # The default for a turn composed without the app's dormant declarations — a stateless
 # eval or a test that passes no catalog either. Read-only, so a shared default cannot
@@ -123,6 +124,13 @@ def build_agent(
             # instructions and no hooks — every category still arrives through the namespaced,
             # gated stack (`tools/harness_events.py`).
             harness_events_capability(),
+            # The prefix watch reads the request the same two observers above do, and is
+            # listed last among the observers so it fingerprints what actually ships — after
+            # the system prompt is reasserted and, because the library orders
+            # `tool_search_capability` outermost wherever it sits, with the deferred schemas
+            # already gone. Its whole value is that the bytes it hashes are the bytes the
+            # engine will try to match (`agent/prefix_watch.py`).
+            *([WatchPrefix()] if watch_prefix_enabled() else []),
         ],
     )
 
