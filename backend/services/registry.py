@@ -34,6 +34,23 @@ from services import embeddings, llm
 from services.providers import DEFAULT_PROVIDER_ID, get_provider
 
 
+def _same_server(one: str, two: str) -> bool:
+    """Whether two configured base URLs address the same process.
+
+    Deliberately loose, and it can afford to be: the only thing this answers is a readout
+    label about a shared prompt cache, so a false negative shows one row fewer and a false
+    positive shows one row more. It exists because a single local server is routinely
+    configured twice — once per model, or once at the root and once at ``/v1``, both of
+    which llama.cpp serves the chat route on — and those are one cache.
+    """
+
+    def normalised(url: str) -> str:
+        trimmed = url.strip().rstrip("/").lower()
+        return trimmed.removesuffix("/v1")
+
+    return normalised(one) == normalised(two)
+
+
 @dataclass(frozen=True)
 class ResolvedModel:
     """A resolved role: the model to run, plus the settings that disable its
@@ -560,6 +577,34 @@ class ModelRegistry:
                 override_endpoint_id=override_endpoint_id,
                 override_model=override_model,
             )
+
+    async def background_shares_main(self, owner_id: str) -> bool:
+        """Whether background work will run on the same server the operator chats on.
+
+        Read-only, and a **label rather than a decision** — nothing here branches on it. It
+        exists because sharing one endpoint has a cost nothing else in the readout can show:
+        a review, a title or a summary served by the same process evicts whatever the chat
+        thread left in its prompt cache, so the operator's next turn re-processes a prompt
+        the server had already read. How much that costs depends on the build (a host-RAM
+        checkpoint and a unified KV cache largely absorb it; a single-slot server with
+        neither does not), which is why this says *that it is shared* and not what it costs.
+
+        True in the two ways it can happen: ``utility`` is unbound, so it degrades onto
+        ``main`` by the rule above; or it is bound to a row whose ``base_url`` is the same
+        server. **Compared by URL, not by endpoint id** — one server is commonly configured
+        twice, once per model, and two ids pointing at one process share one cache.
+
+        False when ``main`` itself cannot resolve: there is no chat prefix to evict.
+        """
+        try:
+            main = await self._resolve_specs("main", owner_id=owner_id)
+        except DegradedCapabilityError, NotFoundError:
+            return False
+        try:
+            utility = await self._resolve_specs("utility", owner_id=owner_id)
+        except DegradedCapabilityError, NotFoundError:
+            return True
+        return _same_server(utility[0].base_url, main[0].base_url)
 
     async def resolve_vision(self, owner_id: str) -> Model:
         """A vision-capable model for OCR/extraction of scanned PDFs (`UP-2`).

@@ -332,6 +332,28 @@ class PromptCachePosture:
 
     Every field is optional because every field is a thing a given server may simply not
     say, and absent has to read as "did not say" rather than as zero.
+
+    **What to change on the server, if these read badly.** Written here rather than in an
+    operator guide because it is advice about exactly these flags, and a guide kept anywhere
+    else goes stale without anything noticing:
+
+    - ``--cache-ram -1`` (or a value at least the size of the KV cache) plus a unified KV, so
+      a slot retasked by a background call is *checkpointed* into host memory rather than
+      destroyed. This is the whole of what makes sharing one server with the ``utility`` role
+      survivable. Note a dense 32B at f16 with 60k tokens of state is around 15 GB, well past
+      the 8 GB a build may default to.
+    - ``--cache-reuse 256``, which is what recovers an **insertion** near the front of the
+      prompt by shifting the KV instead of re-reading everything behind it. That is the shape
+      a revealed tool group and a mid-turn permission-level change both have.
+    - And the one with no flag: **editing the project's own brief mid-thread costs a full
+      re-prefill.** An agent that rewrites ``CLAUDE.md`` in its own worktree has changed the
+      head of every subsequent request in that thread.
+
+    Deliberately **not** the older advice to raise ``-np``. Under ``-np auto`` with a unified
+    KV, ``-c`` is not divided between slots and that guidance is simply wrong for current
+    builds. On MLX, which has no multi-slot prompt cache at all, the only fix is a second
+    process on a second port bound to the ``utility`` role. vLLM's block cache is shared
+    across requests, which makes it the better local engine for Auto-level work.
     """
 
     context_window: int | None = None

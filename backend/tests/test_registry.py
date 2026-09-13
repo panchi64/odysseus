@@ -342,13 +342,15 @@ async def test_endpoint_crud_over_rest_hides_api_key():
         # gate refuses a turn in.
         # `implicit` is False because the operator wrote this binding — the flag
         # distinguishes that from the default the backend resolves when nothing is
-        # bound at all.
+        # bound at all. `background_shares_endpoint` is True because `utility` is unbound
+        # and so degrades onto this very endpoint.
         assert roles == {
             "main": {
                 "endpoint_ids": [endpoint_id],
                 "model": None,
                 "context_window": None,
                 "implicit": False,
+                "background_shares_endpoint": True,
             }
         }
 
@@ -606,3 +608,82 @@ async def test_patch_endpoint_enabled_round_trips():
         patched = await client.patch(f"/models/endpoints/{ep['id']}", json={"enabled": False})
         assert patched.status_code == 200
         assert patched.json()["enabled"] is False
+
+
+# ── Whether background work runs on the chat server ──────────────────────────────
+#
+# A label, not a decision — nothing branches on it. It exists because sharing one
+# endpoint has a cost nothing else in the readout can show: a review, a title or a
+# summary served by the same process evicts whatever the chat thread left in its prompt
+# cache, and the operator's next turn pays to have the same prompt read again.
+
+
+async def test_an_unbound_utility_reports_that_it_shares_the_chat_server():
+    """The commonest shape, and the one where it is most true: `utility` unbound degrades
+    onto `main` by the same rule titling and review already resolve through."""
+    reg = await _registry()
+    ep = await reg.create_endpoint(OWNER, name="local", base_url="http://x/v1", model="qwen")
+    await reg.set_role(OWNER, "main", [ep.id])
+
+    assert await reg.background_shares_main(OWNER) is True
+
+
+async def test_a_second_row_on_the_same_server_shares_it_too():
+    """Compared by URL rather than by endpoint id, because one local server is routinely
+    configured twice — once per model — and two ids pointing at one process are one cache.
+    The trailing version segment is normalised for the same reason: llama.cpp serves the
+    chat route at the root and under `/v1`, so an operator can honestly configure either."""
+    reg = await _registry()
+    main = await reg.create_endpoint(OWNER, name="chat", base_url="http://x/v1", model="qwen-32b")
+    twin = await reg.create_endpoint(OWNER, name="small", base_url="http://x/", model="qwen-4b")
+    await reg.set_role(OWNER, "main", [main.id])
+    await reg.set_role(OWNER, "utility", [twin.id])
+
+    assert await reg.background_shares_main(OWNER) is True
+
+
+async def test_a_second_process_on_another_port_does_not():
+    """The fix this flag exists to point at — and the only one available on a server with
+    no host-RAM prompt cache."""
+    reg = await _registry()
+    main = await reg.create_endpoint(OWNER, name="chat", base_url="http://x:8080/v1", model="big")
+    other = await reg.create_endpoint(OWNER, name="util", base_url="http://x:8081/v1", model="sml")
+    await reg.set_role(OWNER, "main", [main.id])
+    await reg.set_role(OWNER, "utility", [other.id])
+
+    assert await reg.background_shares_main(OWNER) is False
+
+
+async def test_a_workspace_with_no_chat_model_reports_nothing_shared():
+    """There is no chat prefix to evict, so the honest answer is False rather than the
+    True an unbound `utility` would otherwise produce on its own."""
+    reg = await _registry()
+    assert await reg.background_shares_main(OWNER) is False
+
+
+async def test_the_roles_listing_carries_the_fact_on_main():
+    """On `main` rather than on `utility`: the listing returns *stored* bindings, so the
+    unbound case has no `utility` row to carry a flag — and it is `main`'s prompt cache
+    that a background call evicts either way."""
+    async with client_app() as (client, _app):
+        ep = (
+            await client.post(
+                "/models/endpoints",
+                json={"name": "local", "base_url": "http://x/v1", "model": "m"},
+            )
+        ).json()
+        await client.put("/models/roles/main", json={"endpoint_ids": [ep["id"]]})
+
+        roles = (await client.get("/models/roles")).json()
+        assert roles["main"]["background_shares_endpoint"] is True
+
+        second = (
+            await client.post(
+                "/models/endpoints",
+                json={"name": "util", "base_url": "http://y:9000/v1", "model": "m"},
+            )
+        ).json()
+        await client.put("/models/roles/utility", json={"endpoint_ids": [second["id"]]})
+
+        roles = (await client.get("/models/roles")).json()
+        assert roles["main"]["background_shares_endpoint"] is False

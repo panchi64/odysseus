@@ -238,6 +238,17 @@ class RoleView(BaseModel):
     # to this" rather than showing it as pinned — the default moves when a better
     # endpoint appears, which a pin would not.
     implicit: bool = False
+    # True on **`main`** when background work — a permission review, a title, a summary, a
+    # sub-agent — will run on the same server the operator chats on, because `utility` is
+    # unbound or is bound to the same `base_url`. Additive, same posture as `implicit`
+    # above: a fact a surface may state, never one it derives.
+    #
+    # On `main` rather than on `utility`, which is where the plan for this put it, for a
+    # mechanical reason: `list_roles` returns *stored* bindings, so the commonest shape —
+    # and the one where this is most true — has no `utility` row at all to carry a flag.
+    # `main` always has a row, implicit or bound, and it is `main`'s prompt cache that the
+    # background call evicts, so the flag is about this row's endpoint either way.
+    background_shares_endpoint: bool = False
 
 
 @router.get("/roles", response_model=dict[str, RoleView])
@@ -270,6 +281,11 @@ async def list_roles(request: Request) -> dict[str, RoleView]:
                 context_window=await models.role_context_window(OPERATOR_ID, "main"),
                 implicit=True,
             )
+    # Stamped after the implicit fill-in, so it lands whether `main` was bound or defaulted.
+    if "main" in out:
+        out["main"] = out["main"].model_copy(
+            update={"background_shares_endpoint": await models.background_shares_main(OPERATOR_ID)}
+        )
     return out
 
 
