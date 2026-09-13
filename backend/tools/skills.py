@@ -253,18 +253,33 @@ def _skill_catalog_block(entries: Sequence[SkillCatalogEntry]) -> str:
 
     Entries arrive newest-first, so a library larger than the budget keeps the skills the
     operator most recently touched and reports how many were left out — the model is told the
-    list is partial rather than being handed a silently truncated one."""
+    list is partial rather than being handed a silently truncated one.
+
+    **Recency selects; the name orders.** This block renders at the *head* of every request,
+    so its bytes have to stay stable across the turns of a conversation. Rendering in
+    `updated_at` order meant publishing or editing any one skill reshuffled the whole list,
+    which invalidates the prompt-prefix cache for the entire history behind it — a full
+    re-prefill for a change to one line. Which entries *survive* the budget still follows
+    recency, because that is what the store's ordering is for; the survivors are then sorted
+    by name, so an edit that does not change the surviving *set* does not change the bytes."""
     if not entries:
         return ""
-    lines: list[str] = []
+
+    def line_for(entry: SkillCatalogEntry) -> str:
+        return f"- {entry.name}: {entry.description}"
+
+    kept: list[SkillCatalogEntry] = []
     used = 0
-    for index, entry in enumerate(entries):
-        line = f"- {entry.name}: {entry.description}"
-        if used + len(line) > SKILL_CATALOG_BUDGET_CHARS and lines:
-            lines.append(f"- …and {len(entries) - index} more (open by name if you know it)")
+    for entry in entries:
+        line = line_for(entry)
+        if used + len(line) > SKILL_CATALOG_BUDGET_CHARS and kept:
             break
-        lines.append(line)
+        kept.append(entry)
         used += len(line) + 1
+    lines = [line_for(entry) for entry in sorted(kept, key=lambda entry: entry.name)]
+    omitted = len(entries) - len(kept)
+    if omitted:
+        lines.append(f"- …and {omitted} more (open by name if you know it)")
     return SKILL_CATALOG.format(entries="\n".join(lines))
 
 

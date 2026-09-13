@@ -306,6 +306,30 @@ def test_catalog_block_reports_what_the_budget_dropped():
     assert "skill-99" not in block
 
 
+def test_the_block_reads_the_same_however_recently_each_skill_was_touched():
+    """The catalog renders at the *head* of every request, so touching one skill must not
+    reshuffle the list — a reordered head invalidates the prompt-prefix cache for the whole
+    history behind it. The store still hands them over newest-first (that is what decides
+    which survive the budget); the rendering is by name, so the same surviving *set* is the
+    same bytes whatever order it arrived in."""
+    entries = [
+        SkillCatalogEntry(name="release-notes", description="Draft release notes."),
+        SkillCatalogEntry(name="triage-bugs", description="Triage a bug report."),
+    ]
+    assert _skill_catalog_block(entries) == _skill_catalog_block(list(reversed(entries)))
+
+
+def test_the_budget_still_keeps_the_most_recently_touched():
+    """Recency selects even though the name orders: the survivors are the head of what the
+    store handed over, not the alphabetical head of it."""
+    entries = [SkillCatalogEntry(name=f"skill-{i:02d}", description="d" * 200) for i in range(100)]
+    block = _skill_catalog_block(list(reversed(entries)))
+    # Reversed arrival means skill-99 is now the most recently touched, so it survives and
+    # skill-00 is what the budget drops — the opposite of the forward-order case above.
+    assert "skill-99" in block
+    assert "skill-00" not in block
+
+
 async def test_catalog_reaches_the_block_with_published_skills_only():
     store = await _store()
     await store.create(OWNER, name="a-draft", description="Draft.", body="x")
