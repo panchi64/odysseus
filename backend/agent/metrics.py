@@ -140,6 +140,23 @@ def _log_prefill_diagnostic(run: Run, last_request: LastRequestUsage | None) -> 
     that already exists for "I am investigating something"; a settings field would make an
     instrument into an installation property, and would have to be threaded down to a module
     whose defining constraint is that it reads no settings for itself.
+
+    **How to read it, and the one case that needs two fields together.** ``head=`` names what
+    moved in the prefix; ``prefill_tok_s`` says whether anything was reused. The pair
+    distinguishes the two causes that look identical from a slow turn alone:
+
+    - ``head=`` naming a block, with a rate near the hardware's true prefill speed: **we**
+      invalidated the prefix, and the block named is where to look.
+    - ``head=none`` with a rate near that same speed: the prefix was byte-stable and the
+      *engine* still re-read it. Nothing in this codebase can fix that — it is a cache the
+      server dropped, most often because the model was unloaded and reloaded between turns
+      (LM Studio scopes its prompt cache to the model load, so a JIT unload discards it), or
+      because something else on the endpoint evicted it.
+    - ``head=none`` with an implausibly high rate: the prefix was reused. That is the
+      intended state, and the rate is meaningless because there was no prefill to measure.
+
+    The absolute rate is what makes the second case legible, which is why it is on this line
+    rather than left to the gauge.
     """
     if not logger.isEnabledFor(logging.DEBUG):
         return
