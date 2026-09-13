@@ -364,9 +364,24 @@ class PromptCachePosture:
 
     Deliberately **not** the older advice to raise ``-np``. Under ``-np auto`` with a unified
     KV, ``-c`` is not divided between slots and that guidance is simply wrong for current
-    builds. On MLX, which has no multi-slot prompt cache at all, the only fix is a second
-    process on a second port bound to the ``utility`` role. vLLM's block cache is shared
-    across requests, which makes it the better local engine for Auto-level work.
+    builds. vLLM's block cache is shared across requests, which makes it the better local
+    engine for Auto-level work.
+
+    **The flags above are a ``llama-server`` command line, and most local setups do not have
+    one.** LM Studio runs llama.cpp and MLX as embedded runtimes with no such switches (and no
+    ``/props``), so on one of those the only lever an operator has is to bind ``utility`` to a
+    second endpoint — which is what ``ModelRegistry.background_shares_main`` exists to point
+    at. It is still worth reporting which runtime is serving, because it is what says whose
+    documentation applies.
+
+    **An earlier version of this said MLX has no prompt cache and that a second process was
+    the only fix there. Measured against LM Studio 2.37, that is wrong**: on a 5,936-token
+    prompt an identical replay took 0.37s against 13.63s cold, and a request whose *last*
+    paragraph differed took 3.20s against 9.09s for one whose *first* sentence did — two
+    equally novel requests of the same length, which is what rules out a response cache and
+    leaves prefix reuse as the only explanation. Both runtimes also retained more than one
+    prefix. So the head/tail rule pays on either, and the per-engine advice here is about
+    which knobs exist, not about whether caching happens.
     """
 
     context_window: int | None = None
@@ -376,10 +391,14 @@ class PromptCachePosture:
     #: The build string, verbatim. The only handle on "which llama.cpp is this".
     build_info: str | None = None
     #: The inference engine behind this model where the server names it (`gguf` ⇒ llama.cpp,
-    #: `mlx` ⇒ Apple's MLX). **The single most actionable fact here**, and the one most often
-    #: available: llama.cpp keeps prompt prefixes across requests, and MLX in this stack does
-    #: not — so the same shared endpoint that is survivable under one is not under the other,
-    #: and the fix for the second is a separate process rather than a flag.
+    #: `mlx` ⇒ Apple's MLX) — and the field most often available, since it comes from a model
+    #: listing rather than from a server command line.
+    #:
+    #: It says **whose knobs apply**, not whether caching happens: both were measured reusing
+    #: a matching prefix and retaining more than one of them, so the head/tail rule pays on
+    #: either. What differs is that the `/props` flags above exist only for a real
+    #: `llama-server` — an embedded runtime has none, and there the only lever is binding
+    #: `utility` to a second endpoint.
     backend: str | None = None
     #: Whichever of :data:`_PROMPT_CACHE_KEYS` the server reported, and what it said.
     cache_settings: Mapping[str, object] = field(default_factory=dict)

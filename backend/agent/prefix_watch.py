@@ -133,9 +133,10 @@ def _message_digest(message: ModelMessage) -> str:
 def _tools_digest(function_tools: list[ToolDefinition]) -> str:
     """The tool array's fingerprint — name, description and schema, **in offered order**.
 
-    Order is the point. A provider renders the array in the order it is given, so the same
-    set of tools in two orders is two different prefixes; a set-based fingerprint would call
-    that unchanged and send the search for a cause somewhere else entirely.
+    Order is the point, and it is measured rather than assumed: on a local 27B at ~5.9k
+    tokens, reordering four otherwise-identical tools cost a full re-prefill (10.19s) while
+    returning to the original order was a cache hit (0.39s). A set-based fingerprint would
+    call that unchanged and send the search for a cause somewhere else entirely.
     """
     digest = _hasher()
     for tool_def in function_tools:

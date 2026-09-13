@@ -456,12 +456,13 @@ async def test_a_server_that_mentions_no_cache_settings_says_so_rather_than_gues
 async def test_a_server_without_props_still_reports_its_backend():
     """Written because the probe was **inert on the most common local setup**. LM Studio
     answers `/props` with an "unexpected endpoint" error and its OpenAI-shaped completions
-    carry no `timings` block — measured against a live one — yet its own listing states the
-    fact that decides whether there is a prompt cache to lose at all.
+    carry no `timings` block — measured against a live one — yet its own listing states which
+    runtime is serving, which is what says whose tuning knobs apply.
 
-    `gguf` means llama.cpp, which keeps prefixes across requests; `mlx` means Apple's MLX,
-    which in this stack does not — so the same shared endpoint that is survivable under one
-    is not under the other, and the fix for the second is a separate process, not a flag."""
+    Both runtimes were measured reusing a matching prefix, so this is *not* a claim that one
+    caches and the other does not. What it distinguishes is that the `/props` flags exist only
+    for a real `llama-server`; behind an embedded runtime the only lever is binding `utility`
+    to a second endpoint."""
     row = {
         "id": "muse-glimmer-30b",
         "compatibility_type": "gguf",
