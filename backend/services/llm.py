@@ -279,22 +279,35 @@ async def discover_openai_context_window(
     chance to report the real one.
     """
     maximum: int | None = None
-    for url in (base_url.rstrip("/") + "/models", _native_listing_url(base_url)):
+    native_row: object | None = None
+    loaded: int | None = None
+    for url, is_native in (
+        (base_url.rstrip("/") + "/models", False),
+        (_native_listing_url(base_url), True),
+    ):
         if url is None:
             continue
         row = _find_model_row(await _get_json(url, api_key, client=client), model)
+        if is_native:
+            native_row = row
         loaded = _context_from_row(row, _LOADED_CONTEXT_KEYS)
         if loaded is not None:
-            return loaded
+            break
         if maximum is None:
             maximum = _context_from_row(row, _MAX_CONTEXT_KEYS)
-    props = await _llama_cpp_props(base_url, api_key, client=client)
-    if props is not None:
-        # The cache posture rides on the same response and is worth nothing except in a log
-        # beside a slow turn, so that is where it goes. Debug, like the rest of the prefix
-        # diagnostic: an installation property nobody is investigating is noise.
-        logger.debug("prompt cache posture base=%s %s", base_url, props.summary())
-        return props.context_window
+    # The cache posture is worth nothing except in a log beside a slow turn, so that is where
+    # it goes. Debug, like the rest of the prefix diagnostic: an installation property nobody
+    # is investigating is noise. Read from whichever source answered — a llama.cpp server's
+    # own `/props`, or the native listing row already fetched above.
+    posture = await _llama_cpp_props(base_url, api_key, client=client) or _native_posture(
+        native_row
+    )
+    if posture is not None:
+        logger.debug("prompt cache posture base=%s %s", base_url, posture.summary())
+    if loaded is not None:
+        return loaded
+    if posture is not None and posture.context_window is not None:
+        return posture.context_window
     return maximum
 
 
@@ -362,6 +375,12 @@ class PromptCachePosture:
     total_slots: int | None = None
     #: The build string, verbatim. The only handle on "which llama.cpp is this".
     build_info: str | None = None
+    #: The inference engine behind this model where the server names it (`gguf` ⇒ llama.cpp,
+    #: `mlx` ⇒ Apple's MLX). **The single most actionable fact here**, and the one most often
+    #: available: llama.cpp keeps prompt prefixes across requests, and MLX in this stack does
+    #: not — so the same shared endpoint that is survivable under one is not under the other,
+    #: and the fix for the second is a separate process rather than a flag.
+    backend: str | None = None
     #: Whichever of :data:`_PROMPT_CACHE_KEYS` the server reported, and what it said.
     cache_settings: Mapping[str, object] = field(default_factory=dict)
 
@@ -369,9 +388,40 @@ class PromptCachePosture:
         """One line for the diagnostic log."""
         stated = " ".join(f"{key}={value}" for key, value in sorted(self.cache_settings.items()))
         return (
-            f"n_ctx={self.context_window} slots={self.total_slots} "
-            f"build={self.build_info or '?'} {stated or 'no cache settings reported'}"
+            f"n_ctx={self.context_window} backend={self.backend or '?'} "
+            f"slots={self.total_slots} build={self.build_info or '?'} "
+            f"{stated or 'no cache settings reported'}"
         )
+
+
+#: Where a model listing row may name its inference engine. LM Studio says
+#: `compatibility_type`; its completions responses say `model_info.format`. Both carry the
+#: same two values this cares about, `gguf` and `mlx`.
+_BACKEND_KEYS = ("compatibility_type", "format")
+
+
+def _native_posture(row: object) -> PromptCachePosture | None:
+    """A cache posture from a model listing row, for the servers that have no ``/props``.
+
+    Written because the probe below was **inert on the most common local setup**. LM Studio
+    answers `/props` with an "unexpected endpoint" error, and its OpenAI-shaped completions
+    carry no `timings` block — yet its own listing states the two facts that matter, and the
+    window probe is already fetching it. Reading them there costs no extra request.
+
+    What it cannot state is the slot count or the cache flags: those are a llama.cpp
+    *server* command line, and LM Studio does not run one. Absent, as always, reads as "did
+    not say" — the backend alone is enough to tell an operator whether there is a prompt
+    cache to lose.
+    """
+    if not isinstance(row, dict):
+        return None
+    backend = next(
+        (str(row[key]) for key in _BACKEND_KEYS if isinstance(row.get(key), str)), None
+    )
+    window = _context_from_row(row, (*_LOADED_CONTEXT_KEYS, *_MAX_CONTEXT_KEYS))
+    if backend is None and window is None:
+        return None
+    return PromptCachePosture(context_window=window, backend=backend)
 
 
 async def _llama_cpp_props(

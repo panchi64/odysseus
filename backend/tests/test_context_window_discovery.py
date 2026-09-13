@@ -453,6 +453,45 @@ async def test_a_server_that_mentions_no_cache_settings_says_so_rather_than_gues
     assert "no cache settings reported" in posture.summary()
 
 
+async def test_a_server_without_props_still_reports_its_backend():
+    """Written because the probe was **inert on the most common local setup**. LM Studio
+    answers `/props` with an "unexpected endpoint" error and its OpenAI-shaped completions
+    carry no `timings` block — measured against a live one — yet its own listing states the
+    fact that decides whether there is a prompt cache to lose at all.
+
+    `gguf` means llama.cpp, which keeps prefixes across requests; `mlx` means Apple's MLX,
+    which in this stack does not — so the same shared endpoint that is survivable under one
+    is not under the other, and the fix for the second is a separate process, not a flag."""
+    row = {
+        "id": "muse-glimmer-30b",
+        "compatibility_type": "gguf",
+        "max_context_length": 131072,
+        "state": "not-loaded",
+    }
+
+    posture = llm._native_posture(row)
+
+    assert posture is not None
+    assert posture.backend == "gguf"
+    assert posture.context_window == 131072
+    assert "backend=gguf" in posture.summary()
+    # And the llama.cpp-only facts stay absent rather than being guessed: a slot count and
+    # the cache flags are a `llama-server` command line, and LM Studio does not run one.
+    assert posture.total_slots is None
+    assert posture.cache_settings == {}
+
+
+async def test_an_mlx_row_is_reported_as_mlx():
+    assert llm._native_posture({"id": "m", "compatibility_type": "mlx"}).backend == "mlx"
+
+
+async def test_a_row_that_names_nothing_yields_no_posture():
+    """Absent reads as "did not say", as everywhere else here — a posture with no backend and
+    no window is a row of question marks in the log, which is worse than no row."""
+    assert llm._native_posture({"id": "m", "object": "model"}) is None
+    assert llm._native_posture(None) is None
+
+
 async def test_the_posture_probe_never_changes_the_window_that_is_returned():
     """The window is load-bearing — every guard measures against it — and the posture is
     not. So the probe is additive by construction: same response, same answer."""
