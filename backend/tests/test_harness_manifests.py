@@ -53,6 +53,62 @@ def test_provider_assembly_order_is_deterministic_and_doc_state_is_prompt_contex
     assert [m.prompt_context for m in first] == [m.prompt_context for m in second]
 
 
+def test_the_browser_manifest_contributes_its_brief():
+    """`browse_instructions` was written, documented in three places and unit-tested, and
+    registered nowhere — so eighteen browser tools shipped with no account of how they fit
+    together. Presence on the manifest is the whole wiring, so this is what pins it."""
+    from tools.browse import browse_instructions
+
+    browser = next(m for m in discover_manifests() if m.name == "browser")
+    assert browse_instructions in browser.instructions
+
+
+#: Functions in `tools/` named `*_instructions` that are deliberately *not* a feature's
+#: contribution. Keep the reason with the name — an entry here is a claim that nothing is
+#: missing, and the test below is only as good as this list is honest.
+_NOT_MANIFEST_PROVIDERS = {
+    # A *factory* that builds the provider; `agent/factory.py` registers its result from
+    # the assembled dormant mapping, because what is dormant is decided by assembly rather
+    # than contributed by any one feature.
+    "tools.tool_search.dormant_index_instructions",
+    # Seeded directly by `app.py` alongside the manifests': the project's own brief belongs
+    # to no single feature.
+    "tools.repo.repo_instructions",
+}
+
+
+def test_every_instruction_provider_in_tools_is_registered_or_listed():
+    """A provider reaches a prompt only by being on a manifest, and nothing fails when one
+    isn't — it just silently never renders, which is how `browse_instructions` stayed dead
+    through three docs asserting it shipped. So enumerate them and require each to be either
+    registered or explicitly excused."""
+    import importlib
+    import pkgutil
+
+    import tools
+
+    registered = {
+        f"{provider.__module__}.{provider.__name__}"
+        for manifest in discover_manifests()
+        for provider in manifest.instructions
+    }
+    found: set[str] = set()
+    for info in pkgutil.iter_modules(tools.__path__, prefix="tools."):
+        module = importlib.import_module(info.name)
+        for name, value in vars(module).items():
+            if name.endswith("_instructions") and callable(value):
+                # Skip re-exports: attribute the function to the module that defines it.
+                if getattr(value, "__module__", None) == info.name:
+                    found.add(f"{info.name}.{name}")
+
+    assert found, "found no *_instructions functions at all — the walk is broken, not clean"
+    unaccounted = found - registered - _NOT_MANIFEST_PROVIDERS
+    assert not unaccounted, (
+        f"these instruction providers are defined but never registered: {sorted(unaccounted)}. "
+        "Add them to a manifest's `instructions`, or to _NOT_MANIFEST_PROVIDERS with the reason."
+    )
+
+
 class _Memory:
     pass
 

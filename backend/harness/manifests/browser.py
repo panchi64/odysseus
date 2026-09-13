@@ -22,7 +22,7 @@ from harness.manifest import (
 )
 from routes import browser as browser_routes
 from services.browser import BrowserSessionManager, HostBrowser
-from tools.browse import NETWORK_TOOLS, browse_toolset
+from tools.browse import NETWORK_TOOLS, browse_instructions, browse_toolset
 
 
 async def _build(ctx: HarnessContext) -> FeatureRuntime:
@@ -55,6 +55,13 @@ MANIFEST = FeatureManifest(
     # divergence the namespacing exists to prevent. When no window can be opened, the
     # tools assemble and degrade, like every other capability here.
     toolsets=(("browse", browse_toolset),),
+    # The brief for those eighteen tools, and it belongs at the *head* rather than in
+    # `prompt_context` even though it comes and goes: it is byte-stable for as long as the
+    # session lives, and a stable block costs nothing in the head once the request that
+    # first carried it is cached, where in the tail it would create a fresh divergence on
+    # every later turn. It also switches on at the moment the reveal changes the tool
+    # array, so it arrives inside an invalidation that has already been paid for.
+    instructions=(browse_instructions,),
     # By far the most expensive category in the catalog, and the one the average turn
     # never opens — eighteen tools whose schemas would otherwise ride in every request
     # of every conversation, whether or not a page is ever loaded.
