@@ -45,6 +45,7 @@ from pydantic_ai.messages import ModelMessage, ToolCallPart
 from core.concurrency import gather_bounded
 from core.config import get_settings
 from core.container import ServiceContainer
+from core.untrusted import new_nonce
 from runs import Run
 from runs.events import ReviewCompleted, ReviewStarted
 from services.approval_grants import ApprovalGrantStore, GrantInfo, covered_by_grant
@@ -226,6 +227,14 @@ async def review_batch(
     reviewer is a registry lookup and a model construction, and the transcript is the same
     walk over the same recent history for every call in the turn — rebuilt per call it was
     several kilobytes of identical string per deferred tool.
+
+    **The fence token is minted once here too, and that is what makes the sharing pay.** The
+    transcript being one object saved this process the work of rebuilding it; it saved the
+    *server* nothing, because each prompt still opened on a nonce of its own and so diverged
+    from its siblings within a few tokens. One nonce per batch, with the shared prose first
+    (``reviewer.review_prompt``), means the second and later reviews of a turn arrive on a
+    prefix the engine has already processed. Per batch and no wider: a fresh token every
+    turn, never reused across threads or over time.
     """
     if not calls:
         return {}
@@ -234,6 +243,7 @@ async def review_batch(
     transcript = review_transcript(
         messages, turn_start=turn_start, limit=settings.review_transcript_entries
     )
+    nonce = new_nonce()
     root = await _judged_root(deps, calls)
     # Whether this host can fence a process at all is a property of the machine, not of the
     # call: resolved once for the batch, from the same process-global primitive the tool
@@ -253,6 +263,7 @@ async def review_batch(
                 granted=covered_by_grant(call.tool_name, call.args_as_dict(), grants),
                 fenced=confinement.active,
                 budget=budget,
+                nonce=nonce,
             )
             for call in calls
         ],
@@ -332,6 +343,7 @@ async def review_call(
     granted: bool = False,
     fenced: bool,
     budget: ReviewBudget | None = None,
+    nonce: str | None = None,
 ) -> ReviewOutcome:
     """Rule on one deferred call at the Auto level, announcing both ends on the stream.
 
@@ -340,7 +352,8 @@ async def review_call(
     strictest reading: with nowhere to measure containment against, every absolute or
     upward path in a command reads as leaving the workspace and escalates. ``fenced`` is
     the fact about the host the structural stage needs and cannot look up for itself, and
-    ``granted`` whether the operator's standing grant covers this tool.
+    ``granted`` whether the operator's standing grant covers this tool. ``nonce`` is the
+    fence token the batch shares, so every review's prompt opens on the same bytes.
     """
     capability = capability_of(tool, args, root=root)
     run.emit(
@@ -359,6 +372,7 @@ async def review_call(
         granted=granted,
         fenced=fenced,
         budget=budget,
+        nonce=nonce,
     )
     verdict = outcome.verdict
     run.emit(

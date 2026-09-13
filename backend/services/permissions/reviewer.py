@@ -78,7 +78,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field
@@ -147,6 +147,20 @@ class ReviewRequest:
     #: The recent conversation, already filtered to user and assistant prose
     #: (:func:`review_transcript`). Empty is legitimate — a stateless turn has no thread.
     transcript: Sequence[TranscriptEntry] = ()
+    #: The fence token both untrusted blocks carry, and the one the preamble names.
+    #:
+    #: **A field rather than something the prompt mints**, because a turn's deferred calls are
+    #: reviewed as a *batch* over one transcript (``agent/gating.py``), and the transcript is
+    #: the largest thing in the prompt. Minted inside the prompt it differed per call, so N
+    #: reviews of one batch shared their prefix up to the first byte of the nonce and the
+    #: server re-read the same several kilobytes of conversation N times.
+    #:
+    #: The default still mints one, so a request built anywhere else is fenced with a token
+    #: nothing has seen. What sharing narrows is the nonce's *scope* — per call to per batch —
+    #: and that is safe for the reason the fence works at all: the token is unpredictable to
+    #: the content being fenced, and every call in a batch is fenced in the same one message's
+    #: worth of prose. It is never shared across turns, across threads or over time.
+    nonce: str = field(default_factory=new_nonce)
 
 
 #: The stage as a function, so the engine holds a reviewer rather than a model and a test
@@ -282,7 +296,7 @@ def _prompt_text(part: UserPromptPart) -> str:
 
 
 def review_prompt(request: ReviewRequest) -> str:
-    """The reviewer's one message: the structural facts, then everything anyone wrote.
+    """The reviewer's one message: everything anyone wrote, then the structural facts.
 
     The split is by **author**, not by topic. What stands in the clear is what this
     process derived — the tool's name, the paths the grammar walk found, whether the
@@ -298,9 +312,45 @@ def review_prompt(request: ReviewRequest) -> str:
     values are not: a path is a word the model wrote, and a word with a newline in it
     could otherwise write a line of its own. That covers the tool's own name too — an
     operator's MCP server names its tools, not this catalog.
+
+    **The order is batch-invariant first, per-call last, and that is a cache decision.** A
+    turn's deferred calls are reviewed together over one transcript, so the preamble and the
+    conversation are byte-identical across every review in the batch while the described
+    action and the measurements are not. Leading with the shared part is what lets an engine
+    serve the second and later reviews' prompts from the prefix it already processed for the
+    first; the older shape put the per-call facts first and shared nothing past the rubric.
+    Worth several kilobytes per extra review, and the whole of it depends on the batch
+    sharing one ``nonce`` — which is why that is a field on the request rather than minted
+    here.
+
+    Nothing about what may be trusted moves with it. The rubric still arrives ahead of
+    everything on the ``instructions=`` seam, so it cannot be displaced by anything in this
+    message; the preamble that says both blocks are data still precedes both of them; and
+    the measurements now sit *closest to the answer*, which if anything favours them —
+    they are the ground the verdict is judged on, and the fenced prose they override is
+    what the reviewer reads first and weighs last.
     """
     capability = request.capability
-    lines = [f"Tool: {json.dumps(capability.tool)}"]
+    # One nonce and one preamble across both fences: the rule is the same rule, and the
+    # reviewer that has been told it once does not read it better for being told twice.
+    nonce = request.nonce
+    lines = [untrusted_preamble(nonce), ""]
+    if request.transcript:
+        conversation = [{"role": entry.role, "text": entry.text} for entry in request.transcript]
+        lines.append("The conversation so far, oldest first:")
+        lines.append(untrusted_fence(json.dumps(conversation), nonce, source="conversation"))
+    else:
+        lines.append("There is no conversation to read: the operator has said nothing.")
+    lines += ["", "The action, as the model described it:"]
+    # `detail` is the act's own content where the tool has some worth reading — a delegated
+    # task, a program, the reason given for opening a credential (`capability.py`). It is a
+    # second JSON field rather than more of the summary, and absent rather than null where
+    # there is none: a reviewer reading `"detail": null` learns nothing and pays for it.
+    described = {"summary": capability.summary}
+    if capability.detail is not None:
+        described["detail"] = capability.detail
+    lines.append(untrusted_fence(json.dumps(described), nonce, source="tool-call"))
+    lines += ["", "What this system measured for itself:", f"Tool: {json.dumps(capability.tool)}"]
     for label, values in (
         ("Reads", capability.reads),
         ("Writes", capability.writes),
@@ -337,26 +387,6 @@ def review_prompt(request: ReviewRequest) -> str:
         # paths rather than inside the fence because the reviewer's question about it is
         # structural — does what this command names match what it said it needed.
         lines.append(f"Declared reach: {capability.reach}")
-
-    # One nonce and one preamble across both fences: the rule is the same rule, and the
-    # reviewer that has been told it once does not read it better for being told twice.
-    nonce = new_nonce()
-    lines += ["", untrusted_preamble(nonce), "", "The action, as the model described it:"]
-    # `detail` is the act's own content where the tool has some worth reading — a delegated
-    # task, a program, the reason given for opening a credential (`capability.py`). It is a
-    # second JSON field rather than more of the summary, and absent rather than null where
-    # there is none: a reviewer reading `"detail": null` learns nothing and pays for it.
-    described = {"summary": capability.summary}
-    if capability.detail is not None:
-        described["detail"] = capability.detail
-    lines.append(untrusted_fence(json.dumps(described), nonce, source="tool-call"))
-    lines.append("")
-    if request.transcript:
-        conversation = [{"role": entry.role, "text": entry.text} for entry in request.transcript]
-        lines.append("The conversation so far, oldest first:")
-        lines.append(untrusted_fence(json.dumps(conversation), nonce, source="conversation"))
-    else:
-        lines.append("There is no conversation to read: the operator has said nothing.")
     return "\n".join(lines)
 
 

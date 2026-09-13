@@ -36,7 +36,7 @@ where a reader can see the whole rule at once and where the reviewer cannot read
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Literal
 
@@ -182,8 +182,15 @@ async def review(
     granted: bool = False,
     fenced: bool = False,
     budget: ReviewBudget | None = None,
+    nonce: str | None = None,
 ) -> ReviewOutcome:
     """Rule on one call at the Auto level: the deterministic stage, then the model.
+
+    ``nonce`` is the fence token this call's untrusted blocks carry. A caller reviewing a
+    *batch* over one transcript passes one for the whole batch, so the shared prose at the
+    front of every prompt is byte-identical and an engine can serve it from the prefix it
+    already processed (``reviewer.ReviewRequest.nonce``). Omitted, one is minted for this
+    call alone — the safe default, and what a single review wants.
 
     ``fenced`` is the fact about the *host* the deterministic stage needs and cannot look
     up for itself (``judge.py`` is pure). It defaults to the strict reading — no fence —
@@ -248,7 +255,8 @@ async def review(
             f"{verdict_of_judge.reason}; this turn has already spent its {budget.limit} "
             "reviews",
         )
-    verdict = await reviewer(ReviewRequest(capability=capability, transcript=transcript))
+    request = ReviewRequest(capability=capability, transcript=transcript)
+    verdict = await reviewer(replace(request, nonce=nonce) if nonce else request)
     if verdict is None:
         return ReviewOutcome(
             Decision.ASK, "reviewer", f"{verdict_of_judge.reason}; the review did not complete"
