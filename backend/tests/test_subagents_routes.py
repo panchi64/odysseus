@@ -32,13 +32,17 @@ async def _settle(app, run_id: str) -> None:
         await asyncio.gather(*pending, return_exceptions=True)
 
 
-async def _launch(app, conversation_id: str, task: str):
+async def _launch(app, conversation_id: str, task: str, handle: str = "the-explorer"):
     launcher = app.state.capabilities.get_optional(SubagentLauncher)
     assert launcher is not None
     from services.subagents import SubagentParent
 
     started = await launcher.launch(
-        "operator", EXPLORER, task, parent=SubagentParent(conversation_id=conversation_id)
+        "operator",
+        EXPLORER,
+        task,
+        handle=handle,
+        parent=SubagentParent(conversation_id=conversation_id),
     )
     await _settle(app, started.run_id)
     return started
@@ -58,7 +62,7 @@ async def test_a_thread_with_no_subagents_answers_with_an_empty_list(monkeypatch
 async def test_each_card_carries_the_ids_its_other_links_need(monkeypatch):
     async with client_app() as (client, app):
         patch_model_resolution(monkeypatch, output_text="found it in parser.py")
-        started = await _launch(app, "parent-1", "find the parser")
+        started = await _launch(app, "parent-1", "find the parser", "parser-finder")
 
         card = (await client.get("/conversations/parent-1/subagents")).json()["subagents"][0]
 
@@ -70,6 +74,9 @@ async def test_each_card_carries_the_ids_its_other_links_need(monkeypatch):
         assert card["run_id"] == started.run_id
         assert card["name"] == "explorer"
         assert card["task"] == "find the parser"
+        # And the name the agent itself uses. Without it a panel showing three `explorer`
+        # cards cannot be matched to the three pieces of work the agent said it split into.
+        assert card["handle"] == "parser-finder"
 
 
 async def test_a_finished_subagent_stays_on_the_list_with_what_it_reported(monkeypatch):
@@ -89,8 +96,8 @@ async def test_a_finished_subagent_stays_on_the_list_with_what_it_reported(monke
 async def test_the_list_is_newest_first(monkeypatch):
     async with client_app() as (client, app):
         patch_model_resolution(monkeypatch, output_text="done")
-        await _launch(app, "parent-1", "the first one")
-        await _launch(app, "parent-1", "the second one")
+        await _launch(app, "parent-1", "the first one", "first")
+        await _launch(app, "parent-1", "the second one", "second")
 
         listed = (await client.get("/conversations/parent-1/subagents")).json()
         tasks = [s["task"] for s in listed["subagents"]]
@@ -113,6 +120,46 @@ async def test_a_cards_transcript_opens_through_the_ordinary_conversation_route(
         # conversation, so the transcript needs no route and no renderer of its own.
         assert got.status_code == 200
         assert [m["role"] for m in got.json()["messages"]] == ["user", "assistant"]
+
+
+async def test_a_card_carries_the_task_list_the_subagent_wrote_for_itself(monkeypatch):
+    """The most legible account of what a long-running sub-agent is actually doing.
+
+    A card showing "running" and a context ring says only that it has not stopped. The
+    tasks ride this read rather than a route of their own because the panel already polls
+    this one for as long as anything is live, and a per-card fetch would turn one poll into
+    one per sub-agent.
+    """
+    async with client_app() as (client, app):
+        patch_model_resolution(monkeypatch, output_text="found it in parser.py")
+        started = await _launch(app, "parent-1", "find the parser", "parser-finder")
+        await app.state.conversation_tasks.seed(
+            "operator", started.conversation_id, ["read parser.py", "check the callers"]
+        )
+
+        card = (await client.get("/conversations/parent-1/subagents")).json()["subagents"][0]
+
+        assert [t["content"] for t in card["tasks"]] == [
+            "read parser.py",
+            "check the callers",
+        ]
+        # The same shape `GET /conversations/{id}/tasks` serves, because it is that list —
+        # so the panel renders it with the component it already has rather than a second.
+        assert card["tasks"][0]["status"] == "pending"
+
+
+async def test_a_subagent_that_wrote_no_tasks_has_an_empty_list_not_a_missing_one(
+    monkeypatch,
+):
+    async with client_app() as (client, app):
+        patch_model_resolution(monkeypatch, output_text="found it")
+        await _launch(app, "parent-1", "find the parser", "parser-finder")
+
+        card = (await client.get("/conversations/parent-1/subagents")).json()["subagents"][0]
+
+        # Most short sub-agents never write one, and a client that had to tell "no tasks"
+        # from "the field is absent" would grow a branch for a case that means nothing.
+        assert card["tasks"] == []
 
 
 async def test_one_threads_subagents_are_not_anothers(monkeypatch):

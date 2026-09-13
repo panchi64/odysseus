@@ -124,10 +124,46 @@ class ParkedTurn:
     workspace_key: str = ""
 
 
+#: How much of one argument, and of the whole line, survives into the summary.
+#:
+#: The values are chosen so that the calls the operator actually reads stay whole: a shell
+#: command, a path, a URL, a patch's target — all of them fit inside 200 characters with
+#: room to spare, and the line they make fits inside 400. What does not fit is the one
+#: shape that made this cap necessary: ``plan_submit`` carries an entire markdown plan in a
+#: single argument, and a tool that hands over a file's new contents carries the file.
+_VALUE_MAX_CHARS = 200
+_SUMMARY_MAX_CHARS = 400
+
+
 def summarize_call(name: str, args: dict[str, Any]) -> str:
-    """The one-line rendering of a call the operator is being asked about."""
-    rendered = ", ".join(f"{k}={v!r}" for k, v in args.items())
-    return f"{name}({rendered})"
+    """The one-line rendering of a call the operator is being asked about.
+
+    **A rendering, not a record.** This string rides the ``approval.required`` event beside
+    the call's real ``args`` — which are untouched and complete — and from there into a
+    notification body, where an unbounded value is not merely long but actively harmful: it
+    is the text of a push notification, and the operator scrolling past a thousand lines of
+    markdown to find out *which* call they are being asked about has been told less than a
+    truncated line would have told them. Anything that needs the whole call reads ``args``;
+    nothing should ever read this back to reconstruct one.
+
+    So each value is elided on its own before the line is assembled, rather than the line
+    simply being cut at the end: one enormous argument would otherwise push every argument
+    after it off the summary, and the last argument is as likely as the first to be the one
+    that says what this call does. The whole-line cap is the backstop for the other shape —
+    a call with many small arguments, each innocent by itself.
+    """
+    rendered = ", ".join(f"{k}={_clip(repr(v), _VALUE_MAX_CHARS)}" for k, v in args.items())
+    return _clip(f"{name}({rendered})", _SUMMARY_MAX_CHARS)
+
+
+def _clip(value: str, limit: int) -> str:
+    """``value`` at no more than ``limit`` characters, ending in an ellipsis if it was cut.
+
+    The ellipsis is the whole point: a summary that was silently truncated reads as a call
+    with a shorter argument than the one actually being approved, which is the one lie this
+    function must not tell.
+    """
+    return value if len(value) <= limit else value[: limit - 1].rstrip() + "…"
 
 
 async def park_for_input(

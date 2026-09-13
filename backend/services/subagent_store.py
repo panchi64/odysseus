@@ -53,6 +53,7 @@ class SubagentStore:
         run_id: str,
         parent_run_id: str | None,
         spec_name: str,
+        handle: str,
         task: str,
         workspace_policy: str,
         workspace_key: str | None,
@@ -74,6 +75,7 @@ class SubagentStore:
             run_id=run_id,
             parent_run_id=parent_run_id,
             spec_name=spec_name,
+            handle=handle,
             task_enc=self._vault.encrypt_str(task),
             workspace_policy=workspace_policy,
             workspace_key=workspace_key,
@@ -125,6 +127,57 @@ class SubagentStore:
         def work(session: Session) -> SubagentRecord | None:
             row = session.get(SubagentRecord, subagent_id)
             return row if row is not None and row.owner_id == owner_id else None
+
+        return await in_session(self._db, work)
+
+    async def by_handle(
+        self, parent_conversation_id: str, handle: str, owner_id: str
+    ) -> SubagentRecord | None:
+        """The sub-agent a thread called ``handle`` — how the model's own two tools resolve.
+
+        Scoped to the parent thread and not merely to the owner, because that is where the
+        handle is unique and it is also the security boundary: an owner-wide lookup would
+        let one thread's agent address another thread's sub-agent by guessing a plausible
+        name, which is the sibling-injection hole the withheld-tool set closes on the other
+        axis.
+
+        Newest first where more than one row answers. Uniqueness is enforced at launch and
+        not by the schema, so the honest tie-breaker is the one that matches what the model
+        means: rows backfilled from an older build all took their spec's name, and a thread
+        that launched two ``explorer``s before handles existed has two rows called
+        ``explorer`` with no launch-time choice to tell them apart. The most recent is the
+        one a parent asking about ``explorer`` is asking about.
+        """
+
+        def work(session: Session) -> SubagentRecord | None:
+            rows = session.exec(
+                select(SubagentRecord)
+                .where(SubagentRecord.owner_id == owner_id)
+                .where(SubagentRecord.parent_conversation_id == parent_conversation_id)
+                .where(SubagentRecord.handle == handle)
+            ).all()
+            return max(rows, key=lambda row: row.started_at, default=None)
+
+        return await in_session(self._db, work)
+
+    async def handles_for_parent(
+        self, parent_conversation_id: str, owner_id: str
+    ) -> set[str]:
+        """Every handle already taken in a thread — what a launch makes itself unique against.
+
+        Finished sub-agents included, and that is the point: a parent can read a settled
+        sub-agent's report back by name long after it ended, so re-using its handle for a
+        new one would silently redirect that read to different work. A handle is unique for
+        the life of the thread, not for the life of the run.
+        """
+
+        def work(session: Session) -> set[str]:
+            rows = session.exec(
+                select(SubagentRecord.handle)  # type: ignore[call-overload]
+                .where(SubagentRecord.owner_id == owner_id)
+                .where(SubagentRecord.parent_conversation_id == parent_conversation_id)
+            ).all()
+            return {handle for handle in rows if handle}
 
         return await in_session(self._db, work)
 
@@ -246,6 +299,10 @@ class SubagentStore:
             conversation_id=row.child_conversation_id,
             run_id=row.run_id,
             name=row.spec_name,
+            # `or row.spec_name` for a row written before the column existed and missed the
+            # migration's backfill — a card with no name to address it by is worse than one
+            # named after its spec, which is what every such row was called anyway.
+            handle=row.handle or row.spec_name,
             task=self._vault.decrypt_str(row.task_enc),
             status=status or row.status,
             summary=(

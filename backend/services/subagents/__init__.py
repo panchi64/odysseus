@@ -18,6 +18,7 @@ every other turn goes through; the shortness of this package is the evidence for
 
 from __future__ import annotations
 
+from services.subagents.definitions import AgentNameError, normalize_agent_name
 from services.subagents.launcher import (
     LaunchedSubagent,
     SubagentLauncher,
@@ -40,6 +41,7 @@ from services.subagents.spec import SubagentSpec, WorkspacePolicy
 __all__ = [
     "BUILTIN",
     "EXPLORER",
+    "AgentNameError",
     "REVIEWER",
     "TEST_RUNNER",
     "LaunchedSubagent",
@@ -53,4 +55,5 @@ __all__ = [
     "builtin_roster",
     "describe_roster",
     "merged_roster",
+    "normalize_agent_name",
 ]

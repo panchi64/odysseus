@@ -32,7 +32,8 @@ from models._fields import new_id, utcnow
 class SubagentRecord(SQLModel, table=True):
     __tablename__ = "subagent_records"
 
-    #: The same id that rides the wire as ``subagent_id`` and keys a card in the panel.
+    #: The same id that rides the wire as ``subagent_id`` and keys a card in the panel. Not
+    #: shown to the *model*, which addresses a sub-agent by ``handle`` below.
     id: str = Field(default_factory=new_id, primary_key=True)
     owner_id: str = Field(index=True)
     #: The thread that launched this one — what the panel queries, and where a report is
@@ -53,6 +54,28 @@ class SubagentRecord(SQLModel, table=True):
     #: string for the same reason a conversation's mode is one: a row written by another
     #: build, or naming a sub-agent a project has since deleted, must still load.
     spec_name: str
+    #: The name the launching model gave *this* sub-agent — ``helper-function-finder`` for
+    #: one of possibly three ``explorer``s — unique within the parent thread, and the only
+    #: identifier the model is ever shown or ever addresses it by. The id above stays the
+    #: primary key and the wire id; a uuid is the right thing for a database and the wrong
+    #: thing to ask a model to carry across four tool calls and a fifty-thousand-token gap.
+    #:
+    #: Stored rather than derived because there is nothing to derive it from: it is a
+    #: *choice* the launching turn made about this piece of work, and it has to outlive
+    #: that turn — the panel labels a card with it, a report names it, and a parent
+    #: addressing a sub-agent an hour later must land on the same one it launched.
+    #: Indexed because every one of those reads is a lookup by (parent thread, handle).
+    #:
+    #: Rows written before handles existed were backfilled to their ``spec_name``, which is
+    #: what the launcher falls back to anyway when a launch names no handle of its own — so
+    #: an old card is addressable rather than merely legible.
+    #:
+    #: Not sealed, unlike the task beside it, and the difference is deliberate: this is
+    #: looked *up* by, which an encrypted column cannot be, and the name rule holds it to a
+    #: short identifier rather than a sentence. It is the one place a handle differs from
+    #: the task it describes, and it is why ``helper-function-finder`` is a handle and "find
+    #: the helper that normalises the customer's billing address" is not.
+    handle: str = Field(default="", index=True)
     #: What it was asked to do. User content (the agent's words about the operator's
     #: work), so sealed like every other piece of it.
     task_enc: str

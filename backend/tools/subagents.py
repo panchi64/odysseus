@@ -43,12 +43,14 @@ from pydantic_ai.toolsets import ToolsetTool, WrapperToolset
 
 from services.permissions import STRICTEST_PERMISSION
 from services.subagents import (
+    AgentNameError,
     SubagentLauncher,
     SubagentParent,
     SubagentSpec,
     SubagentUnavailableError,
     builtin_roster,
     describe_roster,
+    normalize_agent_name,
 )
 from tools.deps import RunDeps
 from tools.project_agents import run_roster
@@ -81,6 +83,12 @@ Launch one when a piece of work needs a lot of reading or editing and the steps 
 are not what the operator wants to see. Not for work you could do in a couple of tool
 calls: the round trip costs more than it saves.
 
+`name` is what *you* are calling this one: a short hyphenated handle describing the job it
+is for — `helper-function-finder`, `test-runner`, `auth-route-reviewer` — not a repeat of
+the agent you picked. It has to be unique within this thread, and it is the only way to
+address this sub-agent afterwards, so name it for the piece of work rather than for the
+worker: three `explorer`s are indistinguishable, three jobs are not.
+
 `task` has to stand alone — the sub-agent starts from an empty history and never sees this
 conversation. Say what to do, where to start, and what a finished answer looks like; "the
 bug we discussed" describes nothing it can act on.
@@ -99,11 +107,26 @@ def subagents_toolset() -> AbstractToolset[RunDeps]:
     toolset = FunctionToolset[RunDeps]()
 
     async def launch(
-        ctx: RunContext[RunDeps], agent_name: str, task: str, isolate: bool = False
+        ctx: RunContext[RunDeps],
+        name: str,
+        agent_name: str,
+        task: str,
+        isolate: bool = False,
     ) -> dict:
         launcher = ctx.deps.caps.get_optional(SubagentLauncher)
         if launcher is None:
             return {"launched": False, "detail": _UNAVAILABLE}
+        try:
+            # Validated here as well as normalised at the seam, because *this* is where
+            # the model can be told what it got wrong while the launch is still worth
+            # making. The rule itself is not restated — it is the one the roster's own
+            # names are held to.
+            name = normalize_agent_name(name)
+        except AgentNameError as exc:
+            raise ModelRetry(
+                f"{exc} Name it for the job this sub-agent is for, like "
+                "`helper-function-finder`."
+            ) from exc
         roster = await run_roster(ctx)
         spec = roster.get(agent_name)
         if spec is None:
@@ -123,6 +146,7 @@ def subagents_toolset() -> AbstractToolset[RunDeps]:
                 ctx.deps.owner_id,
                 spec,
                 task,
+                handle=name,
                 parent=_parent(ctx),
                 isolate=isolate,
             )
@@ -130,13 +154,22 @@ def subagents_toolset() -> AbstractToolset[RunDeps]:
             # A state the system is in, not a bug — hand it back so the model can adapt
             # (do the work itself, or tell the operator what to switch on).
             return {"launched": False, "detail": str(exc)}
+        # `started.handle`, never the `name` that was asked for: handles are unique within
+        # the thread, so a second `explorer` came back as `explorer-2` and echoing the
+        # request would hand the model a name that addresses the first one.
         return {
             "launched": True,
-            "subagent_id": started.subagent_id,
+            "name": started.handle,
             "agent_name": started.name,
             "detail": (
                 "Running on its own. Do not wait for it and do not poll — you will be "
                 "told what it found when it finishes. Carry on, or end your turn."
+                + (
+                    ""
+                    if started.handle == name
+                    else f" Named `{started.handle}`, because `{name}` was already taken "
+                    "in this thread — address it by that."
+                )
             ),
         }
 
@@ -153,10 +186,10 @@ def subagents_toolset() -> AbstractToolset[RunDeps]:
     toolset.add_function(launch, name=LAUNCH_TOOL)
 
     @toolset.tool(name="send")
-    async def send_to_subagent(
-        ctx: RunContext[RunDeps], subagent_id: str, message: str
-    ) -> dict:
+    async def send_to_subagent(ctx: RunContext[RunDeps], name: str, message: str) -> dict:
         """Redirect a sub-agent that is still working, by amending what you asked it for.
+
+        `name` is what you called it when you launched it.
 
         Use it when what you want from one has genuinely changed — a constraint arrived, the
         operator narrowed the question, another sub-agent already covered half of it. It is
@@ -174,16 +207,19 @@ def subagents_toolset() -> AbstractToolset[RunDeps]:
         if launcher is None:
             return {"sent": False, "detail": _UNAVAILABLE}
         try:
-            view = await launcher.steer(ctx.deps.owner_id, subagent_id, message)
+            view = await launcher.steer(
+                ctx.deps.owner_id, ctx.deps.conversation_id or "", name, message
+            )
         except SubagentUnavailableError as exc:
             # Returned rather than raised as a retry, the way `launch` answers the same
             # exception. Every state it reports is settled — the sub-agent finished, or
-            # there is no such id — so a retry of this call cannot come out differently
-            # and would spend a round trip proving it. The detail says what to do instead.
+            # this thread has nothing by that name — so a retry of this call cannot come
+            # out differently and would spend a round trip proving it. The detail says what
+            # to do instead.
             return {"sent": False, "detail": str(exc)}
         return {
             "sent": True,
-            "subagent_id": view.subagent_id,
+            "name": view.handle,
             "agent_name": view.name,
             "status": view.status,
             "detail": (
@@ -210,8 +246,8 @@ def subagents_toolset() -> AbstractToolset[RunDeps]:
             return {"available": False, "detail": _UNAVAILABLE}
         # `or ""` rather than the bare value: `live` reads `None` as "every thread's", and
         # a run with no conversation of its own (a scheduled task) would be handed every
-        # live sub-agent the operator has — along with the ids to redirect them with, which
-        # is the sibling-injection hole `_NO_RECURSION` closes on the other axis. A
+        # live sub-agent the operator has — along with the handles to redirect them with,
+        # which is the sibling-injection hole `_NO_RECURSION` closes on the other axis. A
         # thread-less run's own launches are recorded under `""`, so this scopes it to
         # exactly what it launched.
         views = await launcher.live(
@@ -221,7 +257,7 @@ def subagents_toolset() -> AbstractToolset[RunDeps]:
             "available": True,
             "working": [
                 {
-                    "subagent_id": view.subagent_id,
+                    "name": view.handle,
                     "agent_name": view.name,
                     "task": view.task,
                     "status": view.status,
@@ -236,9 +272,11 @@ def subagents_toolset() -> AbstractToolset[RunDeps]:
         }
 
     @toolset.tool(name="read")
-    async def read_subagent(ctx: RunContext[RunDeps], subagent_id: str) -> dict:
+    async def read_subagent(ctx: RunContext[RunDeps], name: str) -> dict:
         """Check on a sub-agent you launched — whether it is still going, and what it has
         said so far.
+
+        `name` is what you called it when you launched it.
 
         You do not need this to receive a sub-agent's report: a finished sub-agent tells
         you itself. Use it when you need to know *now* whether one is still working — a
@@ -249,12 +287,14 @@ def subagents_toolset() -> AbstractToolset[RunDeps]:
         if launcher is None:
             return {"available": False, "detail": _UNAVAILABLE}
         try:
-            view = await launcher.read(ctx.deps.owner_id, subagent_id)
+            view = await launcher.read(
+                ctx.deps.owner_id, ctx.deps.conversation_id or "", name
+            )
         except SubagentUnavailableError as exc:
             raise ModelRetry(str(exc)) from exc
         return {
             "available": True,
-            "subagent_id": view.subagent_id,
+            "name": view.handle,
             "agent_name": view.name,
             "status": view.status,
             "report": view.summary,

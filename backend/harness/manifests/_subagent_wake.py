@@ -144,7 +144,7 @@ class SubagentWake:
         await self.deliver(
             row.owner_id,
             row.parent_conversation_id,
-            _report_text(row.spec_name, summary, error, merged),
+            _report_text(row.handle or row.spec_name, row.spec_name, summary, error, merged),
         )
 
     async def _outcome(self, run: Run, conversation_id: str) -> tuple[str | None, str | None]:
@@ -346,14 +346,28 @@ def _joined(summary: str, merged: str | None) -> str:
 
 
 def _report_text(
-    name: str, summary: str | None, error: str | None, merged: str | None
+    handle: str,
+    spec_name: str,
+    summary: str | None,
+    error: str | None,
+    merged: str | None,
 ) -> str:
     """A sub-agent's hand-back, as the launching model reads it.
 
-    Named, because a thread with three sub-agents out gets three of these and "a sub-agent
-    finished" tells it nothing about which piece of work just came back.
+    Named by its **handle**, because a thread with three sub-agents out gets three of these
+    and the spec alone does not tell them apart: "Sub-agent `explorer` finished" three times
+    over says nothing about which piece of work just came back, and the report that follows
+    is the only thing left to guess from.
+
+    The spec rides along in parentheses so the model can still see what kind of worker this
+    was — but only when it differs from the handle, since ``explorer (explorer)`` is noise
+    in the first line of every report a sub-agent launched without a handle of its own ever
+    sends, which is every row the migration backfilled.
     """
-    parts = [f"Sub-agent `{name}` finished."]
+    named = f"Sub-agent `{handle}`"
+    if spec_name != handle:
+        named += f" ({spec_name})"
+    parts = [f"{named} finished."]
     if error:
         parts.append(error)
     if summary:

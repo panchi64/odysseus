@@ -90,6 +90,14 @@ export interface ComposerProps {
   streaming?: boolean;
   /** Invoked when STOP is pressed mid-stream (see `streaming`). */
   onStop?: () => void;
+  /** What SEND is called. Defaults to "Send".
+   *
+   *  For the one case where sending this field does something other than message the
+   *  agent: the approval dock borrows the composer to collect a request for changes, and
+   *  a button reading "Send" beside a plan the operator has just rejected says the wrong
+   *  thing about what is about to happen. A label, not a second component — everything
+   *  else about the control, and about the field above it, is identical. */
+  sendLabel?: string;
   /** Text to insert into the field programmatically (e.g. an undelivered queued
    *  message restored after a cancel). Applied whenever it becomes non-empty —
    *  appended below any current draft — then acknowledged via
@@ -352,7 +360,7 @@ export function Composer(props: ComposerProps): JSX.Element {
       disabled={!canSend()}
       onClick={submit}
     >
-      Send
+      {props.sendLabel ?? "Send"}
     </Button>
   );
   // Wrapped only when there is something to say. A tooltip on every SEND would fire on

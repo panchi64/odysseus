@@ -1,5 +1,5 @@
 import { createMemo, createSignal, For, Show, type JSX } from "solid-js";
-import { Button, ConstructionReveal, Row, Stack, Text } from "~/ui";
+import { Button, Composer, ConstructionReveal, Row, Stack, Text } from "~/ui";
 import type { Park } from "../stream/approvals";
 import type { ApprovalDecision, QuestionAnswer, QuestionReply } from "../model";
 import { ApprovalPanel } from "./ApprovalPanel";
@@ -18,6 +18,13 @@ import { QuestionPanel } from "./QuestionPanel";
  * **Everything the park holds submits together**, whichever kinds it holds: the run
  * resumes on one body covering every deferred call, so a second submission would arrive
  * at a run that had already gone on. Hence one button here rather than one per panel.
+ *
+ * **A submitted plan is decided here too.** It used to be handed to the Plan panel, on
+ * the reasoning that a document is answered where it is read — but that put the one
+ * decision the operator most has to think about in the one place no other decision lives,
+ * left hosts without a panel unable to answer at all, and split a single park across two
+ * surfaces. The panel still holds the plan; the dock still holds the answer, with a
+ * button pointing at the panel for the reading.
  *
  * **STOP is not optional.** Taking over the composer takes away the only interrupt the
  * operator had, and a question — unlike an approval — has no "deny" to escape through.
@@ -42,12 +49,10 @@ export function ParkDock(props: {
     answers?: QuestionAnswer[];
   }) => void | Promise<void>;
   onStop: () => void;
-  /** Whether a Plan panel is on screen to answer a submitted plan in. Set by the chat
-   *  room, which has one; **left unset by every host that does not** — a compare pane
-   *  has no viewport, and deferring to a panel that does not exist would leave the
-   *  operator a plan they can only Stop. Where it is unset the plan is decided here,
-   *  as an ordinary approval. */
-  planInPanel?: boolean;
+  /** Put the Plan panel on screen, for a park holding a submitted plan. Left unset by
+   *  hosts that have no viewport — a compare pane — where the card simply does not offer
+   *  the button. */
+  onReadPlan?: () => void;
 }): JSX.Element {
   const [decisions, setDecisions] = createSignal<ApprovalDecision[]>([]);
   const [allDecided, setAllDecided] = createSignal(false);
@@ -56,29 +61,20 @@ export function ParkDock(props: {
   );
   const [submitting, setSubmitting] = createSignal(false);
 
-  /** A submitted plan is answered in the Plan panel where there is one, because a
-   *  document is read at a panel's width and a decision docked at the far end of the
-   *  window from its subject puts the question in two places. */
-  const deferToPanel = () =>
-    Boolean(props.planInPanel) && Boolean(props.park.planApproval);
-
-  /** What this dock decides. The plan rejoins the list wherever no panel is holding
-   *  it — the park is one park either way, and it resumes on one body. */
-  const approvals = createMemo(() => {
-    const plan = props.park.planApproval;
-    return plan && !deferToPanel()
-      ? [...props.park.approvals, plan]
-      : props.park.approvals;
-  });
-
-  const hasApprovals = () => approvals().length > 0;
+  const hasApprovals = () => props.park.approvals.length > 0;
   const hasQuestions = () => props.park.questions.length > 0;
-  /** Nothing left for the dock to ask: a park carrying `planApproval` carries nothing
-   *  else (`stream/approvals.ts` splits it out only when it is the whole park), so
-   *  deferring to the panel empties the dock. It stands down to its Stop control and
-   *  points at the panel rather than putting a second, emptier copy of the question
-   *  under it. */
-  const planOnly = () => deferToPanel();
+
+  /** Whether the operator has asked for changes rather than given a verdict.
+   *
+   *  Derived from the decisions rather than tracked beside them, and that is also what
+   *  makes the composer need no Cancel of its own: the card's three buttons stay on
+   *  screen above it, so changing one's mind back to Approve is the same click it always
+   *  was and puts the ordinary submit button back. A Cancel here would be a second owner
+   *  of an answer the card already holds, and the two would disagree the moment either
+   *  moved. */
+  const revising = createMemo(() =>
+    decisions().some((d) => !d.approved && d.intent === "revise"),
+  );
 
   /** Every question in the park answered — each with a selection or something written.
    *  The backend refuses a question answered with neither, so the button refuses first
@@ -103,12 +99,39 @@ export function ParkDock(props: {
         ? "Send answer"
         : "Submit decision";
 
-  async function submit() {
+  /** Why the composer's SEND cannot settle this park yet, or null when it can.
+   *
+   *  The composer replaces the submit button while a revision is being written, so
+   *  without this it would also replace the button's *disabled* state — and a park that
+   *  held anything besides the plan would take the operator's note, refuse it in
+   *  `submit`'s `ready()` guard, and say nothing about why. `sendBlocked` is the
+   *  composer's own answer to "what you have is fine, but it would be refused": the
+   *  field stays live, so the note being typed survives while the operator goes and
+   *  answers the rest.
+   *
+   *  Unreachable today — plan mode withholds everything else that could defer, so a park
+   *  carrying a plan carries nothing else. Written anyway, because the dead end it would
+   *  leave has only Stop in it, and the cost of the guard is one string. */
+  const sendBlocked = (): string | null =>
+    ready()
+      ? null
+      : "This request settles in one go — answer the rest of it first.";
+
+  /** Settle the whole park in one body. `note` is what the operator wrote in the
+   *  composer, and it rides on every call they asked for changes to — the one kind of no
+   *  that is a request rather than a refusal. */
+  async function submit(note?: string): Promise<void> {
     if (!ready() || submitting()) return;
     setSubmitting(true);
     try {
       await props.onSubmit({
-        decisions: hasApprovals() ? decisions() : [],
+        decisions: hasApprovals()
+          ? decisions().map((d) =>
+              !d.approved && d.intent === "revise" && note
+                ? { ...d, message: note }
+                : d,
+            )
+          : [],
         answers: props.park.questions.map((q) => ({
           tool_call_id: q.toolCallId,
           replies: replies()[q.toolCallId] ?? [],
@@ -131,12 +154,6 @@ export function ParkDock(props: {
             </Text>
           }
         >
-          <Show when={planOnly()}>
-            <Text variant="body" tone="bright">
-              A plan is waiting for you in the Plan panel.
-            </Text>
-          </Show>
-
           <Show when={hasQuestions()}>
             <Stack gap={4}>
               <For each={props.park.questions}>
@@ -157,15 +174,36 @@ export function ParkDock(props: {
 
           <Show when={hasApprovals()}>
             <ApprovalPanel
-              approvals={approvals()}
-              // A plan decided in the dock is still a plan: the same three answers,
-              // and still no recurring act for a standing grant to stand for.
-              revisable={Boolean(props.park.planApproval)}
-              hideGrant={Boolean(props.park.planApproval)}
+              approvals={props.park.approvals}
+              onReadPlan={props.onReadPlan}
               onChange={(given, decided) => {
                 setDecisions(given);
                 setAllDecided(decided);
               }}
+            />
+          </Show>
+
+          {/* Asking for changes is the one answer that needs words, so it borrows the
+              operator's own input rather than growing a second one inside the card. The
+              real `Composer`: Enter sends, the field autosizes, and SEND says what this
+              particular send does. `bare` because it is sitting inside the dock's own
+              surface, and no `storageKey` because a note about this plan is not a draft
+              of the next message.
+
+              **Only for a revision, and the asymmetry is the point.** A revision resumes
+              the *same* turn straight into another draft — if the operator does not say
+              what was wrong now, they never get to. A rejection ends it, and the composer
+              they are handed back is the ordinary one, where saying why is just the next
+              message. So the card that used to carry a textarea for both answers now
+              stops the operator for the one that cannot wait. */}
+          <Show when={revising()}>
+            <Composer
+              bare
+              autofocus
+              sendLabel="Revise"
+              placeholder="What should change about this plan?"
+              sendBlocked={sendBlocked()}
+              onSend={(text) => void submit(text)}
             />
           </Show>
 
@@ -180,13 +218,15 @@ export function ParkDock(props: {
             >
               Stop
             </Button>
-            {/* Nothing to submit when the panel owns the decision — a disabled button
-                beside a question asked somewhere else reads as a dead end. */}
-            <Show when={!planOnly()}>
+            {/* While the note is being written, SEND is the composer's own — a second
+                submit beside it would be two buttons doing one thing, one of which
+                would post an empty request for changes. It carries the same refusal the
+                button would have (`sendBlocked`), so hiding the button hides no state. */}
+            <Show when={!revising()}>
               <Button
                 variant="primary"
                 disabled={!ready() || submitting()}
-                onClick={submit}
+                onClick={() => void submit()}
               >
                 {submitting() ? "Sending…" : label()}
               </Button>

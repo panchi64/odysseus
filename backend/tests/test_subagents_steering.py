@@ -83,18 +83,26 @@ class TestDelivery:
     async def test_it_queues_onto_a_sub_agent_that_is_still_working(self, monkeypatch):
         async with client_app() as (_client, app):
             patch_model_resolution(monkeypatch, output_text="found it")
-            started = await _launcher(app).launch("operator", EXPLORER, "find the parser")
+            started = await _launcher(app).launch(
+                "operator",
+                EXPLORER,
+                "find the parser",
+                handle="parser-finder",
+                parent=_parent_thread(),
+            )
             run = app.state.runs.get(started.run_id)
             assert run is not None
 
             view = await _launcher(app).steer(
-                "operator", started.subagent_id, "only the parser"
+                "operator", "c-parent", "parser-finder", "only the parser"
             )
 
             # THE assertion. Into the inbox its next request drains, never spliced into one
             # already in flight — the same guarantee the operator's own steering has.
             assert [m.source for m in run.pending_messages] == ["parent"]
+            # Addressed by the name the launch gave it, and it lands on the right one.
             assert view.subagent_id == started.subagent_id
+            assert view.handle == "parser-finder"
             await _settle(app, started.run_id)
 
     async def test_a_sub_agent_that_has_finished_is_told_about_rather_than_dropped(
@@ -102,38 +110,142 @@ class TestDelivery:
     ):
         async with client_app() as (_client, app):
             patch_model_resolution(monkeypatch, output_text="found it")
-            started = await _launcher(app).launch("operator", EXPLORER, "find the parser")
+            started = await _launcher(app).launch(
+                "operator",
+                EXPLORER,
+                "find the parser",
+                handle="parser-finder",
+                parent=_parent_thread(),
+            )
             await _settle(app, started.run_id)
 
             with pytest.raises(SubagentUnavailableError) as refused:
-                await _launcher(app).steer("operator", started.subagent_id, "actually…")
+                await _launcher(app).steer(
+                    "operator", "c-parent", "parser-finder", "actually…"
+                )
             # Not a failure of the caller's — it is racing something that finished. The
             # answer it wanted is already on its way, so say that rather than just "no".
             detail = str(refused.value)
             assert "already finished" in detail
             assert "report" in detail
 
-    async def test_an_unknown_sub_agent_is_refused(self, monkeypatch):
+    async def test_an_unknown_handle_is_refused_in_words_that_name_it(self, monkeypatch):
         async with client_app() as (_client, app):
             patch_model_resolution(monkeypatch)
+            with pytest.raises(SubagentUnavailableError) as refused:
+                await _launcher(app).steer("operator", "c-parent", "nope", "hello?")
+            # The failure this nearly always reports is a model half-remembering a name, so
+            # the useful thing to say back is *which* name did not land — and where the
+            # ones that would are.
+            detail = str(refused.value)
+            assert "'nope'" in detail
+            assert "subagents_list" in detail
+
+    async def test_one_threads_handle_does_not_address_anothers_sub_agent(
+        self, monkeypatch
+    ):
+        """A handle is unique inside a thread and says nothing outside one.
+
+        The lookup is scoped to the launching conversation for the same reason the listing
+        is: an agent that could reach a sibling thread's sub-agent by guessing a plausible
+        name could redirect work it never asked for, with text the envelope frames as
+        coming from the agent that launched it.
+        """
+        async with client_app() as (_client, app):
+            patch_model_resolution(monkeypatch, output_text="found it")
+            started = await _launcher(app).launch(
+                "operator",
+                EXPLORER,
+                "find the parser",
+                handle="parser-finder",
+                parent=_parent_thread(),
+            )
             with pytest.raises(SubagentUnavailableError):
-                await _launcher(app).steer("operator", "nope", "hello?")
+                await _launcher(app).steer(
+                    "operator", "a-different-thread", "parser-finder", "stop"
+                )
+            await _settle(app, started.run_id)
 
     async def test_another_owners_sub_agent_is_not_steerable(self, monkeypatch):
         async with client_app() as (_client, app):
             patch_model_resolution(monkeypatch, output_text="found it")
-            started = await _launcher(app).launch("operator", EXPLORER, "find the parser")
+            started = await _launcher(app).launch(
+                "operator",
+                EXPLORER,
+                "find the parser",
+                handle="parser-finder",
+                parent=_parent_thread(),
+            )
             with pytest.raises(SubagentUnavailableError):
-                await _launcher(app).steer("someone-else", started.subagent_id, "stop")
+                await _launcher(app).steer(
+                    "someone-else", "c-parent", "parser-finder", "stop"
+                )
             await _settle(app, started.run_id)
 
     async def test_a_direction_with_nothing_in_it_is_refused(self, monkeypatch):
         async with client_app() as (_client, app):
             patch_model_resolution(monkeypatch, output_text="found it")
-            started = await _launcher(app).launch("operator", EXPLORER, "find the parser")
+            started = await _launcher(app).launch(
+                "operator",
+                EXPLORER,
+                "find the parser",
+                handle="parser-finder",
+                parent=_parent_thread(),
+            )
             with pytest.raises(SubagentUnavailableError):
-                await _launcher(app).steer("operator", started.subagent_id, "   ")
+                await _launcher(app).steer("operator", "c-parent", "parser-finder", "   ")
             await _settle(app, started.run_id)
+
+
+class TestHowAReportNamesItself:
+    """The other direction down the same link, and the same problem: which one is this?
+
+    A thread with three `explorer`s out gets three reports, and the spec alone labels all
+    three identically — leaving the report's own body as the only thing to tell them apart,
+    which is exactly the thing the model has not read yet.
+    """
+
+    def test_it_is_named_by_the_handle_with_the_spec_beside_it(self):
+        from harness.manifests._subagent_wake import _report_text
+
+        text = _report_text("helper-function-finder", "explorer", "found it", None, None)
+        assert text.startswith("Sub-agent `helper-function-finder` (explorer) finished.")
+
+    def test_a_sub_agent_named_after_its_spec_is_not_named_twice(self):
+        from harness.manifests._subagent_wake import _report_text
+
+        # Every row the migration backfilled is in this shape, and `explorer (explorer)` is
+        # noise in the first line of every report they will ever send.
+        text = _report_text("explorer", "explorer", "found it", None, None)
+        assert text.startswith("Sub-agent `explorer` finished.")
+
+
+class TestCheckingOnOne:
+    async def test_it_is_read_back_by_the_name_it_was_launched_under(self, monkeypatch):
+        async with client_app() as (_client, app):
+            patch_model_resolution(monkeypatch, output_text="found it in parser.py")
+            started = await _launcher(app).launch(
+                "operator",
+                EXPLORER,
+                "find the parser",
+                handle="parser-finder",
+                parent=_parent_thread(),
+            )
+            await _settle(app, started.run_id)
+
+            view = await _launcher(app).read("operator", "c-parent", "parser-finder")
+
+            # The whole point of the handle: no id was carried anywhere, and the sub-agent
+            # that comes back is the one the launching turn named.
+            assert view.subagent_id == started.subagent_id
+            assert view.summary == "found it in parser.py"
+
+    async def test_an_unknown_handle_says_which_name_did_not_land(self, monkeypatch):
+        async with client_app() as (_client, app):
+            patch_model_resolution(monkeypatch)
+            with pytest.raises(SubagentUnavailableError) as refused:
+                await _launcher(app).read("operator", "c-parent", "parser-finder")
+            assert "'parser-finder'" in str(refused.value)
 
 
 class TestWhatIsStillOut:
@@ -144,6 +256,7 @@ class TestWhatIsStillOut:
                 "operator",
                 EXPLORER,
                 "find the parser",
+                handle="parser-finder",
                 parent=_parent_thread(),
             )
             live = await _launcher(app).live("operator", conversation_id="c-parent")
@@ -162,7 +275,11 @@ class TestWhatIsStillOut:
         async with client_app() as (_client, app):
             patch_model_resolution(monkeypatch, output_text="found it")
             started = await _launcher(app).launch(
-                "operator", EXPLORER, "find the parser", parent=_parent_thread()
+                "operator",
+                EXPLORER,
+                "find the parser",
+                handle="parser-finder",
+                parent=_parent_thread(),
             )
             # What a thread-less run is scoped to: its own launches, recorded under "".
             assert await _launcher(app).live("operator", conversation_id="") == []
@@ -177,6 +294,7 @@ class TestWhatIsStillOut:
                 "operator",
                 EXPLORER,
                 "find the parser",
+                handle="parser-finder",
                 parent=_parent_thread(),
             )
             await _settle(app, started.run_id)
@@ -214,7 +332,7 @@ class TestWhatTheToolHandsBack:
             async def launch(self, *a, **k):  # pragma: no cover — not under test
                 raise NotImplementedError
 
-            async def steer(self, owner_id, subagent_id, message):
+            async def steer(self, owner_id, conversation_id, handle, message):
                 raise SubagentUnavailableError("`researcher` has already finished.")
 
             async def read(self, *a, **k):  # pragma: no cover — not under test
@@ -237,7 +355,7 @@ class TestWhatTheToolHandsBack:
         toolset = module.subagents_toolset()
         tools = await toolset.get_tools(ctx)
         result = await toolset.call_tool(
-            "send", {"subagent_id": "s1", "message": "narrow it"}, ctx, tools["send"]
+            "send", {"name": "the-researcher", "message": "narrow it"}, ctx, tools["send"]
         )
         assert result["sent"] is False
         assert "already finished" in result["detail"]

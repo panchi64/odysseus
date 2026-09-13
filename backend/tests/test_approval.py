@@ -198,3 +198,55 @@ async def test_parked_turn_keeps_parallel_tool_calls_on_resume():
 
     assert resumed.status is RunStatus.done
     assert "tool.completed" in _types(resumed)
+
+
+class TestTheOneLineSummary:
+    """`summarize_call` renders a call for a human reading a notification, not for a log.
+
+    The full arguments ride the same event in `args`, untouched. What this string is for is
+    the operator's phone telling them *which* call is waiting — and an uncapped one meant
+    `plan_submit` put an entire markdown plan in that sentence.
+    """
+
+    def test_an_ordinary_call_is_readable_in_full(self):
+        from agent.parking import summarize_call
+
+        summary = summarize_call("shell_run", {"command": "rm -rf build/", "timeout": 30})
+
+        # The case the cap must not touch. A shell command the operator is being asked to
+        # approve is unreadable truncated, and every one of them fits.
+        assert summary == "shell_run(command='rm -rf build/', timeout=30)"
+
+    def test_one_enormous_argument_is_elided_rather_than_carried(self):
+        from agent.parking import _SUMMARY_MAX_CHARS, _VALUE_MAX_CHARS, summarize_call
+
+        summary = summarize_call("plan_submit", {"body": "# Plan\n" + "step. " * 2000})
+
+        assert len(summary) <= _SUMMARY_MAX_CHARS
+        # Elided, not merely cut: a summary that stopped silently reads as a call with a
+        # shorter argument than the one actually being approved. And the value is cut
+        # *inside* the call rather than the line being chopped after it, so the rendering
+        # still reads as a call.
+        assert summary.endswith("…)")
+        assert summary.startswith("plan_submit(body='# Plan")
+        assert len(summary) > _VALUE_MAX_CHARS // 2
+
+    def test_a_later_argument_survives_an_earlier_enormous_one(self):
+        from agent.parking import summarize_call
+
+        summary = summarize_call("write", {"body": "x" * 5_000, "path": "notes.md"})
+
+        # Why each value is elided before the line is assembled rather than the line being
+        # cut at the end: the last argument is as likely as the first to be the one that
+        # says what this call does.
+        assert "path='notes.md'" in summary
+
+    def test_many_small_arguments_are_capped_by_the_line(self):
+        from agent.parking import _SUMMARY_MAX_CHARS, summarize_call
+
+        summary = summarize_call("noisy", {f"k{n}": f"v{n}" for n in range(200)})
+
+        # The other shape: nothing here is individually long, and the line is still a
+        # notification body.
+        assert len(summary) <= _SUMMARY_MAX_CHARS
+        assert summary.endswith("…")

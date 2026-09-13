@@ -49,9 +49,11 @@ export interface ApprovalDeps {
   reconcileStaleDecision: () => Promise<void>;
 }
 
-/** The tool whose approval is a submitted plan. Answered in the plan panel rather than
- *  the dock — a document is read at the width of a panel, not in the composer's slot —
- *  so it is split out of `approvals` below and rejoins the same single submission. */
+/** The tool whose approval is a submitted plan. Answered in the dock like every other
+ *  approval; the Plan panel beside it is where the document is *read*. Named here because
+ *  three surfaces ask "is this one the plan?" — the dock, to offer Request changes instead
+ *  of a bare Deny; the approval card, to show the plan's title rather than a dump of its
+ *  own body; and the park below, to mark it. */
 export const PLAN_SUBMIT_TOOL = "plan_submit";
 
 /** What the live turn is parked on, for the dock that takes over the composer. `null`
@@ -60,16 +62,17 @@ export interface Park {
   /** The message the park belongs to; every submit is addressed to its run. */
   messageId: string;
   approvals: Approval[];
-  /** A submitted plan awaiting an answer, held apart from `approvals` because a different
-   *  surface renders it. Everything else about it is identical — same park, same single
-   *  resume.
+  /** The submitted plan in this park, when it holds one — **a marker, not a split**. The
+   *  same object is in `approvals` above, and the dock decides it there with everything
+   *  else, because the run resumes on one body covering every parked call.
    *
-   *  **Split out only when it is the whole park.** In practice it always is: plan mode
-   *  withholds every other tool that could defer. But the run resumes on *one* body
-   *  covering every parked call, so a park split across two surfaces would be two
-   *  submissions, each naming half the batch and each refused for not covering the rest.
-   *  Where anything accompanies it, it stays in `approvals` and the dock decides the
-   *  batch as a whole — which is the plainer answer to a case that should not arise. */
+   *  It used to be held apart, for a panel that answered it on its own. That put the
+   *  decision at the far end of the window from the composer every other approval takes
+   *  over, made the panel's arrival load-bearing (a host without one could only Stop), and
+   *  meant a park could in principle be two submissions, each naming half the batch and
+   *  each refused for not covering the rest. The panel now only *renders* the plan; this
+   *  field is what tells the dock that one of the calls it is holding is a document —
+   *  worth offering Request changes over, and not worth a standing grant. */
   planApproval: Approval | null;
   questions: QuestionBlock["question"][];
   /** True once a submitted decision for this park 409'd. The dock stays up, inert and
@@ -128,18 +131,13 @@ export function createApprovalOps(deps: ApprovalDeps): ApprovalOps {
       else if (b.kind === "question") questions.push(b.question);
     }
     if (!approvals.length && !questions.length) return null;
-    // Split out only when the plan is the *whole* park — see `Park.planApproval`. The
-    // check is on the batch rather than on the block, so a park that somehow held more
-    // than the plan falls back to deciding all of it in one place.
-    const plan =
-      approvals.length === 1 &&
-      !questions.length &&
-      approvals[0].name === PLAN_SUBMIT_TOOL
-        ? approvals[0]
-        : null;
+    // Marked, not removed — see `Park.planApproval`. In practice a plan is the whole park
+    // (plan mode withholds every other tool that could defer), but nothing here depends on
+    // that: the dock decides `approvals` as one batch whatever it holds.
+    const plan = approvals.find((a) => a.name === PLAN_SUBMIT_TOOL) ?? null;
     return {
       messageId: live.id,
-      approvals: plan ? [] : approvals,
+      approvals,
       planApproval: plan,
       questions,
       // One flag for the park, not one per call: the whole batch resumes on one

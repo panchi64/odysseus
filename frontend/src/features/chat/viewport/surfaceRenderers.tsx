@@ -46,17 +46,12 @@ export const SURFACE_RENDERERS: Record<
     return (
       <TasksSurface
         items={ctx.viewport.tasks}
+        subagents={ctx.viewport.subagents}
         maxRows={spec.shape === "strip" ? spec.maxRows : 8}
       />
     );
   },
-  plan: (ctx) => (
-    <PlanSurface
-      plan={ctx.viewport.plan}
-      park={ctx.viewport.park}
-      onSubmit={ctx.viewport.resolvePlan}
-    />
-  ),
+  plan: (ctx) => <PlanSurface plan={ctx.viewport.plan} />,
   agents: (ctx) => (
     <SubagentsSurface
       subagents={ctx.viewport.subagents}

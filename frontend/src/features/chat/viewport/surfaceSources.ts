@@ -22,7 +22,7 @@ import type { PlanDocument } from "../model";
 import type { TaskItem } from "~/lib/stream/events";
 import type { Subagent } from "../data";
 import type { BranchState } from "../data";
-import type { SurfaceId } from "./surfaces";
+import { SURFACE_IDS, type SurfaceId } from "./surfaces";
 import type { ViewItem } from "./viewItems";
 
 /**
@@ -71,8 +71,15 @@ export function createSurfaceSources(
   return {
     // An empty list is not a list. The agent writes one the moment it has something
     // to write, so "no rows" and "no tasks" are the same state.
+    //
+    // A sub-agent's list counts, because the surface shows those too (grouped under its
+    // name — see `taskGroups.ts`). Read off the thread's own list alone, a thread that
+    // delegated all of its work would offer no Tasks button at all while four lists were
+    // being worked through inside it.
     tasks: {
-      available: () => deps.tasks().length > 0,
+      available: () =>
+        deps.tasks().length > 0 ||
+        deps.subagents().some((s) => s.tasks.length > 0),
       // Work in progress, narrated by the transcript beside it. A panel that opened
       // itself every time a task ticked over is a panel the operator learns to close.
       arrival: () => "announce",
@@ -135,4 +142,43 @@ export function createSurfaceSources(
       claimKey: () => "",
     },
   };
+}
+
+/** One surface putting itself on screen, and whether it is the one to look at. */
+export interface ArrivalClaim {
+  id: SurfaceId;
+  /** Whether opening this should also move the operator to it. */
+  focus: boolean;
+}
+
+/**
+ * Which surfaces may open themselves right now, and which single one wins the focus.
+ *
+ * **Two can arrive in the same pass**, and that is the case this exists for: a plan
+ * submitted at the end of a turn that also produced an artifact leaves both the Plan and
+ * the View claiming a steal. Both belong on screen. Only one can be the pane the operator
+ * is dropped into, and the loop that opened them used to focus each in turn — so the
+ * *last* one evaluated won, which is how an operator asked to approve a plan landed on an
+ * empty View and had to close the panel to find the plan behind it.
+ *
+ * Registry order decides, because it is already declared in order of how much the surface
+ * can be waiting on the operator (`surfaces.ts`: tasks, plan, agents, diff, view, files).
+ * A second priority list beside it would be one more thing to keep in step.
+ *
+ * Pure, and the claim is passed in: the one-shot bookkeeping is the room's (it is keyed
+ * per conversation and survives a re-render), and a rule about which pane the operator
+ * lands on should be testable without one.
+ */
+export function arrivalClaims(
+  sources: Record<SurfaceId, SurfaceSource>,
+  claim: (key: string) => boolean,
+): ArrivalClaim[] {
+  const claims: ArrivalClaim[] = [];
+  for (const id of SURFACE_IDS) {
+    const source = sources[id];
+    if (!source.available() || source.arrival() !== "steal") continue;
+    if (!claim(`${id}:${source.claimKey()}`)) continue;
+    claims.push({ id, focus: claims.length === 0 });
+  }
+  return claims;
 }

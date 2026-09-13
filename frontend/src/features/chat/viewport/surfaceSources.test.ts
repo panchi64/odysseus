@@ -17,7 +17,11 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { createSurfaceSources, type SurfaceDeps } from "./surfaceSources";
+import {
+  arrivalClaims,
+  createSurfaceSources,
+  type SurfaceDeps,
+} from "./surfaceSources";
 import type { PlanDocument, PlanStatus } from "../model";
 import type { TaskItem } from "~/lib/stream/events";
 import type { BranchState } from "../data";
@@ -158,5 +162,55 @@ describe("arrival", () => {
     expect(s.view.claimKey()).toBe("");
     expect(s.diff.arrival()).toBe("announce");
     expect(s.files.arrival()).toBe("silent");
+  });
+});
+
+describe("who wins the focus when two surfaces arrive together", () => {
+  /** A claim that always succeeds — the one-shot bookkeeping is the room's, and none of
+   *  these cases are about whether a surface has already used its claim. */
+  const always = () => true;
+
+  test("the plan is the pane the operator lands on, not the View behind it", () => {
+    // The case this rule exists for: a plan-mode turn that also produced an artifact
+    // leaves both claiming a steal. Both open; only the plan takes the focus, because
+    // it is the one waiting on an answer. Focusing each in turn gave it to whichever
+    // was evaluated last, which is how an approval landed the operator on an empty View.
+    const claims = arrivalClaims(
+      sources({
+        plan: () => planDoc("pending"),
+        viewItems: () => [viewItem(true)],
+      }),
+      always,
+    );
+    expect(claims.map((c) => c.id)).toEqual(["plan", "view"]);
+    expect(claims.filter((c) => c.focus).map((c) => c.id)).toEqual(["plan"]);
+  });
+
+  test("a lone arrival still takes the focus", () => {
+    const claims = arrivalClaims(
+      sources({ viewItems: () => [viewItem(true)] }),
+      always,
+    );
+    expect(claims).toEqual([{ id: "view", focus: true }]);
+  });
+
+  test("a surface that only announces never claims", () => {
+    // Tasks and Agents have content here and neither may interrupt.
+    const claims = arrivalClaims(
+      sources({ tasks: () => [taskItem("read it")] }),
+      always,
+    );
+    expect(claims).toEqual([]);
+  });
+
+  test("a spent claim is skipped, and the next in order takes the focus", () => {
+    const claims = arrivalClaims(
+      sources({
+        plan: () => planDoc("pending"),
+        viewItems: () => [viewItem(true)],
+      }),
+      (key) => !key.startsWith("plan:"),
+    );
+    expect(claims).toEqual([{ id: "view", focus: true }]);
   });
 });

@@ -15,6 +15,7 @@
  */
 
 import { api } from "~/lib/api";
+import type { TaskItem } from "~/lib/stream/events";
 
 /** One sub-agent, as the panel shows it. */
 export interface Subagent {
@@ -23,8 +24,19 @@ export interface Subagent {
   conversationId: string;
   /** Its run — the live tail, the approval, and cancelling. */
   runId: string;
+  /** The name the launching agent gave *this* sub-agent — `helper-function-finder`
+   *  rather than `explorer`. It is what the model addresses it by, and what the operator
+   *  reads on the card: a thread with three explorers out has three cards that are
+   *  otherwise identical. */
+  handle: string;
+  /** Which sub-agent off the roster this is — built-in or project-declared. */
   name: string;
   task: string;
+  /** The task list it is keeping for itself. Rides the card rather than being fetched
+   *  per sub-agent: this list is already re-read while anything is live, and a thread
+   *  with four sub-agents out would otherwise open four more polls to say the same
+   *  thing. Empty for one that has not written a list. */
+  tasks: TaskItem[];
   status: SubagentStatus;
   /** Its report once it has one; while it runs, its latest answer instead. */
   summary: string | null;
@@ -50,8 +62,10 @@ interface SubagentDTO {
   id: string;
   conversation_id: string;
   run_id: string;
+  handle: string;
   name: string;
   task: string;
+  tasks: TaskItem[];
   status: SubagentStatus;
   summary: string | null;
   error: string | null;
@@ -66,8 +80,12 @@ function toSubagent(dto: SubagentDTO): Subagent {
     id: dto.id,
     conversationId: dto.conversation_id,
     runId: dto.run_id,
+    // `?? dto.name` for a row written before handles existed — its migration backfilled
+    // the spec name, and a card with no title is worse than one naming the roster twice.
+    handle: dto.handle || dto.name,
     name: dto.name,
     task: dto.task,
+    tasks: dto.tasks ?? [],
     status: dto.status,
     summary: dto.summary,
     error: dto.error,

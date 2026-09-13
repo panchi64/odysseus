@@ -81,6 +81,12 @@ class LaunchedSubagent:
     conversation_id: str
     run_id: str
     name: str
+    #: The handle this sub-agent actually ended up with, which is **not** necessarily the
+    #: one the caller asked for: handles are unique within the launching thread, so a
+    #: second ``explorer`` comes back as ``explorer-2``. Returned rather than assumed for
+    #: exactly that reason — a caller that echoed its own request back to the model would
+    #: hand it a name that addresses the *first* one.
+    handle: str
     task: str
 
 
@@ -96,7 +102,13 @@ class SubagentView:
     subagent_id: str
     conversation_id: str
     run_id: str
+    #: Which sub-agent this is — the roster spec it was launched from.
     name: str
+    #: What the launching model called this one, and the only name it is ever shown. Beside
+    #: ``name`` rather than instead of it: the spec says what kind of worker this is and the
+    #: handle says which piece of work, and a card that dropped either would be a card the
+    #: operator cannot match to what the agent said it was doing.
+    handle: str
     task: str
     #: ``running`` | ``blocked`` | ``done`` | ``failed`` | ``cancelled``.
     status: str
@@ -120,10 +132,18 @@ class SubagentLauncher(ABC):
         spec: SubagentSpec,
         task: str,
         *,
+        handle: str,
         parent: SubagentParent | None = None,
         isolate: bool = False,
     ) -> LaunchedSubagent:
         """Open a sub-agent on ``task`` and return as soon as its first turn is submitted.
+
+        ``handle`` is the name the *caller* gives this sub-agent, and afterwards the only
+        one it is addressed by. Normalised and made unique within the launching thread here
+        rather than by the caller — which is why the handle to use is the one on the
+        returned :class:`LaunchedSubagent` and not the one that was passed in. Empty falls
+        back to the spec's own name, the same thing every row that predates handles was
+        backfilled to.
 
         ``isolate`` asks for the sub-agent to work in its *own* copy of the workspace,
         merged back when it finishes, rather than in the launching thread's files. The
@@ -145,8 +165,15 @@ class SubagentLauncher(ABC):
         """
 
     @abstractmethod
-    async def steer(self, owner_id: str, subagent_id: str, message: str) -> SubagentView:
+    async def steer(
+        self, owner_id: str, conversation_id: str, handle: str, message: str
+    ) -> SubagentView:
         """Redirect a sub-agent that is still working, and return where it has got to.
+
+        Addressed by ``(conversation_id, handle)`` — the thread that launched it and the
+        name that thread gave it. The pair is the whole address: a handle is unique inside
+        a thread and says nothing outside one, and scoping the lookup this way is what stops
+        an agent reaching a *sibling* thread's sub-agent by guessing a plausible name.
 
         The message rides the same road the operator's own mid-turn message does: queued on
         the sub-agent's Run and handed to its *next, not-yet-sent* request, so it can never
@@ -158,13 +185,23 @@ class SubagentLauncher(ABC):
         never gets it at all, because what is still pending at a run's terminal is dropped —
         correctly, since a direction to a finished sub-agent is about work that is over.
 
-        Raises :class:`SubagentUnavailableError` when there is no such sub-agent, or when it
-        has already settled — the caller wants its report at that point, not this.
+        Raises :class:`SubagentUnavailableError` when that thread has no sub-agent by that
+        name, or when the one it has already settled — the caller wants its report at that
+        point, not this.
         """
 
     @abstractmethod
-    async def read(self, owner_id: str, subagent_id: str) -> SubagentView:
-        """One sub-agent's current state, with its report if it has finished."""
+    async def read(
+        self, owner_id: str, conversation_id: str, handle: str
+    ) -> SubagentView:
+        """One sub-agent's current state, with its report if it has finished.
+
+        Addressed the same way :meth:`steer` is, and scoped to the launching thread for the
+        same reason. Raises :class:`SubagentUnavailableError` naming the handle when that
+        thread never launched one by it — which is a thing the caller can act on (it
+        misremembered a name, and the names it has are what ``live`` lists) rather than a
+        failure of the machine.
+        """
 
     @abstractmethod
     async def live(

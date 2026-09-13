@@ -1,8 +1,6 @@
-import { createSignal, For, Show, type JSX } from "solid-js";
+import { For, Show, type JSX } from "solid-js";
 import { Markdown, Stack, StatusFlag, Text } from "~/ui";
-import type { ApprovalDecision, PlanDocument, PlanStatus } from "../model";
-import type { Park } from "../stream/approvals";
-import { ApprovalPanel } from "./ApprovalPanel";
+import type { PlanDocument, PlanStatus } from "../model";
 
 /** How each state reads, and how loudly. `pending` is the only one that is a question;
  *  the rest are a record of one already answered, and record-shaped states stay quiet. */
@@ -17,56 +15,27 @@ const STATUS: Record<
 };
 
 /**
- * **The plan the agent wants to carry out, and the operator's answer to it.**
+ * **The plan the agent wants to carry out** — the document, read at a panel's width.
  *
- * A panel rather than a strip, and read rather than glanced at: this is the document the
- * whole of plan mode exists to produce, and the operator is deciding on the strength of
- * it alone. It gets the width to be read in.
+ * This is what the whole of plan mode exists to produce, and the operator decides on the
+ * strength of it alone, so it gets the room to be read in rather than a card's worth of
+ * summary.
  *
- * **The decision is rendered here, not in the dock.** Every other approval takes over the
- * composer, which is right for a one-line question about a command — the operator's
- * attention and the run's next step in the same place. A plan is not that: answering it
- * means reading several hundred words first, and a decision docked at the bottom of the
- * window while the thing it is about is in a panel beside it puts the question and its
- * subject in two places. So the panel holds both, and `ParkDock` steps back to its Stop
- * control while it does.
+ * **The decision is not here.** It used to be: this panel rendered its own
+ * `ApprovalPanel`, on the reasoning that a document should be answered where it is read.
+ * What that actually bought was one approval answered in a place no other approval lives,
+ * a host with no panel (a compare pane) unable to answer at all, and a park split across
+ * two surfaces that has to resume on one body. The answer moved back to `ParkDock` with
+ * every other approval, and the dock carries a button that opens this panel — so the
+ * reading and the deciding are one gesture apart instead of one of them being homeless.
  *
- * It is still the *same* park and the same single submission — `ApprovalPanel` reports
- * upward exactly as it does in the dock, and the run resumes once, on one body covering
- * every call it stopped for.
+ * What this owes the operator instead is **saying where the plan is up to**. `revising`
+ * is a wait on a whole model turn: the agent is writing the next draft, and a panel that
+ * only dimmed its status flag left that looking like the interface had lost the buttons.
  */
 export function PlanSurface(props: {
   plan: () => PlanDocument | null;
-  /** The live park, when the run is waiting on this plan. */
-  park: () => Park | null;
-  onSubmit: (decisions: ApprovalDecision[]) => void | Promise<void>;
 }): JSX.Element {
-  // The approval and the document are two readings of the same submission, arriving by
-  // different routes (the park off the transcript, the plan off `plan.updated`). The
-  // decision is only offered when both are in hand and the stored plan still says it is
-  // waiting — a park matched against an already-answered plan would be asking a question
-  // the backend has the answer to.
-  const awaiting = () =>
-    props.plan()?.status === "pending"
-      ? (props.park()?.planApproval ?? null)
-      : null;
-
-  // One submission per park, exactly as the dock guards itself. The three buttons decide
-  // and send in one gesture, so an operator who clicks Approve and immediately changes
-  // their mind to Reject would otherwise post twice — and the second lands on a run that
-  // has already resumed, which comes back 409 and marks the park stale over a decision
-  // that in fact succeeded.
-  const [submitting, setSubmitting] = createSignal(false);
-  const submit = async (decisions: ApprovalDecision[]) => {
-    if (submitting()) return;
-    setSubmitting(true);
-    try {
-      await props.onSubmit(decisions);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
   return (
     <Show
       when={props.plan()}
@@ -89,6 +58,15 @@ export function PlanSurface(props: {
               <Text variant="readout" tone="bright">
                 {plan.title}
               </Text>
+              {/* The one status that is a wait rather than a record. Written out, because
+                  the gap between asking for changes and the next draft is a whole model
+                  turn and silence over it reads as something having gone wrong. */}
+              <Show when={plan.status === "revising"}>
+                <Text variant="micro" tone="dim">
+                  The agent is writing the next draft — it will be put to you
+                  again when it is ready.
+                </Text>
+              </Show>
             </Stack>
 
             <Markdown>{plan.body}</Markdown>
@@ -111,35 +89,6 @@ export function PlanSurface(props: {
                   </For>
                 </ol>
               </Stack>
-            </Show>
-
-            <Show when={awaiting()} keyed>
-              {(approval) => (
-                <Show
-                  when={!props.park()?.stale}
-                  fallback={
-                    <Text variant="micro" tone="dim">
-                      ANSWERED ELSEWHERE — this was settled from another
-                      session; the transcript will catch up shortly.
-                    </Text>
-                  }
-                >
-                  <div class="border-line border-t pt-3">
-                    <ApprovalPanel
-                      approvals={[approval]}
-                      revisable
-                      hideGrant
-                      // The plan is already the whole panel above; repeating it as
-                      // `formatArgs` output under the buttons would be the same document
-                      // twice, once unreadably.
-                      renderBody={() => <></>}
-                      onChange={(decisions, allDecided) => {
-                        if (allDecided) void submit(decisions);
-                      }}
-                    />
-                  </div>
-                </Show>
-              )}
             </Show>
           </Stack>
         </div>

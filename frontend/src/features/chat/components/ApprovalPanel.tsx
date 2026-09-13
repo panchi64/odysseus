@@ -1,20 +1,26 @@
 import { createSignal, For, Show, type JSX } from "solid-js";
-import { Button, Row, Stack, StatusFlag, Text, Textarea } from "~/ui";
+import { Button, cx, Disclosure, Row, Stack, StatusFlag, Text } from "~/ui";
 import { grantKey } from "../commandScope";
 import { formatArgs } from "../data";
 import type { Approval, ApprovalDecision } from "../model";
+import { PLAN_SUBMIT_TOOL } from "../stream/approvals";
 import {
   ConversationGrantToggle,
   createGrantToggle,
 } from "./ConversationGrantToggle";
 
-/** What the operator said to one call: the verdict, and anything they wrote with it. */
+/** What the operator said to one call: the verdict, and what kind of no it was. */
 interface Answer {
   approved: boolean;
   /** Only meaningful on a no — see `ApprovalDecision.intent`. */
   intent: "deny" | "revise";
-  message?: string;
 }
+
+/** How tall the opened call may grow before it scrolls inside itself. `formatArgs` does
+ *  not truncate, and a call carrying a file's whole contents would otherwise push the
+ *  buttons off the bottom of the dock — the same cap, for the same reason, that
+ *  `ToolCallCard` puts on its own argument block. */
+const ARGS_MAX_HEIGHT = "max-h-40";
 
 /**
  * **The operator's decision point for sensitive actions the agent paused on.**
@@ -30,33 +36,41 @@ interface Answer {
  * scope is the backend's to derive from the parked call — for a tool that runs a command
  * it is that command, not the tool — and this only asks for one.
  *
- * ── The variants, and why they are props rather than a second component ──
+ * ── What the card shows, and what it keeps back ──
+ * A name, the tool's own plain-language explanation, and **the call itself behind a
+ * toggle**. The raw rendering used to be the headline, which for a submitted plan meant
+ * the entire document on one line above the buttons — a wall of text nobody reads, in the
+ * place the operator most needs to be reading. It is still one click away, because a
+ * shell command the operator cannot see is a decision they cannot actually make; it is
+ * simply no longer the first thing on the card.
+ *
+ * ── The plan, and why it is a branch rather than a component ──
  * A submitted plan is an approval like any other — same park, same resume, same single
  * body — that happens to be read as a document and answered with three words instead of
- * two. Everything that differs is presentation: what the body of the card is, whether a
+ * two. Everything that differs is presentation: what sits behind the toggle, whether a
  * standing grant is even a coherent thing to offer, and whether "revise" is on the table.
- * A separate component for it would be a second copy of the decision state and the emit
- * rule, drifting from this one the first time either changed.
- *
- * Every prop below defaults to what every existing caller already got, so the ordinary
- * approval renders exactly as it did.
+ * All three are read off the call's own tool name, so no caller has to remember to say so
+ * and no caller can disagree with another about it.
  */
 export function ApprovalPanel(props: {
   approvals: Approval[];
-  /** Collected upward on every change; complete only once every call is decided. */
+  /** Collected upward on every change; complete only once every call is decided.
+   *
+   *  A `revise` decision arrives here with **no message**: the note is composed in the
+   *  dock's own composer and attached on send, because a textarea inside a card is a
+   *  second input a few pixels from the one the operator already types in. */
   onChange: (decisions: ApprovalDecision[], allDecided: boolean) => void;
-  /** Replace the raw-argument dump with a reading of the call. For a plan, the plan. */
-  renderBody?: (approval: Approval) => JSX.Element;
-  /** Offer "revise" beside approve and deny — a no that asks for another version rather
-   *  than refusing the act. Only worth offering where trying again is meaningful. */
-  revisable?: boolean;
-  /** Hide the standing-grant opt-in. A plan is submitted once and answered once; there
-   *  is no recurring act for a grant to stand for. */
-  hideGrant?: boolean;
+  /** Put the Plan panel on screen. Offered beside a submitted plan, which is the one
+   *  approval whose subject is too long to live on the card. Omit it where there is no
+   *  panel to open — a compare pane has no viewport — and the button is not shown. */
+  onReadPlan?: () => void;
 }): JSX.Element {
   const [answers, setAnswers] = createSignal<Record<string, Answer>>({});
-  const [notes, setNotes] = createSignal<Record<string, string>>({});
   const grant = createGrantToggle();
+
+  /** A submitted plan: revisable, ungrantable, and read as a document rather than as a
+   *  rendering of its own arguments. */
+  const isPlan = (approval: Approval) => approval.name === PLAN_SUBMIT_TOOL;
 
   // The command an approval would run, when it runs one. The grant it can opt into is
   // scoped to that act rather than to the tool, so it keys the opt-in and names it.
@@ -78,15 +92,10 @@ export function ApprovalPanel(props: {
             tool_call_id: a.toolCallId,
             approved: answer.approved,
             scope: grant.scope(keyOf(a), answer.approved),
-            // Both only travel on a no, and the backend ignores them on a yes — but
-            // sending an intent with an approval would still be saying something that
-            // is not true of it.
-            ...(answer.approved
-              ? {}
-              : {
-                  intent: answer.intent,
-                  message: answer.message || undefined,
-                }),
+            // Only travels on a no, and the backend ignores it on a yes — but sending an
+            // intent with an approval would still be saying something that is not true
+            // of it.
+            ...(answer.approved ? {} : { intent: answer.intent }),
           };
         }),
       props.approvals.every((a) => a.toolCallId in given),
@@ -98,18 +107,16 @@ export function ApprovalPanel(props: {
     approved: boolean,
     intent: "deny" | "revise" = "deny",
   ) => {
-    setAnswers((a) => ({
-      ...a,
-      [toolCallId]: {
-        approved,
-        intent,
-        // Read at decision time rather than bound: what they wrote is part of the answer
-        // they just gave, not a field that goes on changing after they gave it.
-        message: notes()[toolCallId]?.trim(),
-      },
-    }));
+    setAnswers((a) => ({ ...a, [toolCallId]: { approved, intent } }));
     emit();
   };
+
+  /** The plan's own headline, for the card. Its title is the one line of a submitted
+   *  plan that belongs on a decision card; the body is the Plan panel's to render. */
+  const planTitle = (approval: Approval): string =>
+    typeof approval.args.title === "string" ? approval.args.title : "Untitled";
+  const planSteps = (approval: Approval): number =>
+    Array.isArray(approval.args.steps) ? approval.args.steps.length : 0;
 
   return (
     <Stack gap={3}>
@@ -145,48 +152,78 @@ export function ApprovalPanel(props: {
                   )}
                 </Show>
               </Row>
-              <Text variant="body" tone="bright">
-                {approval.summary}
-              </Text>
-              <Show when={approval.explanation}>
-                <Text variant="micro" tone="dim">
-                  {approval.explanation}
+
+              {/* A plan's subject is a document, so the card names it and points at the
+                  panel that holds it. Everything else says what it is about to do in the
+                  tool's own words. */}
+              <Show
+                when={isPlan(approval)}
+                fallback={
+                  /* The tool's own words where it has any — and the backend's one-line
+                     rendering where it has none, which is most of them: only a handful
+                     of tools take an `explanation` argument at all, so without the
+                     fallback a `shell_run_command` card would name the tool and say
+                     nothing whatever about what it is going to run. That is safe to show
+                     here now that `summarize_call` elides at the source; a plan, the one
+                     summary that was unreadable, never reaches this branch. */
+                  <Show when={approval.explanation || approval.summary}>
+                    {(line) => (
+                      <Text variant="body" tone="bright">
+                        {line()}
+                      </Text>
+                    )}
+                  </Show>
+                }
+              >
+                <Text variant="body" tone="bright">
+                  {planTitle(approval)}
                 </Text>
+                <Row gap={2} align="center">
+                  <Text variant="micro" tone="dim">
+                    {planSteps(approval) === 1
+                      ? "1 step"
+                      : `${planSteps(approval)} steps`}
+                  </Text>
+                  <Show when={props.onReadPlan}>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      leading="note"
+                      onClick={() => props.onReadPlan?.()}
+                    >
+                      Read the plan
+                    </Button>
+                  </Show>
+                </Row>
               </Show>
+
               <Show when={approval.risk === "too_destructive"}>
                 <Text variant="micro" tone="warn">
                   {approval.reviewReason}
                 </Text>
               </Show>
-              <Show
-                when={props.renderBody}
-                fallback={
-                  <Show when={Object.keys(approval.args).length > 0}>
-                    <Text variant="micro" tone="dim" class="break-words">
+
+              {/* The call itself — kept, and kept back. See the note at the top: the
+                  operator can always see exactly what would run, but they are not made to
+                  read it before they can reach the buttons.
+                  `formatArgs`, not `approval.summary`: the summary is the backend's
+                  one-line rendering and is elided to fit a notification, where the args
+                  are the call as it was actually made. A toggle labelled "Show call" that
+                  showed an abridged one would be the worst of both. */}
+              <Show when={Object.keys(approval.args).length > 0}>
+                <Disclosure label="Show call">
+                  <div class={cx("overflow-y-auto", ARGS_MAX_HEIGHT)}>
+                    <Text
+                      variant="micro"
+                      tone="dim"
+                      class="block whitespace-pre-wrap break-words"
+                    >
                       {formatArgs(approval.args)}
                     </Text>
-                  </Show>
-                }
-                keyed
-              >
-                {(render) => render(approval)}
+                  </div>
+                </Disclosure>
               </Show>
-              {/* Offered before the buttons, not revealed by one: a note is what the
-                  operator is composing *as* they decide, and a box that appeared only
-                  after the click would make them decide first and explain second. */}
-              <Show when={props.revisable}>
-                <Textarea
-                  rows={2}
-                  placeholder="What should change? (optional — sent with Request changes or Reject)"
-                  value={notes()[approval.toolCallId] ?? ""}
-                  onInput={(e) =>
-                    setNotes((n) => ({
-                      ...n,
-                      [approval.toolCallId]: e.currentTarget.value,
-                    }))
-                  }
-                />
-              </Show>
+
               <Row gap={2}>
                 <Button
                   variant="primary"
@@ -196,7 +233,10 @@ export function ApprovalPanel(props: {
                 >
                   Approve
                 </Button>
-                <Show when={props.revisable}>
+                {/* Only where trying again is meaningful. A refused command is refused;
+                    a plan is a draft, and the answer to one is usually neither yes nor
+                    no but "not like that". */}
+                <Show when={isPlan(approval)}>
                   <Button
                     variant="default"
                     size="sm"
@@ -212,10 +252,13 @@ export function ApprovalPanel(props: {
                   leading="close"
                   onClick={() => decide(approval.toolCallId, false, "deny")}
                 >
-                  {props.revisable ? "Reject" : "Deny"}
+                  {isPlan(approval) ? "Reject" : "Deny"}
                 </Button>
               </Row>
-              <Show when={!props.hideGrant}>
+
+              {/* A plan is submitted once and answered once; there is no recurring act
+                  for a standing grant to stand for. */}
+              <Show when={!isPlan(approval)}>
                 <ConversationGrantToggle
                   command={commandOf(approval)}
                   checked={grant.isAllowed(keyOf(approval))}

@@ -1,10 +1,12 @@
-import { type JSX } from "solid-js";
-import { Text } from "~/ui";
+import { createMemo, Index, Show, type JSX } from "solid-js";
+import { ListGroupHeader, Text } from "~/ui";
 import type { TaskItem } from "~/lib/stream/events";
+import type { Subagent } from "../data";
+import { flattenGroups, groupTasks } from "../taskGroups";
 import { TaskRows, taskSummary } from "./TaskRows";
 
 /**
- * The agent's task list, as a surface.
+ * The agent's task list, as a surface — **and its sub-agents' lists under it**.
  *
  * It has lived under the composer, folded into the status strip, where it was a
  * five-row window on a list in a band sized for one-line readouts — a thing you
@@ -18,18 +20,28 @@ import { TaskRows, taskSummary } from "./TaskRows";
  * before answering, so that one is a panel. `TaskRows` is reused exactly as the
  * status strip uses it — the rows are the same rows, and a second renderer for them
  * would be a second thing to keep in step.
+ *
+ * **A delegated list is a heading, not more rows.** Work handed to a sub-agent used to
+ * be invisible here: its list lives in its own thread, so this surface showed the
+ * launching turn's four steps and said nothing about the four sub-agents working through
+ * lists of their own. `groupTasks` is the whole of that rule; see it for why the lists
+ * are kept apart rather than interleaved.
  */
 export function TasksSurface(props: {
   items: () => TaskItem[];
+  /** The thread's sub-agents, for the lists they are keeping for themselves. */
+  subagents: () => Subagent[];
   /** Rows before the list scrolls inside itself rather than growing. Roughly
    *  `maxRows` × the row's line box; an exact height would need measuring, and
    *  being a little generous costs nothing a scrollbar does not fix. */
   maxRows: number;
 }): JSX.Element {
-  // Cancelled tasks are already out of `total`, so this counts what the list is
-  // still claiming it will do rather than everything it ever said.
+  const groups = createMemo(() => groupTasks(props.items(), props.subagents()));
+
+  // Cancelled tasks are already out of `total`, so this counts what the lists are
+  // still claiming they will do rather than everything anyone ever said.
   const progress = (): string => {
-    const { done, total } = taskSummary(props.items());
+    const { done, total } = taskSummary(flattenGroups(groups()));
     return `${done}/${total}`;
   };
 
@@ -47,7 +59,21 @@ export function TasksSurface(props: {
         class="overflow-y-auto"
         style={{ "max-height": `${props.maxRows * 1.75}rem` }}
       >
-        <TaskRows items={props.items} />
+        {/* `Index`, not `For`: `groupTasks` builds fresh objects every time it runs, and
+            it runs on every sub-agent poll — a reference-keyed `For` would therefore
+            dispose and rebuild every `TaskRows` a few seconds apart, collapsing a list
+            the operator had just expanded with +N MORE. Indexing by position keeps each
+            group's rows alive and lets the new items through them. */}
+        <Index each={groups()}>
+          {(group) => (
+            <>
+              <Show when={group().label}>
+                {(label) => <ListGroupHeader label={label()} />}
+              </Show>
+              <TaskRows items={() => group().items} />
+            </>
+          )}
+        </Index>
       </div>
     </div>
   );

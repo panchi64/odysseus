@@ -16,11 +16,13 @@ the deleted blocking delegation used to be is the evidence that nothing was rebu
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import secrets
 
 from agent.summarize import resolve_auto_compact_policy
 from harness.manifest import DormantCategory, HarnessContext
+from models.subagent import SubagentRecord
 from routes.chat import compose_turn, resolve_turn_models
 from runs import RunRegistry, RunStatus
 from services.conversations import ConversationBinding, ConversationStore
@@ -36,6 +38,7 @@ from services.settings_store import (
 )
 from services.subagent_store import SubagentStore
 from services.subagents.briefing import brief_for
+from services.subagents.definitions import AgentNameError, normalize_agent_name
 from services.subagents.launcher import (
     LaunchedSubagent,
     SubagentLauncher,
@@ -83,6 +86,14 @@ class ConversationSubagents(SubagentLauncher):
         self._settings = ctx.services.get(SettingsStore)
         self._offline = ctx.services.get(OfflineModeService)
         self._uploads = ctx.services.get(UploadStore)
+        #: Handles chosen but not yet written down. A launch picks its name at the top and
+        #: records the row at the bottom, with a whole turn's composition in between — so
+        #: the register cannot answer "what is taken" for a launch that is still in flight,
+        #: and the fan-out this feature exists for is exactly the case where two of them
+        #: are. Held with the lock below, and dropped once the row lands (or the launch
+        #: fails), after which the register answers for it.
+        self._reserved: set[tuple[str, str, str]] = set()
+        self._reserve_lock = asyncio.Lock()
 
     async def launch(
         self,
@@ -90,6 +101,7 @@ class ConversationSubagents(SubagentLauncher):
         spec: SubagentSpec,
         task: str,
         *,
+        handle: str,
         parent: SubagentParent | None = None,
         isolate: bool = False,
     ) -> LaunchedSubagent:
@@ -98,7 +110,30 @@ class ConversationSubagents(SubagentLauncher):
             raise SubagentUnavailableError("A sub-agent needs a task to do.")
         parent = parent or SubagentParent()
         await self._check_capacity(owner_id)
+        thread = parent.conversation_id or ""
+        handle = await self._handle_for(owner_id, thread, handle, spec)
+        try:
+            return await self._launch(
+                owner_id, spec, task, handle=handle, parent=parent, isolate=isolate
+            )
+        finally:
+            # Held only until the row exists — or until the launch gives up. After that
+            # the register answers for the name itself, and a reservation outliving it
+            # would suffix the next launch against a sub-agent nobody ever started.
+            async with self._reserve_lock:
+                self._reserved.discard((owner_id, thread, handle))
 
+    async def _launch(
+        self,
+        owner_id: str,
+        spec: SubagentSpec,
+        task: str,
+        *,
+        handle: str,
+        parent: SubagentParent,
+        isolate: bool,
+    ) -> LaunchedSubagent:
+        """Everything a launch does once its name is settled — see :meth:`launch`."""
         try:
             models = await resolve_turn_models(self._models, None, None, owner_id=owner_id)
         except Exception as exc:
@@ -160,7 +195,7 @@ class ConversationSubagents(SubagentLauncher):
 
         conversation_id = await self._conversations.create_conversation(
             owner_id,
-            title=_title_for(spec.name, task),
+            title=_title_for(handle, task),
             project_id=parent.project_id,
             mode=mode,
             permission=permission,
@@ -230,6 +265,7 @@ class ConversationSubagents(SubagentLauncher):
             run_id=created.run_id,
             parent_run_id=parent.run_id,
             spec_name=spec.name,
+            handle=handle,
             task=task,
             workspace_policy=policy,
             workspace_key=workspace_key,
@@ -244,8 +280,57 @@ class ConversationSubagents(SubagentLauncher):
             conversation_id=conversation_id,
             run_id=created.run_id,
             name=spec.name,
+            handle=handle,
             task=task,
         )
+
+    async def _handle_for(
+        self, owner_id: str, parent_conversation_id: str, requested: str, spec: SubagentSpec
+    ) -> str:
+        """The name this sub-agent will answer to — normalised, and unique in its thread.
+
+        Both halves are done here rather than at the tool, and for different reasons. The
+        *rule* is ``normalize_agent_name``'s, shared with the one that reads a project's
+        agent files, because a launch handle and an agent file's name are read in the same
+        places by the same eyes. The *uniqueness* is here because it is a fact about the
+        register, which the tool cannot see — and because a model launching three
+        ``explorer``s in one step has no way to know what the other two took.
+
+        Suffixed rather than refused on a clash. A launch is the expensive thing the model
+        just decided to do; failing it over a name would spend a retry re-deciding, and the
+        suffix is legible enough that ``explorer-2`` in a report is obviously the second
+        explorer. The returned handle is therefore what the caller must tell the model,
+        never what it asked for.
+
+        **Reserved, not merely read.** A model launching three ``explorer``s in one step
+        launches them *concurrently*, and a launch does not write its row until a whole
+        turn has been composed — so three reads of the register would all answer "nothing
+        taken" and all three would be called ``explorer``, after which ``by_handle`` lands
+        every direction on the newest and the other two are unaddressable for good. So the
+        register and the launches still in flight are consulted together, under a lock, and
+        the name is claimed before this returns.
+        """
+        try:
+            base = normalize_agent_name(requested) if requested.strip() else spec.name
+        except AgentNameError as exc:
+            # Defence in depth: the tool validates first, so this catches a caller inside
+            # the process rather than the model. Reported as a state rather than raised as
+            # a bug, because everything else this seam refuses is reported that way.
+            raise SubagentUnavailableError(str(exc)) from exc
+        async with self._reserve_lock:
+            taken = await self._records.handles_for_parent(parent_conversation_id, owner_id)
+            taken |= {
+                handle
+                for owner, thread, handle in self._reserved
+                if owner == owner_id and thread == parent_conversation_id
+            }
+            chosen = base
+            suffix = 2
+            while chosen in taken:
+                chosen = f"{base}-{suffix}"
+                suffix += 1
+            self._reserved.add((owner_id, parent_conversation_id, chosen))
+            return chosen
 
     async def _check_capacity(self, owner_id: str) -> None:
         """Refuse a launch that would put the operator over the cap they set.
@@ -275,24 +360,21 @@ class ConversationSubagents(SubagentLauncher):
             "whatever does not depend on them, or end your turn."
         )
 
-    async def steer(self, owner_id: str, subagent_id: str, message: str) -> SubagentView:
+    async def steer(
+        self, owner_id: str, conversation_id: str, handle: str, message: str
+    ) -> SubagentView:
         message = message.strip()
         if not message:
             raise SubagentUnavailableError("A direction with nothing in it changes nothing.")
-        row = await self._records.get(subagent_id, owner_id)
-        if row is None:
-            raise SubagentUnavailableError(
-                f"No sub-agent {subagent_id!r} — check the id you were given when you "
-                "launched it."
-            )
+        row = await self._resolve(owner_id, conversation_id, handle)
         run = self._runs.get(row.run_id)
         if run is None or run.is_terminal:
             # Not a failure of the caller's: it is racing something that finished. Say what
             # is true now, because the answer it wanted is already on its way as a report.
             raise SubagentUnavailableError(
-                f"`{row.spec_name}` has already finished, so there is nothing left to "
-                "redirect. Its report is on its way to you — read it, and launch another "
-                "sub-agent if there is more to do."
+                f"`{row.handle or row.spec_name}` has already finished, so there is nothing "
+                "left to redirect. Its report is on its way to you — read it, and launch "
+                "another sub-agent if there is more to do."
             )
         # The steering road, unchanged: queued on the run and handed to its next
         # not-yet-sent request, so this cannot interrupt a model mid-stream. `source` is
@@ -301,13 +383,8 @@ class ConversationSubagents(SubagentLauncher):
         run.enqueue_message(message, source="parent")
         return self._live_view(row)
 
-    async def read(self, owner_id: str, subagent_id: str) -> SubagentView:
-        row = await self._records.get(subagent_id, owner_id)
-        if row is None:
-            raise SubagentUnavailableError(
-                f"No sub-agent {subagent_id!r} — check the id you were given when you "
-                "launched it."
-            )
+    async def read(self, owner_id: str, conversation_id: str, handle: str) -> SubagentView:
+        row = await self._resolve(owner_id, conversation_id, handle)
         view = self._live_view(row)
         if view.summary is None and view.status in {"running", "blocked"}:
             # Nothing reported yet: hand over its latest answer instead, so a parent
@@ -315,6 +392,30 @@ class ConversationSubagents(SubagentLauncher):
             # blank. A current best, explicitly not a report.
             view = _with_summary(view, await self._latest_answer(row.child_conversation_id))
         return view
+
+    async def _resolve(
+        self, owner_id: str, conversation_id: str, handle: str
+    ) -> SubagentRecord:
+        """The one sub-agent a thread calls ``handle``, or an answer the model can use.
+
+        The refusal names the handle back, because the failure this is nearly always
+        reporting is a model addressing a sub-agent by a name it half-remembers — and the
+        useful thing to tell it is which name did not land, not that a lookup failed.
+        Normalised on the way in so ``Helper Function Finder`` reaches the same row
+        ``helper-function-finder`` does; an unusable one simply matches nothing, which is
+        the truth and needs no separate branch.
+        """
+        try:
+            handle = normalize_agent_name(handle)
+        except AgentNameError:
+            pass
+        row = await self._records.by_handle(conversation_id, handle, owner_id)
+        if row is None:
+            raise SubagentUnavailableError(
+                f"You have no sub-agent called {handle!r}. Use the name you gave it when "
+                "you launched it — `subagents_list` has the ones still working."
+            )
+        return row
 
     async def live(
         self, owner_id: str, *, conversation_id: str | None = None
@@ -356,12 +457,16 @@ class ConversationSubagents(SubagentLauncher):
 #: counter somebody has to remember to increment: a tree of agents is unbounded cost and
 #: unbounded blast radius, and nothing about the work needs one.
 #:
-#: ``send`` and ``list`` are here for a second reason, and it is not depth. They address a
-#: sub-agent by id within the owner, not within the launching thread — so a sub-agent
-#: keeping them could redirect a *sibling*, with text the envelope frames as coming from
-#: the agent that launched it. Nothing about a sub-agent's job needs to reach another one.
-#: (``subagents_read`` stays: it only reads, and with no way to launch or list, a sub-agent
-#: has no id to read but its own.)
+#: ``send`` and ``list`` are here for a second reason, and it is not depth. Nothing about a
+#: sub-agent's job needs to reach another one, and both of these are shaped to reach one:
+#: ``list`` enumerates a thread's sub-agents and ``send`` redirects one with text the
+#: envelope frames as coming from the agent that launched it. Addressing is now scoped to
+#: the launching thread — a sub-agent asking about its *own* thread would find nothing,
+#: because it launched nothing — so this is belt and braces rather than the only thing
+#: holding the door; it stays because a tool that can only ever return nothing is a tool
+#: the model spends a call discovering is useless. (``subagents_read`` stays for the
+#: mirror-image reason: it only reads, and with no way to launch, a sub-agent has no handle
+#: to read but ones it never created.)
 _NO_RECURSION: frozenset[str] = frozenset(
     {"subagents_launch", "subagents_send", "subagents_list"}
 )
@@ -422,15 +527,19 @@ def _briefing(text: str):
     return provider
 
 
-def _title_for(name: str, task: str) -> str:
+def _title_for(handle: str, task: str) -> str:
     """The sub-agent's thread name — what it is, and what it was asked to do, on one line.
 
     The task *is* the title, rather than the thread being auto-named from its first
     exchange: nobody wrote this thread's opening message, and a card reading "Untitled" is
     a card the operator cannot tell from the three beside it.
+
+    Named by its *handle* and not by its spec, for the same reason: three ``explorer``s out
+    at once produce three titles beginning ``explorer:`` and differing only in however much
+    of the task survives the width, while three handles differ in the first word.
     """
     folded = " ".join(task.split())
-    title = f"{name}: {folded}"
+    title = f"{handle}: {folded}"
     if len(title) <= _TITLE_MAX_CHARS:
         return title
     return title[: _TITLE_MAX_CHARS - 1] + "…"

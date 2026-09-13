@@ -2,9 +2,10 @@
  *
  *  Two seams, and both are easy to get wrong in a way nothing visible catches.
  *
- *  **The split.** A plan is answered in the Plan panel rather than the dock, so it comes
- *  off the park separately — but it is still the *same* park and the same single resume,
- *  so it must not vanish from the batch or be counted twice.
+ *  **The mark.** A plan is decided in the dock with every other approval, and is only
+ *  *marked* on the park so the dock can offer Request changes over it and the panel can
+ *  be pointed at. The mark must never cost it its place in the batch — the run resumes on
+ *  one body covering every parked call.
  *
  *  **The third answer.** "Revise" and "deny" both stop the call and differ only in what
  *  the model is told. A model handed the wrong one wastes the turn: a denial read as
@@ -151,7 +152,7 @@ describe("folding a level the run moved", () => {
   });
 });
 
-describe("the tool name the park splits on", () => {
+describe("the tool name the park marks on", () => {
   test("matches the one the backend defers", () => {
     // Both halves are literals — the frontend cannot import the backend's — so this
     // is the only thing standing between a rename and a plan that silently renders as
@@ -160,7 +161,7 @@ describe("the tool name the park splits on", () => {
   });
 });
 
-describe("splitting the plan off the park", () => {
+describe("marking the plan in the park", () => {
   const approval = (name: string) => ({
     kind: "approval" as const,
     approval: { toolCallId: `c-${name}`, name, args: {}, summary: name },
@@ -181,21 +182,20 @@ describe("splitting the plan off the park", () => {
     }).park();
   };
 
-  test("a plan alone is split out for the panel", () => {
+  test("a plan is marked AND stays in the batch the dock decides", () => {
+    // The run resumes on ONE body covering every parked call. The plan used to be
+    // lifted out of `approvals` for a panel that answered it alone, which made the mark
+    // and the batch two different facts; now the mark is only a mark, and a park that
+    // held nothing else would otherwise reach the dock empty.
     const park = parkOf([approval(PLAN_SUBMIT_TOOL)]);
     expect(park?.planApproval?.name).toBe(PLAN_SUBMIT_TOOL);
-    // ...and removed from the dock's list, or it would be decided twice.
-    expect(park?.approvals).toEqual([]);
+    expect(park?.approvals.map((a) => a.name)).toEqual([PLAN_SUBMIT_TOOL]);
   });
 
-  test("a plan with anything beside it stays in the batch", () => {
-    // The run resumes on ONE body covering every parked call, so a park split across
-    // two surfaces would be two submissions, each naming half the batch and each
-    // refused for not covering the rest. Unreachable today — plan mode withholds
-    // everything else that could defer — and the plainer answer if it ever is.
+  test("a plan with anything beside it is still one batch", () => {
     for (const extra of [approval("shell_run_command"), question()]) {
       const park = parkOf([approval(PLAN_SUBMIT_TOOL), extra]);
-      expect(park?.planApproval).toBeNull();
+      expect(park?.planApproval?.name).toBe(PLAN_SUBMIT_TOOL);
       expect(park?.approvals.map((a) => a.name)).toContain(PLAN_SUBMIT_TOOL);
     }
   });

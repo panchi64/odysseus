@@ -95,7 +95,7 @@ export function SubagentApproval(props: {
   return (
     <div class="flex flex-col gap-2">
       <Text variant="micro" tone="warn">
-        {props.subagent.name} is waiting on you
+        {props.subagent.handle} is waiting on you
       </Text>
       <Show
         when={approvals().length > 0}

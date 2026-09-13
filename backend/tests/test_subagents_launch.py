@@ -86,7 +86,9 @@ class TestLaunching:
         async with client_app() as (_client, app):
             patch_model_resolution(monkeypatch, output_text="what I found")
 
-            started = await _launcher(app).launch("operator", EXPLORER, "find the parser")
+            started = await _launcher(app).launch(
+                "operator", EXPLORER, "find the parser", handle="parser-finder"
+            )
 
             # THE assertion. A tool that awaited this would spend its whole turn here,
             # which is exactly what the blocking delegation did.
@@ -96,7 +98,9 @@ class TestLaunching:
     async def test_the_task_is_what_names_the_thread(self, monkeypatch):
         async with client_app() as (_client, app):
             patch_model_resolution(monkeypatch, output_text="done")
-            started = await _launcher(app).launch("operator", EXPLORER, "find the parser")
+            started = await _launcher(app).launch(
+                "operator", EXPLORER, "find the parser", handle="parser-finder"
+            )
             await _settle(app, started.run_id)
 
             summary = await app.state.conversations.get_summary(
@@ -110,7 +114,9 @@ class TestLaunching:
     async def test_the_thread_is_hidden_but_readable(self, monkeypatch):
         async with client_app() as (_client, app):
             patch_model_resolution(monkeypatch, output_text="done")
-            started = await _launcher(app).launch("operator", EXPLORER, "read the config")
+            started = await _launcher(app).launch(
+                "operator", EXPLORER, "read the config", handle="config-reader"
+            )
             await _settle(app, started.run_id)
 
             listed = await app.state.conversations.list_conversations("operator")
@@ -124,7 +130,7 @@ class TestLaunching:
         async with client_app() as (_client, app):
             patch_model_resolution(monkeypatch)
             with pytest.raises(SubagentUnavailableError):
-                await _launcher(app).launch("operator", EXPLORER, "   ")
+                await _launcher(app).launch("operator", EXPLORER, "   ", handle="nothing-doer")
 
 
 class TestWhatItMayDo:
@@ -136,6 +142,7 @@ class TestWhatItMayDo:
                 "operator",
                 WORKER,
                 "rename the thing",
+                handle="renamer",
                 parent=SubagentParent(permission="manual"),
             )
             await _settle(app, started.run_id)
@@ -149,7 +156,9 @@ class TestWhatItMayDo:
             patch_model_resolution(monkeypatch, output_text="done")
             composed = _capture_composition(monkeypatch)
 
-            started = await _launcher(app).launch("operator", EXPLORER, "look around")
+            started = await _launcher(app).launch(
+                "operator", EXPLORER, "look around", handle="looker"
+            )
             await _settle(app, started.run_id)
 
             # Depth is one by construction. A tree of agents is unbounded cost and
@@ -163,7 +172,9 @@ class TestWhatItMayDo:
             patch_model_resolution(monkeypatch, output_text="done")
             composed = _capture_composition(monkeypatch)
 
-            started = await _launcher(app).launch("operator", EXPLORER, "look around")
+            started = await _launcher(app).launch(
+                "operator", EXPLORER, "look around", handle="looker"
+            )
             await _settle(app, started.run_id)
 
             # Not the interactive lane: a burst of sub-agents must never hold up the turn
@@ -188,7 +199,174 @@ class TestWhatItMayDo:
             # satisfied — and a sub-agent that ran anyway would answer from model memory
             # and read, to everything downstream, exactly as though it had done the work.
             with pytest.raises(SubagentUnavailableError, match="subagents_launch"):
-                await _launcher(app).launch("operator", impossible, "go")
+                await _launcher(app).launch("operator", impossible, "go", handle="the-impossible")
+
+
+class TestItsHandle:
+    """The name the *launching model* gives a sub-agent, and the only one it ever sees.
+
+    The uuid it used to be handed had to survive four tool calls and tens of thousands of
+    tokens of other work, with nothing about it to notice a transposed character in. A
+    handle the model chose for the job is legible, and — because it is chosen at launch and
+    made unique in the thread — it is also the thing a report, a card and a thread title can
+    all be named by without any of them disagreeing.
+    """
+
+    async def test_it_is_normalised_by_the_rule_agent_files_are_read_under(
+        self, monkeypatch
+    ):
+        async with client_app() as (_client, app):
+            patch_model_resolution(monkeypatch, output_text="done")
+            started = await _launcher(app).launch(
+                "operator", EXPLORER, "find it", handle="Helper Function Finder"
+            )
+            await _settle(app, started.run_id)
+
+            # One rule, shared with `.claude/agents/*.md`'s own `name:`, because the two are
+            # read in the same places by the same eyes. A model writing the words rather
+            # than the identifier meant exactly one thing.
+            assert started.handle == "helper-function-finder"
+
+    async def test_a_handle_that_is_not_a_name_is_refused(self, monkeypatch):
+        async with client_app() as (_client, app):
+            patch_model_resolution(monkeypatch)
+            with pytest.raises(SubagentUnavailableError, match="not a usable agent name"):
+                await _launcher(app).launch(
+                    "operator", EXPLORER, "find it", handle="find it!!"
+                )
+
+    async def test_a_launch_naming_nothing_takes_its_specs_name(self, monkeypatch):
+        async with client_app() as (_client, app):
+            patch_model_resolution(monkeypatch, output_text="done")
+            started = await _launcher(app).launch(
+                "operator", EXPLORER, "find it", handle=""
+            )
+            await _settle(app, started.run_id)
+
+            # The same fallback the migration backfilled every pre-handle row to, so there
+            # is one answer to "what is this sub-agent called" rather than two.
+            assert started.handle == "explorer"
+
+    async def test_a_clash_inside_a_thread_is_suffixed_rather_than_refused(
+        self, monkeypatch
+    ):
+        async with client_app() as (_client, app):
+            patch_model_resolution(monkeypatch, output_text="done")
+            parent = SubagentParent(conversation_id="parent-handles")
+            first = await _launcher(app).launch(
+                "operator", EXPLORER, "look here", handle="looker", parent=parent
+            )
+            second = await _launcher(app).launch(
+                "operator", EXPLORER, "look there", handle="looker", parent=parent
+            )
+            third = await _launcher(app).launch(
+                "operator", EXPLORER, "look everywhere", handle="looker", parent=parent
+            )
+
+            # A launch is the expensive thing the model just decided to do; failing it over
+            # a name would spend a retry re-deciding, and `looker-2` is legible enough that
+            # a report naming it is obviously the second one.
+            assert [first.handle, second.handle, third.handle] == [
+                "looker",
+                "looker-2",
+                "looker-3",
+            ]
+            for one in (first, second, third):
+                await _settle(app, one.run_id)
+
+    async def test_a_handle_taken_by_a_finished_sub_agent_is_still_taken(self, monkeypatch):
+        async with client_app() as (_client, app):
+            patch_model_resolution(monkeypatch, output_text="done")
+            parent = SubagentParent(conversation_id="parent-handles-2")
+            first = await _launcher(app).launch(
+                "operator", EXPLORER, "look here", handle="looker", parent=parent
+            )
+            await _settle(app, first.run_id)
+
+            second = await _launcher(app).launch(
+                "operator", EXPLORER, "look there", handle="looker", parent=parent
+            )
+            await _settle(app, second.run_id)
+
+            # Unique for the life of the *thread*, not of the run: a parent can read a
+            # settled sub-agent's report back by name long afterwards, and re-using the
+            # handle would silently redirect that read to different work.
+            assert second.handle == "looker-2"
+
+    async def test_launches_in_the_same_step_do_not_take_the_same_handle(
+        self, monkeypatch
+    ):
+        """The case the suffix exists for, launched the way it actually happens.
+
+        A fan-out is parallel tool calls, and a launch does not write its row until a whole
+        turn has been composed — so three launches reading the register would all be told
+        "nothing taken" and all three would be called `looker`. Every direction after that
+        lands on whichever row is newest, and the other two are unaddressable for good.
+        """
+        async with client_app() as (_client, app):
+            patch_model_resolution(monkeypatch, output_text="done")
+            parent = SubagentParent(conversation_id="parent-handles-3")
+            started = await asyncio.gather(
+                *(
+                    _launcher(app).launch(
+                        "operator",
+                        EXPLORER,
+                        f"look at {n}",
+                        handle="looker",
+                        parent=parent,
+                    )
+                    for n in range(3)
+                )
+            )
+
+            assert sorted(one.handle for one in started) == [
+                "looker",
+                "looker-2",
+                "looker-3",
+            ]
+            for one in started:
+                await _settle(app, one.run_id)
+
+    async def test_two_threads_may_each_have_a_looker(self, monkeypatch):
+        async with client_app() as (_client, app):
+            patch_model_resolution(monkeypatch, output_text="done")
+            mine = await _launcher(app).launch(
+                "operator",
+                EXPLORER,
+                "look here",
+                handle="looker",
+                parent=SubagentParent(conversation_id="thread-a"),
+            )
+            theirs = await _launcher(app).launch(
+                "operator",
+                EXPLORER,
+                "look there",
+                handle="looker",
+                parent=SubagentParent(conversation_id="thread-b"),
+            )
+
+            # Unique *within* a thread and meaningless outside one — which is also why the
+            # lookup takes the conversation, and why an agent cannot reach a sibling
+            # thread's sub-agent by guessing a plausible name.
+            assert mine.handle == theirs.handle == "looker"
+            for one in (mine, theirs):
+                await _settle(app, one.run_id)
+
+    async def test_the_handle_is_what_names_the_thread(self, monkeypatch):
+        async with client_app() as (_client, app):
+            patch_model_resolution(monkeypatch, output_text="done")
+            started = await _launcher(app).launch(
+                "operator", EXPLORER, "find the parser", handle="parser-finder"
+            )
+            await _settle(app, started.run_id)
+
+            summary = await app.state.conversations.get_summary(
+                started.conversation_id, "operator"
+            )
+            assert summary is not None
+            # Three `explorer`s produce three titles that differ only in whatever survives
+            # the width; three handles differ in the first word.
+            assert (summary.title or "").startswith("parser-finder:")
 
 
 class TestTheRegister:
@@ -199,6 +377,7 @@ class TestTheRegister:
                 "operator",
                 EXPLORER,
                 "find the parser",
+                handle="parser-finder",
                 parent=SubagentParent(conversation_id="parent-1"),
             )
             await _settle(app, started.run_id)
@@ -224,6 +403,7 @@ class TestTheRegister:
                 run_id="gone-with-the-process",
                 parent_run_id=None,
                 spec_name="explorer",
+                handle="the-stranded-one",
                 task="look",
                 workspace_policy="shared",
                 workspace_key="parent-1",
@@ -249,7 +429,9 @@ class TestTheCap:
         async with client_app() as (_client, app):
             patch_model_resolution(monkeypatch, output_text="done")
             started = [
-                await _launcher(app).launch("operator", EXPLORER, f"look at {n}")
+                await _launcher(app).launch(
+                    "operator", EXPLORER, f"look at {n}", handle=f"looker-at-{n}"
+                )
                 for n in range(4)
             ]
 
@@ -265,10 +447,14 @@ class TestTheCap:
         async with client_app() as (_client, app):
             patch_model_resolution(monkeypatch, output_text="done")
             await set_subagent_limit(app.state.settings_store, "operator", 1)
-            first = await _launcher(app).launch("operator", EXPLORER, "look here")
+            first = await _launcher(app).launch(
+                "operator", EXPLORER, "look here", handle="here-looker"
+            )
 
             with pytest.raises(SubagentUnavailableError) as refused:
-                await _launcher(app).launch("operator", EXPLORER, "look there")
+                await _launcher(app).launch(
+                    "operator", EXPLORER, "look there", handle="there-looker"
+                )
 
             # A model told only "no" retries immediately and spends the turn doing it. This
             # says what it is waiting for and that the wait ends by itself.
@@ -279,12 +465,16 @@ class TestTheCap:
         async with client_app() as (_client, app):
             patch_model_resolution(monkeypatch, output_text="done")
             await set_subagent_limit(app.state.settings_store, "operator", 1)
-            first = await _launcher(app).launch("operator", EXPLORER, "look here")
+            first = await _launcher(app).launch(
+                "operator", EXPLORER, "look here", handle="here-looker"
+            )
             await _settle(app, first.run_id)
 
             # Otherwise the cap is a lifetime budget rather than a concurrency one, and a
             # long session would stop being able to launch anything at all.
-            second = await _launcher(app).launch("operator", EXPLORER, "look there")
+            second = await _launcher(app).launch(
+                "operator", EXPLORER, "look there", handle="there-looker"
+            )
             await _settle(app, second.run_id)
 
     async def test_nothing_is_created_for_a_launch_that_is_refused(self, monkeypatch):
@@ -295,6 +485,7 @@ class TestTheCap:
                 "operator",
                 EXPLORER,
                 "look here",
+                handle="here-looker",
                 parent=SubagentParent(conversation_id="parent-cap"),
             )
 
@@ -303,6 +494,7 @@ class TestTheCap:
                     "operator",
                     EXPLORER,
                     "look there",
+                    handle="there-looker",
                     parent=SubagentParent(conversation_id="parent-cap"),
                 )
 
@@ -321,6 +513,7 @@ class TestIsolation:
                 "operator",
                 EXPLORER,
                 "read it",
+                handle="reader",
                 parent=SubagentParent(conversation_id="parent-1", workspace_key="parent-1"),
             )
             await _settle(app, started.run_id)
@@ -338,6 +531,7 @@ class TestIsolation:
                 "operator",
                 WORKER,
                 "rewrite it",
+                handle="rewriter",
                 parent=SubagentParent(conversation_id="parent-1", workspace_key="parent-1"),
                 isolate=True,
             )
@@ -363,6 +557,7 @@ class TestIsolation:
                 "operator",
                 apart,
                 "go",
+                handle="the-apart-one",
                 parent=SubagentParent(conversation_id="parent-1", workspace_key="parent-1"),
                 isolate=False,
             )

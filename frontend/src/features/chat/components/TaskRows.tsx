@@ -103,24 +103,34 @@ export function TaskRows(props: { items: () => TaskItem[] }): JSX.Element {
   return (
     <Show when={items().length > 0}>
       <div class="py-1">
+        {/* Each row is `items-start`, not `items-center`: a task is whatever the agent
+            wrote, and the long ones wrap (see the `Text` inside). Centred, the square
+            would float to the middle of a three-line row instead of marking its first
+            line, so it takes the first line's own offset. */}
         <ol>
           <For each={visible()}>
             {({ item, index }) => (
               <li
                 class={cx(
-                  "flex items-center gap-2 px-3 py-1",
+                  "flex items-start gap-2 px-3 py-1",
                   fade(Math.abs(index - frontier())),
                 )}
               >
                 <span
-                  class={cx("size-3 shrink-0", SQUARE[item.status])}
+                  class={cx("mt-1 size-3 shrink-0", SQUARE[item.status])}
                   aria-hidden
                 />
+                {/* **Wraps, never truncates.** These rows live in a strip beside the
+                    transcript, and a task clipped at the pane's edge is a task the
+                    operator cannot read at all — the list is the agent's account of what
+                    it is doing, so a row that only shows its first four words is not
+                    showing the thing the panel is for. `min-w-0` is what lets the flex
+                    child actually break rather than overflowing its parent. */}
                 <Text
                   variant="body"
                   tone={TONE[item.status]}
                   class={cx(
-                    "truncate",
+                    "min-w-0 flex-1 break-words",
                     item.status === "cancelled" && "line-through",
                   )}
                 >

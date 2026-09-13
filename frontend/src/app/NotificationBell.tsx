@@ -45,7 +45,13 @@ const KIND_TONE: Record<NotificationKind, string> = {
 /** One notification row: kind icon, title + optional body, relative time, and
  *  unread emphasis (brighter title, a leading dot). Clicking marks it read and
  *  — when it references a conversation — navigates there; the chat screen's
- *  cold-load/reattach machinery takes it from there. */
+ *  cold-load/reattach machinery takes it from there.
+ *
+ *  **Both lines wrap; neither truncates.** They used to clip to one line each, which for
+ *  the notifications that matter most — an approval naming what it wants to run, a run
+ *  that failed and said why — cut the message exactly where it started to say something.
+ *  The panel is a scrolling list and a tall row costs it nothing; an unreadable one costs
+ *  it the reason it exists. */
 function NotificationRow(props: {
   notification: Notification;
   onOpen: (n: Notification) => void;
@@ -64,20 +70,26 @@ function NotificationRow(props: {
         class={cx("mt-0.5 shrink-0", KIND_TONE[n().kind])}
       />
       <span class="min-w-0 flex-1">
-        <span class="flex items-center gap-1.5">
+        {/* `items-start`, so the unread dot marks the title's first line rather than
+            floating to the middle of a wrapped one. */}
+        <span class="flex items-start gap-1.5">
           <Show when={unread()}>
-            <StatusDot status="info" />
+            <StatusDot class="mt-1 shrink-0" status="info" />
           </Show>
           <Text
             variant="label"
             tone={unread() ? "bright" : "dim"}
-            class="truncate"
+            class="min-w-0 break-words"
           >
             {n().title}
           </Text>
         </span>
         <Show when={n().body}>
-          <Text variant="micro" tone="dim" class="mt-0.5 block truncate">
+          <Text
+            variant="micro"
+            tone="dim"
+            class="mt-0.5 block whitespace-pre-wrap break-words"
+          >
             {n().body}
           </Text>
         </Show>
@@ -117,7 +129,9 @@ export function NotificationBell(): JSX.Element {
   return (
     <Popover
       align="right"
-      panelClass="w-80 max-h-96 flex flex-col overflow-hidden"
+      // Wider than it was, because the rows now wrap rather than clip (see
+      // `NotificationRow`): at 80 a two-clause approval line became six short ones.
+      panelClass="w-96 max-h-96 flex flex-col overflow-hidden"
       trigger={({ open, setOpen }) => (
         <Button
           variant="ghost"

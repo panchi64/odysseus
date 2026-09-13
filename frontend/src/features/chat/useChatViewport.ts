@@ -34,14 +34,8 @@ import {
   type Accessor,
 } from "solid-js";
 import { createPanelResize, observeAvailableWidth } from "./panelResize";
-import type {
-  ApprovalDecision,
-  ChatMessage,
-  PlanDocument,
-  ViewSnapshotRef,
-} from "./model";
+import type { ChatMessage, PlanDocument, ViewSnapshotRef } from "./model";
 import type { BranchState, Subagent } from "./data";
-import type { Park } from "./stream/approvals";
 import type { TaskItem } from "~/lib/stream/events";
 import {
   emptyLayout,
@@ -58,7 +52,7 @@ import {
   type ViewportLayout,
 } from "./viewport/layout";
 import { panelBox, widenFor } from "./viewport/viewportWidth";
-import { createSurfaceSources } from "./viewport/surfaceSources";
+import { arrivalClaims, createSurfaceSources } from "./viewport/surfaceSources";
 import {
   DEFAULT_VIEW_SURFACE,
   useViewportPersistence,
@@ -85,12 +79,6 @@ export interface ViewportSource {
   subagents: Accessor<Subagent[]>;
   /** Re-read them — after the operator answers one that was waiting on them. */
   refetchSubagents: () => void;
-  /** What the live turn is parked on, and how to settle it. The Plan surface holds
-   *  the decision for a submitted plan — a document is answered where it is read, not
-   *  in the composer's slot — so the panel needs both. Everything else about that
-   *  approval is ordinary: same park, same single resume. */
-  park: Accessor<Park | null>;
-  resolvePlan: (decisions: ApprovalDecision[]) => void | Promise<void>;
   toggleSnapshotKeeper: (snapshotId: string, keeper: boolean) => Promise<void>;
 }
 
@@ -105,11 +93,9 @@ export interface ChatViewport {
   items: Accessor<ViewItem[]>;
   /** The thread's task list, for the Tasks surface. */
   tasks: Accessor<TaskItem[]>;
-  /** The plan it is working to, for the Plan surface — with the park and the settle
-   *  that surface answers it through. */
+  /** The plan it is working to, for the Plan surface — which reads it and nothing else;
+   *  a submitted plan is answered in the dock with every other approval. */
   plan: Accessor<PlanDocument | null>;
-  park: Accessor<Park | null>;
-  resolvePlan: (decisions: ApprovalDecision[]) => void | Promise<void>;
   /** The thread's branch, for the Diff surface. */
   branch: () => BranchState | null | undefined;
   refetchBranch: () => void;
@@ -121,6 +107,12 @@ export interface ChatViewport {
   available: (id: SurfaceId) => boolean;
   /** Whether a surface is currently in the layout. */
   isOpen: (id: SurfaceId) => boolean;
+  /** Put a surface on screen beside whatever is already open, bring it to the front of
+   *  the stack it shares, and focus it — opening the panel if it is shut. What a control
+   *  elsewhere in the room uses to send the operator to a surface ("Read the plan" in the
+   *  approval dock); `toggleSurface` is the header button's act and would *close* the
+   *  surface it was asked to show. */
+  showSurface: (id: SurfaceId) => void;
   /** Bring a surface to the front of the tabbed pane it shares, and focus it. */
   revealSurface: (id: SurfaceId) => void;
   /** Close one surface from its own chrome. */
@@ -211,13 +203,30 @@ export function useChatViewport(
    *  Tiled, like a header click: a surface that arrives on its own — a new version,
    *  a plan waiting on a yes — goes *beside* what is open. Opening it without the
    *  tiling context would hand the whole panel region to it and take down whatever
-   *  the operator was reading, which is the opposite of what arriving means. */
-  const show = (id: SurfaceId): void => {
+   *  the operator was reading, which is the opposite of what arriving means.
+   *
+   *  **`focus` is a parameter because two surfaces can arrive in the same pass.** They
+   *  both belong on screen; only one of them can be the one the operator is looking at,
+   *  and taking focus unconditionally means the *last* to arrive wins it — which is how
+   *  a plan waiting on a yes ended up behind an empty View. The caller decides; see the
+   *  arrival effect below. */
+  const show = (id: SurfaceId, opts?: { focus?: boolean }): void => {
+    const focus = opts?.focus ?? true;
     const current = state().layout ?? emptyLayout();
+    // Already in the layout: nothing to open, and nothing to move. *Showing* is about
+    // putting a surface on screen; a surface that is already there and is not where the
+    // operator is looking is a surface they left, and pulling them back to it on an
+    // arrival is the milder version of the bug `arrivalClaims` exists to stop. A caller
+    // that does mean "put this in front of me" says so by revealing as well — see
+    // `showSurface`.
     if (hasSurface(current, id)) return;
     const next = openSurface(current, id, tiling());
     widenFor(panelSurfacesOf(next));
-    patch({ layout: next, lastLayout: next, focused: id });
+    patch({
+      layout: next,
+      lastLayout: next,
+      ...(focus ? { focused: id } : {}),
+    });
   };
   const open = () => {
     if (state().layout !== null) return;
@@ -318,14 +327,16 @@ export function useChatViewport(
   // conversation per surface per *key*, so a manual close is respected, a surface
   // re-rendering does not reopen itself, and a genuinely new arrival (a revised plan
   // still awaiting a yes) earns a fresh one.
+  //
+  // Which of them the operator lands on is `arrivalClaims`' answer, not this loop's —
+  // see there for why the last to arrive must not be the one that wins.
   createEffect(() => {
     const conversation = currentId();
     if (conversation === null) return;
-    for (const id of SURFACE_IDS) {
-      const source = sources[id];
-      if (!source.available() || source.arrival() !== "steal") continue;
-      if (claimAutoOpen(`${conversation}:${id}:${source.claimKey()}`)) show(id);
-    }
+    for (const claim of arrivalClaims(sources, (key) =>
+      claimAutoOpen(`${conversation}:${key}`),
+    ))
+      show(claim.id, { focus: claim.focus });
   });
 
   // Items minted after the "seen through" pointer. Counting from a key's *position* —
@@ -454,14 +465,20 @@ export function useChatViewport(
     items,
     tasks: source.tasks,
     plan: source.plan,
-    park: source.park,
-    resolvePlan: source.resolvePlan,
     branch: source.branch,
     refetchBranch: source.refetchBranch,
     subagents: source.subagents,
     refetchSubagents: source.refetchSubagents,
     available,
     isOpen,
+    // Open it if it is shut, then bring it forward — the two halves of what a control
+    // elsewhere in the room means by "show me this". `show` alone would leave an
+    // already-open surface sitting behind its stack-mate, which is exactly the case the
+    // button exists for: a plan panel the operator opened, read, and tabbed away from.
+    showSurface: (id: SurfaceId) => {
+      show(id);
+      revealSurface(id);
+    },
     toggleSurface,
     revealSurface,
     closeSurface,

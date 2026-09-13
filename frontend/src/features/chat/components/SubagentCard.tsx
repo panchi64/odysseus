@@ -73,8 +73,9 @@ function took(subagent: Subagent): string | null {
  */
 export function SubagentCard(props: {
   subagent: Subagent;
-  expanded: boolean;
-  onToggle: () => void;
+  /** Open this sub-agent's own view. The card is a way in, not a thing that unfolds —
+   *  see `SubagentsSurface` for why the transcript stopped living underneath it. */
+  onOpen: () => void;
 }): JSX.Element {
   // While it runs this is its latest answer rather than a report — a current best. Once
   // it has finished it is what it actually handed back, and a failure replaces it with
@@ -88,8 +89,7 @@ export function SubagentCard(props: {
   return (
     <button
       type="button"
-      onClick={() => props.onToggle()}
-      aria-expanded={props.expanded}
+      onClick={() => props.onOpen()}
       class="border-line hover:bg-raised flex w-full flex-col gap-1 rounded border px-2 py-1.5 text-left"
     >
       <div class="flex min-w-0 items-center gap-2">
@@ -108,8 +108,20 @@ export function SubagentCard(props: {
             }
           />
         </Show>
-        <Text variant="label" tone="bright" class="shrink-0">
-          {props.subagent.name}
+        {/* The handle, not the roster name: the launching agent named this one for the
+            job it is doing, and `explorer` three times over identifies nothing. The
+            roster name is on the meta line below, where it belongs — it says what kind
+            of sub-agent this is, which is a detail about it rather than its identity.
+
+            Capped and truncated, which the roster name never needed to be: a handle is
+            whatever the launching model typed and nothing holds it to a few words, so an
+            unbounded one would overflow the row and squeeze the task beside it away. */}
+        <Text
+          variant="label"
+          tone="bright"
+          class="max-w-[45%] shrink-0 truncate"
+        >
+          {props.subagent.handle}
         </Text>
         <Text variant="micro" tone="dim" class="min-w-0 flex-1 truncate">
           {props.subagent.task}
@@ -127,12 +139,15 @@ export function SubagentCard(props: {
         </Show>
       </div>
       <div class="flex min-w-0 items-baseline gap-1.5">
+        <Text variant="micro" tone="dim" class="shrink-0">
+          {props.subagent.name}
+        </Text>
         <Text
           variant="micro"
           tone={TONE[props.subagent.status]}
           class="shrink-0"
         >
-          {LABEL[props.subagent.status]}
+          · {LABEL[props.subagent.status]}
         </Text>
         <Show when={took(props.subagent)}>
           {(duration) => (

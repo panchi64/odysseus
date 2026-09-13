@@ -87,6 +87,19 @@ _READ_ONLY_FOREIGN_TOOLS = frozenset(
 _WORKSPACES: frozenset[str] = frozenset({"shared", "isolated", "own"})
 
 
+class AgentNameError(ValueError):
+    """``normalize_agent_name`` was handed something that is not a usable name.
+
+    A shared error that *each caller translates*, rather than a raised type the normaliser
+    takes as an argument. The two callers fail in front of two different audiences: a
+    project file with a bad ``name:`` is skipped and logged, because nobody is watching the
+    checkout, while a launch handle the model made up has to come back to the model as a
+    retry it can act on. Parameterising the exception would put the choice of how to report
+    a failure inside the function that only knows the rule — and the rule is the one thing
+    about a name that genuinely is shared.
+    """
+
+
 class AgentFileError(ValueError):
     """The file is not a usable agent definition."""
 
@@ -158,15 +171,39 @@ def parse_agent_file(text: str, *, name: str) -> SubagentSpec:
     )
 
 
-def _name(raw: Any, *, fallback: str) -> str:
-    value = _text(raw) or fallback
-    value = value.strip().lower().replace(" ", "-")
+def normalize_agent_name(raw: str) -> str:
+    """One name rule, for every name a sub-agent is addressed by.
+
+    Two things reach this: the ``name:`` in a project's agent file, and the handle the
+    launching model picks for a sub-agent it is starting. They are not the same kind of
+    name — one identifies a *definition*, the other one *instance* of it — but they are
+    read in the same places by the same eyes, and a second rule would mean an agent file
+    could be called something no launch handle is allowed to be, for no reason anybody
+    could explain.
+
+    Lowercasing and folding spaces to hyphens rather than rejecting them: ``Helper Function
+    Finder`` is what a model writes when it is thinking about the job rather than about the
+    identifier, and there is exactly one thing it can have meant.
+
+    Raises :class:`AgentNameError`, which each caller translates into its own audience's
+    failure.
+    """
+    value = raw.strip().lower().replace(" ", "-")
     if not _NAME.match(value):
-        raise AgentFileError(
+        raise AgentNameError(
             f"{value!r} is not a usable agent name — lowercase letters, digits, "
             "hyphens and underscores only"
         )
     return value
+
+
+def _name(raw: Any, *, fallback: str) -> str:
+    try:
+        return normalize_agent_name(_text(raw) or fallback)
+    except AgentNameError as exc:
+        # Translated, not propagated: everything above this reads a bad file as one skipped
+        # agent, and it recognises that by the file error alone.
+        raise AgentFileError(str(exc)) from None
 
 
 def _text(raw: Any, *, field: str | None = None) -> str:

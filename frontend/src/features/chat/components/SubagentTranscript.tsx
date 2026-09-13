@@ -5,7 +5,7 @@ import { isLive } from "../data";
 import { TurnBlocks } from "./TurnBlocks";
 
 /**
- * What a sub-agent actually did, under its card.
+ * What a sub-agent actually did — the body of its own view (`SubagentDetail`).
  *
  * **It is a conversation, so it is read as one.** `useChatSession` is the main room's
  * own loader and `TurnBlocks` its own renderer — the think → tool → text sequence, the
@@ -32,7 +32,11 @@ import { TurnBlocks } from "./TurnBlocks";
  * only moves when the sub-agent has actually made another model request, so keying the
  * read on it re-fetches when there is new transcript to see and never on a poll that
  * found nothing new. A finished sub-agent's figures stop moving, so its transcript is
- * read once and then left alone, which is the whole reason the accordion is cheap.
+ * read once and then left alone, which is the whole reason opening one is cheap.
+ *
+ * **No inset of its own.** It used to sit under a card with a rule down its left edge
+ * saying "this belongs to that". It is now the pane's whole content, and a border
+ * marking a relationship to something no longer on screen is a line with nothing to say.
  */
 export function SubagentTranscript(props: { subagent: Subagent }): JSX.Element {
   const session = useChatSession(
@@ -41,7 +45,7 @@ export function SubagentTranscript(props: { subagent: Subagent }): JSX.Element {
   );
 
   return (
-    <div class="border-line ml-2 flex flex-col gap-2 border-l pl-2">
+    <div class="flex flex-col gap-2">
       {/* `latest` before `loading`, and both after the error: a live sub-agent re-reads
           this as it works, and a re-read that blanked the pane back to "Reading the
           transcript…" every few seconds would make the one card being watched the one
