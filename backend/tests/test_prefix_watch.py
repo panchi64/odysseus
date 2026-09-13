@@ -393,3 +393,22 @@ async def test_the_watch_is_on_by_default_and_switching_it_off_silences_it(monke
 def test_every_spelling_of_off_is_honoured(monkeypatch, value: str):
     monkeypatch.setenv("ODYSSEUS_PREFIX_WATCH", value)
     assert not watch_prefix_enabled()
+
+
+async def test_the_providers_own_cache_verdict_stays_silent_on_a_local_endpoint():
+    """The complement to the structural watch, and the property that makes registering it
+    free: the harness's `WarnOnCacheBusts` reads `cache_read_tokens`, which is the ground
+    truth where it exists and is absent on every local engine and on MLX.
+
+    So it covers exactly the hosted half the structural watch cannot confirm, and it has to
+    add *nothing* on the local half — where a warning per turn would be pure noise about a
+    figure nobody reported."""
+    import warnings
+
+    from pydantic_ai_harness.warn_on_cache_busts import CacheBustWarning
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        await _drive(_calls_then_answers([], "tasks_read"), _deps())
+
+    assert not [w for w in caught if issubclass(w.category, CacheBustWarning)]

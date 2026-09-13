@@ -28,6 +28,7 @@ from pydantic_ai import (
 )
 from pydantic_ai.capabilities import ReinjectSystemPrompt
 from pydantic_ai.models import Model
+from pydantic_ai_harness import WarnOnCacheBusts
 
 from core.timezone import local_zone_key
 from prompts.agent import (
@@ -131,6 +132,17 @@ def build_agent(
             # already gone. Its whole value is that the bytes it hashes are the bytes the
             # engine will try to match (`agent/prefix_watch.py`).
             *([WatchPrefix()] if watch_prefix_enabled() else []),
+            # The provider's own verdict on the same question `WatchPrefix` answers
+            # structurally, and the two are complements rather than alternatives. This one
+            # reads `cache_read_tokens`, which is the ground truth where it exists and is
+            # `None` on every local engine — so it covers precisely the hosted half the
+            # structural watch cannot confirm, and stays silent on the local half where the
+            # structural watch is all there is. Silent by construction when no cache figure is
+            # reported, so it adds nothing to the common case. Its `CacheBustWarning` goes to
+            # the usual warnings channel; an installation that wants it in the log can route
+            # it there with `logging.captureWarnings(True)`, which is not done globally here
+            # because it would redirect every library deprecation notice with it.
+            WarnOnCacheBusts(),
         ],
     )
 
@@ -178,6 +190,25 @@ def build_agent(
         `prompts/levels.py`), which is why this is unconditional."""
         return permission_spec(ctx.deps.permission).instructions
 
+    # ── Why the head is registered in this order ─────────────────────────────────────
+    #
+    # **Not by churn probability, which buys nothing.** llama.cpp, vLLM and the OpenAI wire
+    # each have a single monotone cache boundary, so a change *anywhere* in the head
+    # invalidates the tool array and the whole history behind it identically, whichever
+    # block moved. Ordering by how often a block changes only pays where there are several
+    # breakpoints — Anthropic alone — and there the lever is static-versus-dynamic, not
+    # registration order.
+    #
+    # Two things about the order *are* load-bearing, and both are Anthropic's arithmetic:
+    #
+    # - **The one static part comes first.** The library places its instructions breakpoint
+    #   after the last *static* block by counting the statics and indexing that far in — so
+    #   it assumes the statics lead. Every block below is a function and therefore dynamic;
+    #   the literal brief passed to `Agent(instructions=…)` is the only static one, and it is
+    #   first. Add a static part after a dynamic one and the breakpoint silently lands on the
+    #   wrong block, with no error anywhere. `tests/test_prompt_prefix_stability.py` pins it.
+    # - **`date` is last**, so the midnight roll falls outside the pinned prefix rather than
+    #   in the middle of it.
     @agent.instructions(name="date")
     def _current_date() -> str:
         """Give the agent today's date as a dynamic instruction — re-resolved fresh each

@@ -188,16 +188,45 @@ class FeatureManifest:
     # time a feature grows another one — which is exactly what a hard-coded set there
     # would require, silently offering a dead tool until someone remembered.
     network_tools: frozenset[str] = frozenset()
+    # ── Which seam a block of text belongs on ────────────────────────────────────────
+    #
+    # **A block that is byte-stable across the turns of a conversation belongs in the head;
+    # a block that churns within a conversation belongs in the tail.** Not "small in the
+    # head, large in the tail", which is the reading that comes to mind first and is wrong
+    # in both directions.
+    #
+    # The reason is the shape of every prompt cache worth having. llama.cpp matches a
+    # longest common prefix per slot, vLLM chains block hashes, and the OpenAI wire has a
+    # single implicit breakpoint over the whole rendered prefix — so each reuses a request's
+    # leading tokens only while they are identical to what it saw last, and re-reads
+    # everything from the first difference onward. That gives the two seams opposite
+    # economics:
+    #
+    # - In the **head**, a stable block is free after the request that first carries it,
+    #   however large it is — it joins the cached prefix and is never read again. A block
+    #   that changes is not merely expensive for itself: it invalidates the entire history
+    #   behind it, every turn it changes.
+    # - In the **tail**, nothing is ever cached for the *next* turn, because the tail is not
+    #   persisted: turn N+1 replays turn N's prompt without it. So a tail block costs one
+    #   divergence at each turn boundary whether it changed or not — bounded at one turn's
+    #   assistant work, and it does not grow with thread length. Free within a turn, since
+    #   providers resolve once in the prelude and every step of the turn shares it.
+    #
+    # So a large, stable brief in the tail pays for itself on every turn forever, and a
+    # small, volatile line in the head throws away the whole conversation each time it
+    # moves. `agent/prefix_watch.py` reports which of the two has happened.
+
     # Dynamic instruction providers the engine registers on every agent it builds —
     # each resolves its capability from the run's bag and returns "" to no-op. These
-    # render at the *head* of every request, so they should stay small and low-churn:
-    # any byte change here invalidates the inference engine's prompt-prefix cache for
-    # the entire history behind it.
+    # render at the *head* of every request: byte-stable for the life of a conversation,
+    # per the rule above. A block that comes and goes with a *session* is still head
+    # material (it switches at the moment something else already invalidated the prefix);
+    # one that moves with the turn is not.
     instructions: tuple[InstructionProvider, ...] = ()
     # Per-turn prompt-context providers — like `instructions` re-resolved fresh each
     # turn and never persisted, but delivered at the *tail* of the current turn's user
-    # prompt, where volatile or large content leaves the request prefix (and so the
-    # engine's prompt cache) intact.
+    # prompt. This is where content that changes within a conversation goes, whatever its
+    # size: it leaves the request prefix (and so the engine's prompt cache) intact.
     prompt_context: tuple[PromptContextProvider, ...] = ()
     # Constructs the feature's services at lifespan time. None ⇒ routes-only.
     build: Callable[[HarnessContext], Awaitable[FeatureRuntime]] | None = None

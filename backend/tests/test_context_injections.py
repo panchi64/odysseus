@@ -270,3 +270,78 @@ def test_an_endpoint_that_reports_no_caching_reports_absent_not_zero():
 
 def test_a_thread_with_no_response_has_no_request_to_report():
     assert last_request_usage([ModelRequest(parts=[UserPromptPart(content="hi")])]) is None
+
+
+# ── The tail seam ────────────────────────────────────────────────────────────────
+#
+# Per-turn context goes at the *end* of the current turn's user prompt and is never
+# persisted. That placement is a prompt-cache decision and it is the optimum rather than a
+# compromise, but only while two things hold: the tail really is last in the request, and it
+# really does not reach the durable history. Break the first and it stops being a suffix, so
+# everything after it re-prefills on every turn instead of once per turn boundary. Break the
+# second and the transcript asserts the operator wrote something they never wrote, and the
+# footprint grows by one stale copy per turn.
+
+
+def _regenerated(texts: list[str]) -> list:
+    from agent.history import with_tail_context
+
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="the first ask")]),
+        ModelResponse(parts=[TextPart(content="the first answer")], usage=RequestUsage()),
+        ModelRequest(parts=[UserPromptPart(content="the ask being regenerated")]),
+    ]
+    return with_tail_context(history, texts)
+
+
+def test_the_tail_is_the_last_content_in_the_request():
+    """The property Stage 2's whole analysis rests on. Anything appended *after* the tail
+    would sit behind a block that changes every turn, so it would be re-read every turn
+    rather than shared — which is exactly what putting volatile content in the head does,
+    only further down."""
+    view = _regenerated(["## Your task list\n- [ ] one"])
+    content = view[-1].parts[-1].content
+
+    assert isinstance(content, list)
+    assert content[0] == "the ask being regenerated"
+    assert content[-1].startswith("## Your task list")
+
+
+def test_the_tail_never_reaches_the_message_it_was_appended_to():
+    """`with_tail_context` rebuilds rather than mutating, because the store's in-memory tree
+    shares these objects — so a mutation here writes the chassis's own text into the
+    operator's durable transcript, where it reads as something they typed."""
+    original = ModelRequest(parts=[UserPromptPart(content="the ask being regenerated")])
+    history = [original]
+
+    from agent.history import with_tail_context
+
+    view = with_tail_context(history, ["per-turn context"])
+
+    assert view[-1] is not original
+    assert history[-1].parts[0].content == "the ask being regenerated"
+
+
+def test_a_regenerate_puts_the_tail_where_a_fresh_turn_does():
+    """The two paths have to agree, or a regenerate diverges from the turn it is
+    regenerating at a different position and pays for the difference. A fresh turn appends
+    the context to the prompt it was handed; a regenerate has no fresh prompt, so it rides
+    the trailing request — and the result is the same shape: the operator's words first, the
+    chassis's after."""
+    texts = ["first block", "second block"]
+    view = _regenerated(texts)
+    content = view[-1].parts[-1].content
+
+    # The same list a fresh turn's `user_prompt` would carry: the typed text, then each
+    # provider's block in registration order.
+    assert content == ["the ask being regenerated", *texts]
+
+
+def test_a_history_with_no_trailing_request_is_left_alone():
+    """Defensive, and it must stay so: a regenerate whose history ends in a response has
+    nowhere to put the tail, and inventing a message for it would put chassis text in the
+    conversation under no author at all."""
+    from agent.history import with_tail_context
+
+    history = [ModelResponse(parts=[TextPart(content="answer")], usage=RequestUsage())]
+    assert with_tail_context(history, ["context"]) == history
