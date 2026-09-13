@@ -14,9 +14,20 @@ from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
 
+from core.config import get_settings
 from services import llm, reasoning
 from services.llm import EndpointSpec
 from services.providers.base import ProviderPreset
+
+#: The three OpenAI cache fields. Named as a set so that switching retention off declares
+#: all of them unsupported rather than only the one this adapter would otherwise have sent —
+#: the operator's escape hatch is "this server rejects unknown fields", and that is a claim
+#: about all three.
+_CACHE_SETTINGS = (
+    "openai_prompt_cache_key",
+    "openai_prompt_cache_options",
+    "openai_prompt_cache_retention",
+)
 
 
 class OpenAICompatProvider:
@@ -49,11 +60,54 @@ class OpenAICompatProvider:
         # the endpoint's own, never the model's advertised maximum — see `Provider
         # .build_model`, and note this adapter is where the two diverge most, since any
         # server at all can be behind this base URL.
+        settings = self.model_settings(llm.descriptor_of(spec))
         profile = OpenAIModelProfile(
             openai_chat_supports_multiple_system_messages=False,
             context_window=spec.context_window,
+            # With retention switched off, declare the three cache fields unsupported so the
+            # library strips one a caller supplies per request. The point is not tidiness: a
+            # local engine handed an unknown field may reject the whole request, and the
+            # operator's own escape hatch has to actually close the door rather than only
+            # stop this adapter from opening it.
+            openai_unsupported_model_settings=() if settings else _CACHE_SETTINGS,
         )
-        return OpenAIChatModel(spec.model, provider=provider, profile=profile)
+        # At construction, not per call, so it survives a `FallbackModel` chain and a turn
+        # parked for approval and resumed hours later. The library merges a request's own
+        # settings over the model's, so a caller can still override deliberately.
+        return OpenAIChatModel(spec.model, provider=provider, profile=profile, settings=settings)
+
+    def model_settings(self, descriptor: reasoning.ModelDescriptor) -> ModelSettings:
+        """Prompt-cache retention, and nothing else — usually not even that.
+
+        OpenAI caches a matching prefix **implicitly**, with no request field: there is one
+        breakpoint, it needs at least a thousand-odd tokens, and the whole rendered prefix
+        (tools included) has to match byte for byte. So the work that makes caching pay on
+        this wire is *prefix stability*, which is structural and lives nowhere near here. The
+        only thing a request field can add is holding that prefix longer than the default
+        five to ten minutes, which is what `openai_cache_retention` asks for.
+
+        Nothing here reads ``descriptor``, and that is the load-bearing part. This adapter
+        fronts **every** OpenAI-shaped server — llama.cpp, vLLM, LM Studio, MLX, a hosted
+        gateway, a non-US lab — and the only thing it knows about what is behind the base URL
+        is the model *name* the operator typed. So:
+
+        - **``openai_prompt_cache_key`` is never sent.** It selects a cache shard; it does not
+          decide whether a prefix is cached. Worth nothing on every local engine, and there is
+          no conversation visible at this seam to key on anyway.
+        - **``openai_prompt_cache_options`` (and ``CachePoint``) are never sent.** They are
+          meaningful on two hosted families, recognisable here only by name — and a local
+          model an operator happened to name after one of them would be handed breakpoints it
+          cannot parse. That inference is exactly the bug this adapter's boundary exists to
+          prevent. If explicit breakpoints ever matter, the answer is a distinct native
+          adapter, not a name match.
+
+        Default off: the within-session case is already covered by OpenAI's own retention, so
+        the field earns its keep only for a thread an operator comes back to tomorrow.
+        """
+        retention = get_settings().openai_cache_retention
+        if retention == "off":
+            return {}
+        return {"openai_prompt_cache_retention": retention}
 
     # Reached through the module (not from-imports) so a test that monkeypatches
     # `services.llm` still intercepts the adapter's calls.

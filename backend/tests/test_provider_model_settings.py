@@ -25,6 +25,7 @@ from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 import services.providers.anthropic as anthropic_provider
+import services.providers.openai_compat as openai_compat
 from services import llm
 from services.providers import get_provider
 
@@ -165,4 +166,92 @@ class TestTheProviderHook:
             "qwen3:8b",
             "https://x/v1",
             True,
+        )
+
+
+# --- the OpenAI-compatible adapter's one cache field -----------------------
+
+
+def local(**overrides) -> llm.EndpointSpec:
+    overrides.setdefault("base_url", "http://localhost:8080/v1")
+    return spec("openai-compatible", model="qwen3-32b", **overrides)
+
+
+def _retention(value: str):
+    return lambda: SimpleNamespace(openai_cache_retention=value)
+
+
+class TestTheOpenAICompatibleCacheField:
+    """This adapter fronts *every* OpenAI-shaped server — llama.cpp, vLLM, LM Studio, MLX, a
+    hosted gateway, a non-US lab — and the only thing it knows about what is behind the base
+    URL is the model name the operator typed. So what it may send is narrow on purpose, and
+    the narrowness is what these pin.
+    """
+
+    def test_a_local_endpoint_sends_no_cache_settings_by_default(self):
+        """Byte-identical to what shipped before the field existed. The within-session case
+        is already covered by OpenAI's own implicit retention, and the overwhelming majority
+        of endpoints behind this adapter have never heard of the field."""
+        model = llm.build_model(local())
+        assert not model.settings
+        assert model.resolve_prompt_cache_retention(None) is None
+
+    def test_retention_comes_from_the_operators_configuration(self, monkeypatch):
+        monkeypatch.setattr(openai_compat, "get_settings", _retention("24h"))
+        model = llm.build_model(local())
+        assert model.settings == {"openai_prompt_cache_retention": "24h"}
+        # Read through the library's own resolution rather than our dict, so this fails if
+        # the field stops meaning what we think it means.
+        assert model.resolve_prompt_cache_retention(None) == timedelta(hours=24)
+
+    def test_off_also_strips_a_cache_setting_a_caller_supplies(self, monkeypatch):
+        """The escape hatch has to close the door, not merely stop this adapter opening it.
+        An operator switches retention off because their server rejects unknown fields, and a
+        per-request setting from anywhere else would reach it just the same."""
+        monkeypatch.setattr(openai_compat, "get_settings", _retention("off"))
+        profile = llm.build_model(local()).profile
+        assert set(profile["openai_unsupported_model_settings"]) == {
+            "openai_prompt_cache_key",
+            "openai_prompt_cache_options",
+            "openai_prompt_cache_retention",
+        }
+
+    def test_retention_on_declares_nothing_unsupported(self, monkeypatch):
+        monkeypatch.setattr(openai_compat, "get_settings", _retention("in_memory"))
+        assert not llm.build_model(local()).profile["openai_unsupported_model_settings"]
+
+    def test_this_adapter_never_sends_a_cache_key_or_breakpoints(self, monkeypatch):
+        """Pinned with the reason, so a contributor adding either has to argue with it.
+
+        `openai_prompt_cache_key` selects a cache *shard*; it never decides whether a prefix
+        is cached, is worth nothing on every local engine, and there is no conversation
+        visible at this seam to key on. `openai_prompt_cache_options` (and `CachePoint`) are
+        meaningful on two hosted model families recognisable here only by **name** — so a
+        local model an operator happened to name after one of them would be handed
+        breakpoints it cannot parse. That inference is the bug this adapter's boundary exists
+        to prevent; explicit breakpoints would argue for a distinct native adapter.
+        """
+        for value in ("off", "in_memory", "24h"):
+            monkeypatch.setattr(openai_compat, "get_settings", _retention(value))
+            sent = set(llm.build_model(local()).settings or {})
+            assert "openai_prompt_cache_key" not in sent
+            assert "openai_prompt_cache_options" not in sent
+
+    def test_the_merged_system_messages_profile_survives(self, monkeypatch):
+        """Untouched by any of this, and it must be: merging the leading system messages into
+        one block is both what keeps a Qwen-family chat template from refusing the request and
+        good for caching."""
+        for value in ("off", "24h"):
+            monkeypatch.setattr(openai_compat, "get_settings", _retention(value))
+            profile = llm.build_model(local()).profile
+            assert profile["openai_chat_supports_multiple_system_messages"] is False
+
+    def test_a_fallback_chain_keeps_the_setting_on_every_member(self, monkeypatch):
+        """The reason it is applied at construction: a failover must not silently drop to a
+        request shape the operator did not choose."""
+        monkeypatch.setattr(openai_compat, "get_settings", _retention("24h"))
+        chain = llm.build_chain([local(), local(base_url="http://localhost:8081/v1")])
+        assert isinstance(chain, FallbackModel)
+        assert all(
+            member.settings == {"openai_prompt_cache_retention": "24h"} for member in chain.models
         )

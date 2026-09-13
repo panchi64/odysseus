@@ -272,3 +272,47 @@ def test_a_footprint_counts_the_brief_and_the_schemas_too(encoder):
         fallback_overhead_tokens=12_000,
     )
     assert abs(estimated - truth) / truth < 0.15, f"estimated {estimated}, truth {truth}"
+
+
+def test_tag_mode_thinking_is_measured_and_field_mode_is_not(encoder):
+    """Whether a thinking model's scratch work counts is **template-dependent**, and the
+    two halves are measured here rather than asserted, because getting either one wrong
+    moves the compaction trigger.
+
+    Tag mode — thinking the library read out of the response's own `content` — is re-wrapped
+    into the assistant message's text on the way back out, and no chat template can remove
+    it. So the estimate has to carry it, at the prose rate a tokenizer agrees with. Field
+    mode goes back into `reasoning_content` and its kin, which the Qwen, DeepSeek and GLM
+    templates strip, so it has to contribute nothing: `should_compact` takes the *larger* of
+    this figure and the provider's reported prompt size, and an inflated estimate would
+    override an accurate server-reported one on exactly those templates."""
+    from pydantic_ai.messages import ThinkingPart
+
+    answer = TextPart(content=_PROSE[:200])
+    tagged = [
+        ModelResponse(
+            parts=[ThinkingPart(content=_PROSE, id="content"), answer], usage=RequestUsage()
+        )
+    ]
+    fielded = [
+        ModelResponse(
+            parts=[
+                ThinkingPart(content=_PROSE, id="reasoning_content", provider_name="openai"),
+                answer,
+            ],
+            usage=RequestUsage(),
+        )
+    ]
+
+    answer_truth = _tokens(encoder, answer.content)
+    tagged_truth = _tokens(encoder, _PROSE) + answer_truth
+
+    tagged_estimate = estimate_tokens(tagged)
+    assert abs(tagged_estimate - tagged_truth) / tagged_truth < 0.15, (
+        f"tag-mode thinking estimated at {tagged_estimate}, truth {tagged_truth}"
+    )
+    # And the field-mode half lands on the answer alone — the thinking is simply gone.
+    fielded_estimate = estimate_tokens(fielded)
+    assert abs(fielded_estimate - answer_truth) <= 2, (
+        f"field-mode thinking was counted: {fielded_estimate} against {answer_truth}"
+    )

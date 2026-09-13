@@ -129,14 +129,17 @@ class MessageView:
     compaction_reason: str | None = None
 
 
-#: The one class of message content that is measured for the readout but **not** sent
-#: back. Reasoning is a model's own scratch work: OpenAI-compatible endpoints don't accept
-#: a `ThinkingPart` on the way in, so the library drops it when it serializes history, and
-#: an estimate that counted it would inflate a thinking model's footprint by everything it
-#: has ever thought — the threads most likely to be folded far too early. It stays in
-#: :func:`message_class_chars` because the breakdown answers a different question ("what
-#: is this thread spending on reasoning?", which has its own lever) from the footprint.
+#: The class of message content measured for the readout but not counted in the footprint
+#: wholesale. Reasoning is a model's own scratch work, and whether it comes back is
+#: **template-dependent** rather than never: see :func:`_tag_mode_reasoning_chars`, which
+#: adds back the half that does. Excluding the class here and adding one half back is not a
+#: roundabout way of writing a filter — the breakdown answers a different question ("what is
+#: this thread spending on reasoning?", which has its own lever) and wants the whole figure.
 _UNSENT_CLASSES = frozenset({"reasoning"})
+
+#: The ``ThinkingPart.id`` the library uses for thinking it read out of the response's own
+#: ``content`` rather than out of a provider field. See :func:`_tag_mode_reasoning_chars`.
+_TAG_MODE_ID = "content"
 
 
 def estimate_tokens(messages: list[Any]) -> int:
@@ -147,14 +150,23 @@ def estimate_tokens(messages: list[Any]) -> int:
     as unmeasured rather than as a real zero. Without an estimate, conversation compaction
     would be dead on exactly the self-hosted endpoints this workspace is built for.
 
-    Three things it deliberately does not count. **Reasoning**, per
-    :data:`_UNSENT_CLASSES` — it is never re-sent. **The standing brief**, because a
+    Two things it deliberately does not count. **The standing brief**, because a
     ``SystemPromptPart`` at the head of the history is already measured by
     ``agent/overhead.py`` and :func:`estimate_footprint` adds it back once, not twice.
     And **binary parts**: a retained inline image is base64 in the blob, and measuring it
     by character length would read a single screenshot as hundreds of thousands of phantom
     tokens. Ignoring image tokens under-counts instead — the safe direction, since the
     run's own context-overflow stop is still there behind this.
+
+    **Reasoning is counted in half**, which used to be none at all on the claim that it is
+    never re-sent. It is: the library maps a ``ThinkingPart`` back onto an outgoing request,
+    and in tag mode it becomes ordinary assistant *text* that no chat template can remove.
+    What genuinely vanishes is the field-mode half, which Qwen, DeepSeek and GLM templates
+    strip from the rendered prompt. Counting both would be the worse error of the two, and
+    the reason is :func:`agent.summarize.should_compact`: it takes the **larger** of the
+    provider's reported prompt size and this estimate, so an inflated estimate would override
+    an accurate server-reported figure on exactly the templates that do the stripping, and
+    fold those threads early.
 
     Prose and serialized structure convert at their own rates (``core.text``) rather than
     one shared divisor, so this figure and the context readout's split are the same
@@ -166,12 +178,40 @@ def estimate_tokens(messages: list[Any]) -> int:
 
     ``messages`` is a list of ``ModelMessage``; typed loosely so this module keeps the
     same duck-typed part handling as the projection below."""
-    return int(
-        sum(
-            chars_to_tokens(chars.prose, chars.structured)
-            for name, chars in message_class_chars(messages).items()
-            if name not in _UNSENT_CLASSES
-        )
+    sent = sum(
+        chars_to_tokens(chars.prose, chars.structured)
+        for name, chars in message_class_chars(messages).items()
+        if name not in _UNSENT_CLASSES
+    )
+    return int(sent + chars_to_tokens(_tag_mode_reasoning_chars(messages), 0))
+
+
+def _tag_mode_reasoning_chars(messages: list[Any]) -> int:
+    """Characters of thinking that will be re-sent as assistant text, whatever the template.
+
+    The library decides per part. Thinking it read out of a **provider field** goes back into
+    that same field (``reasoning_content`` and its kin), which the Qwen, DeepSeek and GLM
+    chat templates drop when they render the prompt — so it costs the next request nothing.
+    Thinking it read out of the response's own ``content`` — marked with
+    ``id == 'content'``, or carrying no id at all — is re-wrapped in thinking tags and
+    appended to the assistant message's **text**. There is no template hook that removes
+    that: it is indistinguishable from anything else the assistant said.
+
+    A part whose id names a *different* provider's field takes the tag path too, and this
+    deliberately does not try to reproduce that case. It needs the model the next request
+    will go to, which nothing at this seam knows; it arises only on a history moved between
+    providers; and the direction of the error is the safe one — undercounting, behind the
+    run's own overflow stop, rather than overriding a server-reported figure.
+
+    Prose, never structured: this content is English going into a text field.
+    """
+    return sum(
+        len(part.content)
+        for message in messages
+        for part in message.parts
+        if isinstance(part, ThinkingPart)
+        and isinstance(part.content, str)
+        and getattr(part, "id", None) in (None, "", _TAG_MODE_ID)
     )
 
 

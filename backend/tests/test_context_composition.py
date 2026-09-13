@@ -677,25 +677,60 @@ def test_a_tool_calls_arguments_count_as_weight():
     assert estimate_tokens(calls) > 900
 
 
-def test_reasoning_weighs_nothing_in_the_footprint():
-    """The class the readout measures and the wire does not carry. An OpenAI-compatible
-    endpoint won't take a thinking part back, so the library drops it when it serializes
-    history — counting it would inflate a thinking model's footprint by everything it has
-    ever thought, and fold the threads that reason hardest far too early. It stays in the
-    *breakdown*, which answers a different question and has its own lever (the thinking
-    budget)."""
+def test_field_mode_reasoning_weighs_nothing_in_the_footprint():
+    """Thinking the library read out of a provider field goes back into that field, and the
+    Qwen, DeepSeek and GLM chat templates drop it when they render the prompt — so it costs
+    the next request nothing.
+
+    Counting it would be worse than the error it fixes: `should_compact` takes the *larger*
+    of the provider's reported prompt size and this estimate, so an inflated estimate
+    overrides an accurate server-reported figure on exactly the templates that strip. It
+    stays in the *breakdown*, which answers a different question and has its own lever."""
     from pydantic_ai.messages import ThinkingPart
 
     from services.conversation_view import estimate_tokens, message_class_chars
 
     thinking = [
         ModelResponse(
-            parts=[ThinkingPart(content="t" * 40_000), TextPart(content="ok")],
+            parts=[
+                ThinkingPart(content="t" * 40_000, id="reasoning_content", provider_name="openai"),
+                TextPart(content="ok"),
+            ],
             usage=RequestUsage(),
         )
     ]
     assert estimate_tokens(thinking) == estimate_tokens(_messages("")[1:])
     assert message_class_chars(thinking)["reasoning"].prose == 40_000
+
+
+def test_tag_mode_reasoning_does_weigh():
+    """The correction. Thinking read out of the response's own `content` is re-wrapped in
+    thinking tags and appended to the assistant message's **text** — there is no template
+    hook that removes it, so the next request carries every character. The older claim that
+    reasoning is "never re-sent" was wrong for this half, and on a thinking model working
+    through a long thread the half is most of it."""
+    from pydantic_ai.messages import ThinkingPart
+
+    from services.conversation_view import estimate_tokens
+
+    tagged = [
+        ModelResponse(
+            parts=[ThinkingPart(content="t" * 40_000, id="content"), TextPart(content="ok")],
+            usage=RequestUsage(),
+        )
+    ]
+    bare = [ModelResponse(parts=[TextPart(content="ok")], usage=RequestUsage())]
+
+    assert estimate_tokens(tagged) > estimate_tokens(bare) + 8_000
+    # A part with no id at all takes the same path, which is the shape a local server's
+    # `<think>` block arrives as.
+    unmarked = [
+        ModelResponse(
+            parts=[ThinkingPart(content="t" * 40_000), TextPart(content="ok")],
+            usage=RequestUsage(),
+        )
+    ]
+    assert estimate_tokens(unmarked) == estimate_tokens(tagged)
 
 
 def test_the_standing_brief_is_counted_once_not_twice():

@@ -521,6 +521,26 @@ class Settings(BaseSettings):
     # price for every prefix and not reaching the endpoint at all.
     anthropic_cache_ttl: Literal["5m", "1h", "off"] = "5m"
 
+    # OpenAI prompt-cache retention (services/providers/openai_compat.py). OpenAI caches a
+    # matching prefix implicitly with no request field at all; this asks it to hold that
+    # prefix *longer* than the default five-to-ten minutes — "24h" for a thread an operator
+    # returns to, "in_memory" for the standard behaviour stated explicitly.
+    #
+    # **"off" is the default and sends nothing**, which is not timidity: this adapter fronts
+    # every OpenAI-shaped server there is, and the great majority of them are local engines
+    # that have never heard of the field. The default within-session case is already covered
+    # by OpenAI's own retention, so the field buys nothing on the endpoints that understand
+    # it either, until an operator says they want the long tier. Off also declares the three
+    # cache fields unsupported on the profile, so the library strips one a caller supplies
+    # per request rather than sending it to a server that may reject the whole request.
+    #
+    # Deliberately not a knob for `prompt_cache_key` or `prompt_cache_options`: the first
+    # only affects which cache shard a request routes to and is worth nothing on a local
+    # engine, and the second is meaningful on two hosted model families that can only be
+    # recognised here by *name* — which for an adapter that fronts any server is a
+    # coincidence of what the operator typed.
+    openai_cache_retention: Literal["in_memory", "24h", "off"] = "off"
+
 
 @lru_cache
 def get_settings() -> Settings:
