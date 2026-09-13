@@ -62,12 +62,6 @@ export interface WorkShape {
  *  the header's glyph matches the terminal card's. */
 const HOST_TOOL = "code_run_host_command";
 
-/** A View version or the live head. Not a tool call, so it has no registry entry
- *  to borrow — but it is work that lands in a run, and a fold ending on a View
- *  chip would otherwise summarize as nothing at all. */
-const VIEW_ICON: IconName = "panel-right";
-const VIEW_LABEL = "View";
-
 /** The one glyph a review row leads with, wherever it appears — the header's summary and
  *  the row itself must agree, or the fold and its contents read as two different events. */
 const REVIEW_ICON: IconName = "review";
@@ -108,10 +102,8 @@ function stepOf(block: AssistantBlock): WorkStep | undefined {
           ? `review: ${block.review.decision}`
           : "reviewing",
       };
-    case "view_version":
-      return { icon: VIEW_ICON, label: VIEW_LABEL, detail: block.title };
-    case "view_live":
-      return { icon: VIEW_ICON, label: VIEW_LABEL, detail: block.live.title };
+    // No View arm: a chip is a result and never folds (`isCollapsible`), so a
+    // case for one here would be a summary that can't be reached.
     default:
       return undefined;
   }

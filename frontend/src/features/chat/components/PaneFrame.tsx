@@ -53,7 +53,13 @@ export function PaneFrame(props: {
           </div>
         </div>
       </Show>
-      <div class="flex min-h-0 min-w-0 flex-1">{props.children}</div>
+      {/* A COLUMN, holding one child, and the direction is the whole point: a
+          surface body sizes itself with `h-full` and no width of its own, so in a
+          flex *row* it shrank to its own max-content — the View rendered its
+          preview in a column the width of its PREVIEW/CODE tabs and left the rest
+          of the pane empty. A column stretches its child across instead, which is
+          the box claiming the space rather than every surface remembering to. */}
+      <div class="flex min-h-0 min-w-0 flex-1 flex-col">{props.children}</div>
     </div>
   );
 }

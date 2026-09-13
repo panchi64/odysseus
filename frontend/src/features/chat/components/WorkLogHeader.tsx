@@ -41,8 +41,11 @@ export function WorkLogHeader(props: {
       open={props.open}
       onToggle={props.onToggle}
       label="Work log"
+      /* From two steps up. A one-step fold's headline already *is* its only row,
+         so a count beside it would say the same thing twice — and "1 steps" is
+         the shape that gives a generated readout away. */
       trailing={
-        <Show when={props.shape.steps > 0}>
+        <Show when={props.shape.steps > 1}>
           <Text variant="micro" tone="dim" class="tabular-nums">
             {`${props.shape.steps} steps`}
           </Text>

@@ -1,17 +1,21 @@
 import { createMemo, createSignal, For, Show, type JSX } from "solid-js";
-import { cx, Icon, Text } from "~/ui";
+import { cx, Frames, Icon, Text } from "~/ui";
 import type { TaskItem } from "~/lib/stream";
 
 /** Compact window: the readout shows at most this many rows — enough to see
  *  where work is and what comes next without pushing the transcript off screen. */
 const WINDOW = 5;
 
-/** Status square (§6.7 list row, §4 semantic color): filled = done (nominal
- *  green) or running (info blue); empty + bordered = not started. Fill vs border
- *  carries the state in shape, so hue is never the only signal (§9). */
-const SQUARE: Record<TaskItem["status"], string> = {
+/** Status square (§6.7 list row, §4 semantic color): filled nominal green = done;
+ *  empty + bordered = not started, cancelled or blocked. Fill vs border carries
+ *  the state in shape, so hue is never the only signal (§9).
+ *
+ *  `in_progress` is deliberately absent: a running task is the one state here with
+ *  *duration*, and a static square said so in colour alone — the same blue a
+ *  finished-and-blue square would wear. It gets `Frames` instead, the system's one
+ *  "working now" indicator (§8), so motion carries the state that is about time. */
+const SQUARE: Record<Exclude<TaskItem["status"], "in_progress">, string> = {
   completed: "bg-nominal",
-  in_progress: "bg-info",
   pending: "border border-dim",
   cancelled: "border border-line",
   blocked: "border border-alert",
@@ -116,10 +120,27 @@ export function TaskRows(props: { items: () => TaskItem[] }): JSX.Element {
                   fade(Math.abs(index - frontier())),
                 )}
               >
-                <span
-                  class={cx("mt-1 size-3 shrink-0", SQUARE[item.status])}
-                  aria-hidden
-                />
+                {/* The throbber and the square occupy the same 12px column and the
+                    same first-line offset, so a task flipping to running (and off
+                    it again) swaps a glyph without moving the text beside it. */}
+                <Show
+                  when={item.status === "in_progress"}
+                  fallback={
+                    <span
+                      class={cx(
+                        "mt-1 size-3 shrink-0",
+                        SQUARE[item.status as keyof typeof SQUARE],
+                      )}
+                      aria-hidden
+                    />
+                  }
+                >
+                  {/* `size-3` + `leading-3`: literally the square's own box, so the
+                      glyph is centred where the square was rather than sitting on the
+                      text's baseline. It is a flex item here, which is what makes a
+                      height apply to a span at all. */}
+                  <Frames class="mt-1 size-3 shrink-0 text-center leading-3 text-info" />
+                </Show>
                 {/* **Wraps, never truncates.** These rows live in a strip beside the
                     transcript, and a task clipped at the pane's edge is a task the
                     operator cannot read at all — the list is the agent's account of what

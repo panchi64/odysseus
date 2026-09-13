@@ -2,20 +2,38 @@
  *  No Solid/DOM here — just data → data, so the rules (grouping, compaction,
  *  transcript assembly) stay testable and live in one place. */
 
-import type { AssistantBlock, BlockKind, ToolInvocation } from "./model";
+import type {
+  AssistantBlock,
+  BlockKind,
+  TextBlock,
+  ToolInvocation,
+} from "./model";
 
-/** A run of consecutive collapsible work only folds into a WORK LOG accordion
- *  once it reaches this many groups. Below it, the run stays inline — a lone
- *  tool call or a think→tool pair reads better on the rail than wrapped in a
- *  "WORK LOG · 1 STEP" fold. Each inline block is still independently
- *  collapsible via its own card, so nothing is buried. */
-export const WORK_LOG_MIN_RUN = 3;
+/** A run of consecutive collapsible work folds into a WORK LOG accordion once it
+ *  reaches this many groups.
+ *
+ *  It is **one**: everything `isCollapsible` admits is settled process that has
+ *  already had its chance to pin itself inline — a call in flight, a failure, a
+ *  picture and a refusal all stay out of a fold by their own rule, not by being
+ *  in too short a run. A floor of three left the remainder of every run on the
+ *  rail, which read as work leaking out of the log rather than as work kept
+ *  deliberately visible.
+ *
+ *  Kept as a constant rather than inlined: this is the knob the rule has been
+ *  retuned on twice, and the shape of `flush` is what makes retuning it a
+ *  one-line change. */
+export const WORK_LOG_MIN_RUN = 1;
 
-/** The answer the operator reads — every `text` block in order. */
+/** The answer the operator reads — every `text` block in order.
+ *
+ *  Blank passages are dropped rather than joined: a model routinely emits a bare
+ *  newline between tool batches, and pasting an answer should not carry the gaps
+ *  between the parts of it that were never written. */
 export function answerText(blocks: AssistantBlock[] | undefined): string {
   return (blocks ?? [])
-    .filter((b) => b.kind === "text")
+    .filter((b): b is TextBlock => b.kind === "text")
     .map((b) => b.text)
+    .filter((text) => text.trim())
     .join("\n\n");
 }
 
@@ -171,8 +189,8 @@ function hasLiveHost(group: BlockGroup): boolean {
 }
 
 /** A tool call still running. Each tool block is its own group, so a parallel batch is
- *  a *run* of them — and a run of three is exactly what `WORK_LOG_MIN_RUN` folds away,
- *  hiding the spinners of calls still in flight. Same rule as `hasLiveHost`. */
+ *  a *run* of them — and a run is exactly what folds away, which would hide the
+ *  spinners of every call still in flight. Same rule as `hasLiveHost`. */
 function hasLiveTool(group: BlockGroup): boolean {
   return group.blocks.some(
     (b) => b.kind === "tool" && b.tool.status === "running",
@@ -233,22 +251,27 @@ function pinsRunInline(group: BlockGroup): boolean {
 }
 
 /** Collapsible = process the operator doesn't have to read or act on inline:
- *  reasoning, tool calls that finished cleanly, host terminals that are settled
- *  and not failed, and the View chips (a version / the live head — the viewport
- *  surfaces those anyway).
+ *  reasoning, tool calls that finished cleanly, and host terminals that are
+ *  settled and not failed.
  *
- *  Two things break a work log run: answer `text` (the model writing *to the
- *  operator* — the one thing that should segment the log) and anything
- *  `pinsRunInline` claims — a call in flight, a host command awaiting a
+ *  Three things break a work log run: answer `text` (the model writing *to the
+ *  operator* — the one thing that should segment the log), a View chip, and
+ *  anything `pinsRunInline` claims — a call in flight, a host command awaiting a
  *  decision, or a failure. The operator is watching it happen, or needs to know it
  *  went wrong. Everything else folds into one continuously growing log.
+ *
+ *  **The View chips used to fold and no longer do.** They are the only kind here
+ *  that renders full-width rather than on the rail, because they are a result and
+ *  not process — and a chip is the transcript's one handle into the viewport.
+ *  That was survivable while a run had to reach three groups to fold; at a floor
+ *  of one, a lone chip would become `Work log · View · 1 step` and the handle
+ *  would be behind a disclosure.
  *
  *  Parks are absent from this reckoning because they are absent from the transcript:
  *  an approval or a question is answered in the dock, and `groupBlocks` never emits
  *  a group for either. */
 function isCollapsible(group: BlockGroup): boolean {
   if (group.kind === "thinking") return true;
-  if (group.kind === "view_version" || group.kind === "view_live") return true;
   // Injected context is the frame around the work, never the work — it has no state to
   // watch, nothing to act on, and it arrives in a clump at the head of every turn. If
   // anything in a turn should fold, it is this.
@@ -262,6 +285,18 @@ function isCollapsible(group: BlockGroup): boolean {
   if (group.kind === "tool" || group.kind === "host_command")
     return !pinsRunInline(group);
   return false;
+}
+
+/** A text group with nothing in it — a whitespace-only passage, which a model
+ *  routinely emits between two batches of tool calls.
+ *
+ *  It renders nothing, so it must not *segment* anything either. Left as an
+ *  ordinary run-breaker it was the single largest source of work leaking out of a
+ *  fold: one work log became two with no visible cause between them, and the
+ *  remainder of the second run showed up as loose rows on the rail. Text is the
+ *  one thing that legitimately breaks a log, and a blank passage is not text. */
+function isBlankText(group: BlockGroup): boolean {
+  return group.kind === "text" && !(group.blocks[0] as TextBlock).text.trim();
 }
 
 /** Every group with a call in flight. The trailing group is live by *position*; these
@@ -283,11 +318,14 @@ export function runningTools(
 /* ── Compaction layout ────────────────────────────────────────────────────────
    Fold every maximal run of consecutive collapsible work that reaches
    WORK_LOG_MIN_RUN groups into its own WORK LOG accordion, always leaving the
-   non-collapsible blocks (the answer, pending actions, outputs) and the
-   active/streaming tail visible and in order. Shorter runs stay inline as
-   individual rail blocks — so the turn's true think → tool → text → … narrative
-   survives, long stretches of process recede into per-segment accordions, and a
-   lone call or a think→tool pair isn't wrapped in a one-step fold. */
+   non-collapsible blocks (the answer, View chips, pending actions, outputs) and
+   the active/streaming tail visible and in order — so the turn's true
+   think → tool → text → … narrative survives and process recedes into
+   per-segment accordions.
+
+   What breaks a run is therefore only what the operator has to read or act on.
+   A blank passage is neither, and is skipped outright rather than counted as an
+   answer — see `isBlankText`. */
 
 export type LayoutItem =
   | { type: "group"; group: BlockGroup }
@@ -330,6 +368,11 @@ export function planTurnLayout(
     run = [];
   };
   groups.forEach((group, i) => {
+    // Transparent, not collapsible: a blank passage joins no run and emits no row,
+    // so the work either side of it stays one run. The live tail is the exception —
+    // a streaming text block is blank for its first delta and carries the caret,
+    // and dropping it would blink the caret out at the start of every answer.
+    if (i !== activeIndex && isBlankText(group)) return;
     if (i !== activeIndex && isCollapsible(group)) {
       run.push(group);
     } else {

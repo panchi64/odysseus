@@ -97,15 +97,20 @@ describe("workShape reports the run's last step", () => {
     });
   });
 
-  test("a run of nothing but View chips still summarizes as something", () => {
+  test("a kind with no step of its own is scanned past, not led with", () => {
+    // A View chip is the live case: it stopped folding when the run floor dropped to
+    // one (`isCollapsible`), so it has no arm in `stepOf` any more. The scan must
+    // walk back to the last step that *is* work rather than summarizing as nothing —
+    // which is the whole reason the `default` arm returns undefined instead of a
+    // placeholder.
     const s = shape([
-      { kind: "view_version", id: "a", snapshotId: "s1", title: "Report" },
-      { kind: "view_version", id: "b", snapshotId: "s2", title: "Chart" },
+      tool("a", "files_read_file", "agent.py"),
+      { kind: "view_version", id: "v", snapshotId: "s1", title: "Chart" },
     ]);
     expect(s.latest).toEqual({
-      icon: "panel-right",
-      label: "View",
-      detail: "Chart",
+      icon: "file",
+      label: "Read",
+      detail: "agent.py",
     });
   });
 });

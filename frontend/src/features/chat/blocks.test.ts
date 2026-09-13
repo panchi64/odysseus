@@ -36,6 +36,17 @@ function text(id: string): AssistantBlock {
   return { kind: "text", id, text: "done" };
 }
 
+/** A passage the model emitted with nothing in it — the bare newline that lands
+ *  between two batches of tool calls. */
+function blank(id: string, body = "\n\n"): AssistantBlock {
+  return { kind: "text", id, text: body };
+}
+
+/** The chip that points at a captured version. */
+function chip(id: string): AssistantBlock {
+  return { kind: "view_version", id, snapshotId: `s-${id}`, title: "v1" };
+}
+
 function host(id: string, phase: HostCommandPhase): AssistantBlock {
   return {
     kind: "host_command",
@@ -66,8 +77,9 @@ describe("parallel tool calls stay visible while they run", () => {
   // guard deleted. Each one puts it mid-run instead, with enough collapsible groups
   // around it that dropping the guard really does fold a work log over it.
   test("a batch with one call still running does not fold", () => {
-    expect(WORK_LOG_MIN_RUN).toBe(3);
-    // Guard removed: a, b, c fold and only the tail d stays inline.
+    expect(WORK_LOG_MIN_RUN).toBe(1);
+    // Guard removed: a, b, c fold into ONE log and only the tail d stays inline.
+    // The running call splitting that log in two is the whole assertion.
     expect(
       plan([
         tool("a", "web_search", "ok"),
@@ -75,7 +87,7 @@ describe("parallel tool calls stay visible while they run", () => {
         tool("c", "web_search", "ok"),
         tool("d", "web_search", "ok"),
       ]),
-    ).toEqual(["a", "b", "c", "d"]);
+    ).toEqual(["worklog", "b", "worklog", "d"]);
   });
 
   test("a whole batch still running stays inline", () => {
@@ -136,7 +148,7 @@ describe("a call that came back with a picture keeps its run inline", () => {
         ],
         false,
       ),
-    ).toEqual(["a", "b", "c", "d"]);
+    ).toEqual(["worklog", "b", "worklog"]);
   });
 
   test("an empty image list is not a picture", () => {
@@ -175,7 +187,7 @@ describe("a failed call keeps its run inline", () => {
         ],
         false,
       ),
-    ).toEqual(["a", "b", "c", "d"]);
+    ).toEqual(["worklog", "b", "worklog"]);
   });
 
   test("a failure mid-stream does not fold", () => {
@@ -186,7 +198,7 @@ describe("a failed call keeps its run inline", () => {
         tool("c", "web_search", "ok"),
         text("t"),
       ]),
-    ).toEqual(["a", "b", "c", "t"]);
+    ).toEqual(["worklog", "b", "worklog", "t"]);
   });
 
   test("a settled turn with no failure still folds", () => {
@@ -216,7 +228,7 @@ describe("a failed call keeps its run inline", () => {
         ],
         false,
       ),
-    ).toEqual(["a", "b", "c", "d"]);
+    ).toEqual(["worklog", "b", "worklog"]);
   });
 
   test("a denied host command is a decision, not a failure, and folds", () => {
@@ -233,6 +245,104 @@ describe("a failed call keeps its run inline", () => {
         false,
       ),
     ).toEqual(["worklog"]);
+  });
+});
+
+describe("a blank passage does not segment the log", () => {
+  // The defect these cover, and it was the largest source of work leaking out of a
+  // fold: a model routinely emits a bare newline between two batches of calls, which
+  // became a `text` group — a hard run-breaker that then rendered nothing. One work
+  // log turned into two with no visible cause between them, and whatever the second
+  // run had too few groups for sat loose on the rail. Every fixture here puts the
+  // blank MID-RUN, so restoring the old rule really does split the log.
+  test("work either side of a blank stays one log", () => {
+    expect(
+      plan(
+        [
+          tool("a", "web_search", "ok"),
+          blank("gap"),
+          tool("b", "files_read_file", "ok"),
+          tool("c", "web_search", "ok"),
+        ],
+        false,
+      ),
+    ).toEqual(["worklog"]);
+  });
+
+  test("the blank itself is not a row", () => {
+    const items = planTurnLayout(
+      groupBlocks([tool("a", "web_search", "ok"), blank("gap")]),
+      { streaming: false },
+    );
+    expect(items.map((i) => i.type)).toEqual(["worklog"]);
+    expect(items[0].type === "worklog" && items[0].groups.length).toBe(1);
+  });
+
+  test("whitespace of any shape counts as blank", () => {
+    // `\n\n` is the common one, but a lone space and a tab are the same nothing.
+    expect(
+      plan(
+        [
+          tool("a", "web_search", "ok"),
+          blank("gap", " \t "),
+          tool("b", "x", "ok"),
+        ],
+        false,
+      ),
+    ).toEqual(["worklog"]);
+  });
+
+  test("a passage with words in it still splits the log", () => {
+    // The counterpart that proves the rule reads *emptiness*, not the `text` kind:
+    // an answer the operator reads is still the one thing that segments a log.
+    expect(
+      plan(
+        [
+          tool("a", "web_search", "ok"),
+          text("t"),
+          tool("b", "files_read_file", "ok"),
+        ],
+        false,
+      ),
+    ).toEqual(["worklog", "t", "worklog"]);
+  });
+
+  test("the streaming tail keeps its blank, because it carries the caret", () => {
+    // An answer's first block is blank for exactly as long as its first delta takes
+    // to arrive. Dropping it would blink the caret out at the head of every answer,
+    // so the live tail is the one blank that still renders.
+    expect(plan([tool("a", "web_search", "ok"), blank("t")])).toEqual([
+      "worklog",
+      "t",
+    ]);
+  });
+});
+
+describe("a lone run folds, but a View chip never does", () => {
+  test("one settled call is a work log of its own", () => {
+    // The floor is one: everything `isCollapsible` admits has already had its chance
+    // to pin itself inline, so a remainder left on the rail reads as leakage rather
+    // than as something kept deliberately visible.
+    expect(plan([tool("a", "web_search", "ok"), text("t")], false)).toEqual([
+      "worklog",
+      "t",
+    ]);
+  });
+
+  test("a chip stays inline even alone between two logs", () => {
+    // A chip is a result, not process — and the transcript's one handle into the
+    // viewport. At a floor of one it would otherwise become `Work log · 1 step`
+    // with the handle behind a disclosure.
+    expect(
+      plan(
+        [
+          tool("a", "web_search", "ok"),
+          chip("v1"),
+          tool("b", "files_read_file", "ok"),
+        ],
+        false,
+      ),
+    ).toEqual(["worklog", "v1", "worklog"]);
   });
 });
 
@@ -288,22 +398,20 @@ describe("injected context recedes into the fold", () => {
     ).toEqual(["worklog", "t"]);
   });
 
-  test("it counts toward a fold the work alone would not reach", () => {
-    // Two settled calls stay inline on their own (below WORK_LOG_MIN_RUN); with the
-    // turn's own preamble ahead of them the run is long enough to fold, which is the
-    // honest reading — the operator has three-plus rows of process either way.
-    expect(WORK_LOG_MIN_RUN).toBe(3);
-    expect(
-      plan(
-        [
-          injected("c1", "repo"),
-          tool("a", "files_read_file", "ok"),
-          tool("b", "web_search", "ok"),
-          text("t"),
-        ],
-        false,
-      ),
-    ).toEqual(["worklog", "t"]);
+  test("it joins the work after it rather than forming its own log", () => {
+    // The preamble and the calls it framed are ONE run, not an injection log
+    // followed by a work log — which is what a per-kind flush would give.
+    const items = planTurnLayout(
+      groupBlocks([
+        injected("c1", "repo"),
+        tool("a", "files_read_file", "ok"),
+        tool("b", "web_search", "ok"),
+        text("t"),
+      ]),
+      { streaming: false },
+    );
+    expect(items.map((i) => i.type)).toEqual(["worklog", "group"]);
+    expect(items[0].type === "worklog" && items[0].groups.length).toBe(3);
   });
 
   test("a live call still breaks the fold open around it", () => {
@@ -311,7 +419,7 @@ describe("injected context recedes into the fold", () => {
     // call still in flight stays on screen with its spinner whatever sits beside it.
     expect(
       plan([injected("c1", "repo"), tool("a", "web_search", "running")], false),
-    ).toEqual(["c1", "a"]);
+    ).toEqual(["worklog", "a"]);
   });
 });
 
