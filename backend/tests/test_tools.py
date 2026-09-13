@@ -7,7 +7,7 @@ from pydantic_ai.models.test import TestModel
 
 from agent import stream_agent_run
 from runs import Run, RunStream
-from tools import RunDeps, build_agent_toolsets
+from tools import RunDeps, build_agent_toolsets, harness_events_capability
 
 
 def _run() -> Run:
@@ -22,6 +22,10 @@ async def _run_agent(*, disabled=frozenset(), categories=None) -> Run:
         # The default catalog includes an approval-gated tool (host exec); accept
         # DeferredToolRequests like the real engine so it defers instead of erroring.
         output_type=[str, DeferredToolRequests],
+        # Registered like the real engine does (`agent/factory.py`): the `tasks` category
+        # carries the harness planning tools, which emit capability events, and the library
+        # refuses one it cannot attribute to a registered capability.
+        capabilities=[harness_events_capability()],
     )
     run = _run()
     deps = RunDeps(run=run, owner_id="operator", disabled_tools=disabled)

@@ -50,6 +50,7 @@ from services.task_list import (
 )
 
 from .deps import RunDeps
+from .harness_events import attributable
 
 # Rendered above the list at the tail of the turn. Short and fixed: the block's *content*
 # changes constantly, so anything static about it belongs here rather than in the churn.
@@ -182,9 +183,14 @@ class _ConversationTaskToolset(AbstractToolset[RunDeps]):
         # tool handed in carries the template's function, which is wired to the template's
         # (unbound) store.
         upstream = _UPSTREAM[name]
+        # Named as the catalog names it, so the planning tools' own capability events can be
+        # attributed — a prefixed toolset otherwise hands the harness an unprefixed
+        # `tool_name` the library cannot look up (`tools/harness_events.py`).
+        inward = attributable(ctx, f"{self.id}_{name}")
         return await bound.call_tool(
-            upstream, tool_args, ctx, (await bound.get_tools(ctx))[upstream]
+            upstream, tool_args, inward, (await bound.get_tools(ctx))[upstream]
         )
+
 
     def _for(
         self, ctx: RunContext[RunDeps]

@@ -18,7 +18,7 @@ from pydantic_ai.usage import RunUsage
 from core.container import ServiceContainer
 from runs import Run, RunStream
 from services.sandbox import SandboxSessionManager
-from tools import RunDeps, build_agent_toolsets
+from tools import RunDeps, build_agent_toolsets, harness_events_capability
 from tools.files import files_toolset
 
 
@@ -71,7 +71,18 @@ async def _call(tool: str, args: dict, *, manager, conversation_id="conv-1"):
     """
     toolset = _TOOLSET
     _run, deps = _deps(manager, conversation_id)
-    ctx = RunContext(deps=deps, model=TestModel(), usage=RunUsage())
+    # Two fields make this stand in for a tool call *inside* a run, both because the harness
+    # filesystem tools emit capability events: `emit` refuses a context with no event stream
+    # to emit into (a plain list is the shape the library carries), and it refuses an event it
+    # cannot attribute to a capability. A real run attributes through `tool_manager`, which a
+    # synthetic context has none of, so name the owner directly.
+    ctx = RunContext(
+        deps=deps,
+        model=TestModel(),
+        usage=RunUsage(),
+        _event_stream_buffer=[],
+        _capability=harness_events_capability(),
+    )
     tools = await toolset.get_tools(ctx)
     name = f"files_{tool}"
     return await toolset.call_tool(name, args, ctx, tools[name])

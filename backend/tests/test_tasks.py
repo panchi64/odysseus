@@ -60,7 +60,20 @@ async def _toolset_ctx(tasks: ConversationTasks | None, conversation_id: str | N
     if tasks is not None:
         caps.add(tasks, as_type=ConversationTasks)
     deps = RunDeps(run=run, owner_id=OWNER, caps=caps, conversation_id=conversation_id)
-    ctx = RunContext(deps=deps, model=TestModel(), usage=RunUsage())
+    # Two fields make this stand in for a tool call *inside* a run, both because the
+    # harness's planning tools emit capability events: `emit` refuses a context with no
+    # event stream to emit into (a plain list is the shape the library carries), and it
+    # refuses an event it cannot attribute to a capability. A real run attributes through
+    # `tool_manager`, which a synthetic context has none of, so name the owner directly.
+    from tools import harness_events_capability
+
+    ctx = RunContext(
+        deps=deps,
+        model=TestModel(),
+        usage=RunUsage(),
+        _event_stream_buffer=[],
+        _capability=harness_events_capability(),
+    )
     return toolset, ctx
 
 

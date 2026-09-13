@@ -42,6 +42,7 @@ from services.projects.worktree import WorktreeBusyError
 from services.workspace import RunWorkspace
 
 from .deps import RunDeps
+from .harness_events import attributable
 from .workspace import run_workspace, unavailable
 
 # Bound toolsets are cached per key because building one registers every tool and
@@ -101,7 +102,11 @@ class ReboundToolset(AbstractToolset[RunDeps]):
         # the per-key cache rather than by rebuilding the whole dict — the set is fixed
         # for a given binding, and this runs on every single call.
         tools = await self._tools_for(bound, ctx)
-        return await bound.call_tool(name, tool_args, ctx, tools[name])
+        # Named as the catalog names it, so a capability event the harness toolset emits can
+        # be attributed: a prefixed toolset hands us the unprefixed `tool_name`, which is not
+        # the key the library looks the owner up under (`tools/harness_events.py`).
+        inward = attributable(ctx, f"{self.id}_{name}")
+        return await bound.call_tool(name, tool_args, inward, tools[name])
 
     async def _tools_for(
         self, bound: AbstractToolset[RunDeps], ctx: RunContext[RunDeps]

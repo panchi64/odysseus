@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from .builtin import builtin_toolset
 from .deps import InstructionProvider, PromptContextProvider, RunDeps, default_workspace_key
+from .harness_events import harness_events_capability
 from .tool_search import dormant_index_instructions, tool_search_capability
 from .toolsets import CORE_GATED_TOOLS, build_agent_toolsets, core_categories
 
@@ -25,5 +26,6 @@ __all__ = [
     "core_categories",
     "default_workspace_key",
     "dormant_index_instructions",
+    "harness_events_capability",
     "tool_search_capability",
 ]

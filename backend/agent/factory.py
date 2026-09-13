@@ -43,6 +43,7 @@ from tools import (
     RunDeps,
     build_agent_toolsets,
     dormant_index_instructions,
+    harness_events_capability,
     tool_search_capability,
 )
 from tools.describe import category_names
@@ -117,6 +118,11 @@ def build_agent(
             MeasureOverhead(),
             AnnounceInjections(),
             tool_search_capability(names_by_category, dormant),
+            # Registered for one narrow reason: to be the owner the library can attribute a
+            # lifted harness toolset's own `CapabilityEvent`s to. It contributes no tools, no
+            # instructions and no hooks — every category still arrives through the namespaced,
+            # gated stack (`tools/harness_events.py`).
+            harness_events_capability(),
         ],
     )
 

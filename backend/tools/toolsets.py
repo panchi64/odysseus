@@ -48,6 +48,7 @@ from .code import code_toolset
 from .deps import RunDeps
 from .describe import category_names, describe
 from .files import files_toolset
+from .harness_events import own_harness_events
 from .plan import GATED_TOOLS as _PLAN_GATED
 from .plan import plan_toolset
 from .repo import repo_toolset
@@ -164,8 +165,17 @@ def build_agent_toolsets(
     def _describe(
         ctx: RunContext[RunDeps], tool_defs: list[ToolDefinition]
     ) -> list[ToolDefinition]:
-        """Restate each tool in the names and vocabulary this catalog actually offers."""
-        return [describe(tool_def, names) for tool_def in tool_defs]
+        """Restate each tool in the names and vocabulary this catalog actually offers, and
+        stamp the owner its events are attributed to.
+
+        The stamp goes on every tool rather than only the harness-derived ones, because the
+        alternative is a per-category list that silently rots: a lifted harness toolset whose
+        events nobody owns does not fail at assembly, it fails mid-turn on the first mutation.
+        It is safe to apply broadly — both places `capability_id` gates a tool require its
+        owning capability to declare `defer_loading`, which this owner never does — and it
+        yields to a definition that already names an owner (`tools/harness_events.py`).
+        """
+        return [own_harness_events(describe(tool_def, names)) for tool_def in tool_defs]
 
     # Namespaced, then filtered, then gated, then described — in that order because each
     # step needs the one before it: the gate classifies by the `category_tool` name the
