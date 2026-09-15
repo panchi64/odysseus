@@ -73,6 +73,16 @@ export function ComposerMenu(props: ComposerMenuProps): JSX.Element {
       onClose={() => {}}
       passive
       block
+      // The menu is the field continued downwards, so it is exactly the field's width.
+      // Without this its own rows size it: a name plus a sentence of description on one
+      // line made the panel 1366px in a 1024px window, running off the right edge and
+      // covering the nav rail on the left.
+      fit
+      // Above the field, always — the composer is docked to the bottom of the window, so
+      // "below" is the sliver left over and a menu that opens into it sits on the readout
+      // line under the input. Above, it grows into the transcript, which is the space
+      // that is actually free and the direction the eye already travels from the field.
+      prefer="above"
       anchor={props.anchor}
       panelClass="max-h-72 overflow-y-auto scrollbar-thin py-1"
       panel={() => (

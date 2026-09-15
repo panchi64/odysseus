@@ -203,3 +203,114 @@ describe("first pass, before the panel has rendered", () => {
     expect(p.clampHeight).toBeNull();
   });
 });
+
+describe("width caps", () => {
+  /** A composer-shaped anchor: a wide field rather than a small button. */
+  const FIELD: Rect = {
+    top: 600,
+    bottom: 660,
+    left: 200,
+    right: 800,
+    width: 600,
+    height: 60,
+  };
+  /** Rows carrying a name and a sentence, laid out on one line. */
+  const WIDE = { width: 1400, height: 280 };
+
+  test("a panel never exceeds the viewport", () => {
+    const p = computePlacement({
+      anchor: anchorAt(100),
+      panel: WIDE,
+      viewport: VIEWPORT,
+    });
+    // Clamping only the left edge guarantees the panel *starts* on screen; the rest
+    // still runs off the right.
+    expect(p.maxWidth).toBe(VIEWPORT.width - 2 * EDGE);
+  });
+
+  test("`fit` holds the panel to the anchor", () => {
+    const p = computePlacement({
+      anchor: FIELD,
+      panel: WIDE,
+      viewport: VIEWPORT,
+      block: true,
+      fit: true,
+    });
+    expect(p.maxWidth).toBe(FIELD.width);
+    // Floor and ceiling together: exactly the field, so the menu reads as the field
+    // continued downwards.
+    expect(p.minWidth).toBe(FIELD.width);
+  });
+
+  test("`fit` places the panel at its anchor, not at a clamped content width", () => {
+    const p = computePlacement({
+      anchor: FIELD,
+      panel: WIDE,
+      viewport: VIEWPORT,
+      block: true,
+      fit: true,
+    });
+    // The bug this pins: placing a 1400px measurement into a 1000px viewport pushes
+    // `left` to EDGE, 192px to the left of the field the menu belongs to.
+    expect(p.left).toBe(FIELD.left);
+  });
+
+  test("without `fit` a block panel still grows past a narrow trigger", () => {
+    const narrow = anchorAt(100);
+    const p = computePlacement({
+      anchor: narrow,
+      panel: { width: 240, height: 100 },
+      viewport: VIEWPORT,
+      block: true,
+    });
+    // `Select`'s case: a trigger sized by its own short label must not truncate the
+    // options the operator opened it to read.
+    expect(p.minWidth).toBe(narrow.width);
+    expect(p.maxWidth).toBeGreaterThan(240);
+  });
+});
+
+describe("preferred side", () => {
+  const FIELD: Rect = {
+    top: 600,
+    bottom: 660,
+    left: 200,
+    right: 800,
+    width: 600,
+    height: 60,
+  };
+
+  test("`above` opens above even when it would also fit below", () => {
+    // The whole point: a composer docked near the bottom has *some* room below, and a
+    // menu that takes it sits on the readout line under the input.
+    const roomy = { width: 600, height: 80 };
+    const p = computePlacement({
+      anchor: FIELD,
+      panel: roomy,
+      viewport: { width: 1000, height: 800 },
+      prefer: "above",
+    });
+    expect(p.top).toBe(FIELD.top - GAP - roomy.height);
+  });
+
+  test("`above` falls back below when above cannot hold it and below is roomier", () => {
+    const nearTop: Rect = { ...FIELD, top: 40, bottom: 100 };
+    const tall = { width: 600, height: 400 };
+    const p = computePlacement({
+      anchor: nearTop,
+      panel: tall,
+      viewport: { width: 1000, height: 800 },
+      prefer: "above",
+    });
+    expect(p.top).toBe(nearTop.bottom + GAP);
+  });
+
+  test("the default is still below", () => {
+    const p = computePlacement({
+      anchor: anchorAt(100),
+      panel: PANEL,
+      viewport: VIEWPORT,
+    });
+    expect(p.top).toBe(anchorAt(100).bottom + GAP);
+  });
+});

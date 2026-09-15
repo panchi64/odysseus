@@ -52,7 +52,8 @@ function samePlacement(a: Placement | null, b: Placement): boolean {
     a.top === b.top &&
     a.left === b.left &&
     a.clampHeight === b.clampHeight &&
-    a.minWidth === b.minWidth
+    a.minWidth === b.minWidth &&
+    a.maxWidth === b.maxWidth
   );
 }
 
@@ -100,6 +101,12 @@ export interface FloatingPanelProps {
    *  Dismissal is not lost, it moves: a menu that lives off the field's own content
    *  closes when the token does, and the field handles its own Escape. */
   passive?: boolean;
+  /** Hold the panel to the anchor's width rather than letting its content set it —
+   *  see `Placement.maxWidth`. For a panel that reads as an extension of a full-width
+   *  field, not as a dropdown hanging off a narrow control. */
+  fit?: boolean;
+  /** Which side of the anchor to open on when both would do. Default `"below"`. */
+  prefer?: "above" | "below";
 }
 
 /** The floating half of every overlay in the system: portal, click-out backdrop,
@@ -152,6 +159,8 @@ export function FloatingPanel(props: FloatingPanelProps): JSX.Element {
       viewport: { width: window.innerWidth, height: window.innerHeight },
       align: props.align,
       block: props.block,
+      fit: props.fit,
+      prefer: props.prefer,
     });
     // An unchanged placement is not re-published. The panel's own size is watched
     // below, and applying a clamp *changes* that size — so a pass that concludes
@@ -312,6 +321,15 @@ function PopoverPanel(props: {
         // widen the natural size, so re-measuring never feeds a shrinking value back.
         "min-width": props.placement?.minWidth
           ? `${props.placement.minWidth}px`
+          : undefined,
+        // Also safe to measure through, and for a sturdier reason than the min-width
+        // above: it is derived from the anchor and the viewport, never from the panel,
+        // so a pass cannot feed its own result back the way the max-height could. What
+        // it does change is the measured *height* — a narrower panel wraps taller — and
+        // that is the height the flip and the clamp should be deciding against, because
+        // it is the height the panel will actually have.
+        "max-width": props.placement
+          ? `${props.placement.maxWidth}px`
           : undefined,
         // Until the first measure lands the panel would flash at 0,0 in the corner.
         visibility: props.placement ? "visible" : "hidden",

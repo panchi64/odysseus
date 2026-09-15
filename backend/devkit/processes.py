@@ -47,10 +47,26 @@ class Service:
 
 
 def listening(port: int, host: str = "127.0.0.1") -> bool:
-    """Whether something accepts connections on this port right now."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.settimeout(0.25)
-        return probe.connect_ex((host, port)) == 0
+    """Whether something accepts connections on this port right now.
+
+    **Every address ``host`` resolves to, not just IPv4.** The family used to be hardcoded
+    to ``AF_INET``, which cannot see a server bound to ``::1`` — so a dev frontend that
+    came up perfectly was never seen and was killed as "did not start", with a log showing
+    it ready. That particular failure is fixed where it belongs, by binding the frontend to
+    the address this instance advertises (``launch.ensure_frontend``); this is the
+    belt-and-braces half, so the next service to bind something else is merely noticed
+    rather than declared dead.
+    """
+    try:
+        candidates = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        return False
+    for family, socktype, proto, _canonical, address in candidates:
+        with socket.socket(family, socktype, proto) as probe:
+            probe.settimeout(0.25)
+            if probe.connect_ex(address) == 0:
+                return True
+    return False
 
 
 def await_listening(port: int, *, timeout_s: float = STARTUP_TIMEOUT_S) -> bool:
