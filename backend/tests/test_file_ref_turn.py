@@ -184,6 +184,29 @@ class TestWhatIsWrittenDown:
         edited = next(m for m in after["messages"] if m["role"] == "user")
         assert edited["file_refs"] == ["hello.txt"]
 
+    async def test_an_edit_that_grows_the_path_drops_the_reference(
+        self, monkeypatch, tmp_path: Path
+    ):
+        patch_model_resolution(monkeypatch)
+        async with client_app() as (client, _app):
+            conversation_id, detail = await self._turn_with_refs(client, tmp_path)
+            user_turn = next(m for m in detail["messages"] if m["role"] == "user")
+            resp = await client.post(
+                "/chat/edit",
+                json={
+                    "conversation_id": conversation_id,
+                    "message_id": user_turn["id"],
+                    # `@hello.txt` is a substring of `@hello.txt.bak`, and a bare
+                    # `in` test would carry the old reference onto a turn that names a
+                    # different file.
+                    "prompt": "look at @hello.txt.bak instead",
+                },
+            )
+            await collect_sse_events(client, resp.json()["run_id"])
+            after = (await client.get(f"/conversations/{conversation_id}")).json()
+        edited = next(m for m in after["messages"] if m["role"] == "user")
+        assert edited["file_refs"] == []
+
     async def test_an_edit_that_removes_the_token_drops_the_reference(
         self, monkeypatch, tmp_path: Path
     ):

@@ -66,6 +66,11 @@ export interface ComposerCommands {
  *  *groups*, not merely within one. */
 const rowId = (command: Command): string => `cmd-${command.qualifiedName}`;
 
+/** `text` begins with `token` and ends it there — not part of a longer name. */
+const opensWith = (text: string, token: string): boolean =>
+  text.startsWith(token) &&
+  (text.length === token.length || /\s/.test(text[token.length]!));
+
 function toItem(command: Command): ComposerMenuItem {
   return {
     id: rowId(command),
@@ -175,7 +180,13 @@ export function createComposerCommands(
       // The operator may have edited the token away between picking and sending, and
       // the **text is the turn of record** — so a staged command only counts while the
       // message still names it.
-      if (!staged || !typed.startsWith(`/${staged.name}`)) {
+      //
+      // As a **whole token**, not a prefix: `/review` is the head of `/reviewer`, and a
+      // bare `startsWith` would both keep the wrong command and slice its argument at the
+      // wrong place, sending `reviewer the auth` as `review` carrying `er the auth`. The
+      // backend applies the same rule when carrying a command through an edit
+      // (`routes/chat._opens_with`).
+      if (!staged || !opensWith(typed, `/${staged.name}`)) {
         return { kind: "message", command: null };
       }
       const argument = typed.slice(staged.name.length + 1).trim();

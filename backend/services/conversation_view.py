@@ -73,7 +73,7 @@ FILE_REFS_MARKER_OPEN = "[The operator referenced these files with @:"
 #: closes that without the stale copy: the name and the argument are facts about what the
 #: operator did, and the block is built again from whatever that name resolves to now.
 #:
-#: Read by ``ConversationStore.leaf_command`` and re-expanded by the chat route, which is
+#: Read by ``ConversationStore.turn_stamps`` and re-expanded by the chat route, which is
 #: the layer that holds the registry. Nothing in ``agent/`` resolves a command name.
 COMMAND_KEY = "command"
 

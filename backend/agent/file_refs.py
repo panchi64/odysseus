@@ -39,8 +39,13 @@ def resolve_file_refs(
         return [], ""
     root = workspace.root
     kept: list[str] = []
-    for relative in paths[:MAX_FILE_REFS]:
-        if contained_file(root, relative) is not None and relative not in kept:
+    # The cap counts what is *kept*, not what was offered: a list carrying the same path
+    # twice would otherwise spend the budget on it and push a distinct reference out, which
+    # is the operator losing a file they named to a duplicate they did not notice.
+    for relative in paths:
+        if len(kept) >= MAX_FILE_REFS:
+            break
+        if relative not in kept and contained_file(root, relative) is not None:
             kept.append(relative)
     return kept, _marker(kept, workspace)
 

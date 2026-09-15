@@ -31,6 +31,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from services.modes import mode_spec
 from services.skills import SkillStore
 from services.subagents import BUILTIN, SubagentSpec, merged_roster
 from services.subagents.definitions import project_specs as project_agent_specs
@@ -91,13 +92,15 @@ class CommandRegistry:
         simply contribute nothing, which is the honest answer rather than a degraded one.
         """
         withheld = frozenset(disabled_tools)
-        # Assembled in tier order — shipped, then written, then declared — so that `_merge`'s
-        # tiebreak between equals is also source order, and reading this list top to bottom
-        # is reading the precedence rule.
+        # Assembled in **tier order** — what this installation ships, then what the
+        # operator wrote, then what the project declared — so that `_merge`'s tiebreak
+        # between equals is also source order, and reading this list top to bottom is
+        # reading the precedence rule. Actions and agents are both tier 0 and must stay
+        # above skills and workflows, both tier 1, for that to remain true.
         specs: list[CommandSpec] = [
             *_actions(has_conversation=has_conversation),
+            *_agent_specs(root, mode, withheld=withheld),
             *await self._skill_specs(owner_id),
-            *_agent_specs(root, withheld=withheld),
             *await self._commands.specs(owner_id),
             *(project_command_specs(root) if root is not None else ()),
         ]
@@ -165,7 +168,9 @@ def _actions(*, has_conversation: bool) -> list[CommandSpec]:
     ]
 
 
-def _agent_specs(root: Path | None, *, withheld: frozenset[str]) -> list[CommandSpec]:
+def _agent_specs(
+    root: Path | None, mode: str, *, withheld: frozenset[str]
+) -> list[CommandSpec]:
     """One command per sub-agent on the roster — the built-ins, plus what the project says.
 
     Merged through ``merged_roster``, which is the roster's own locality rule rather than a
@@ -176,13 +181,38 @@ def _agent_specs(root: Path | None, *, withheld: frozenset[str]) -> list[Command
     resolved the same way — which is the only reason it is safe for the command's block to
     name a sub-agent by name and stop there.
 
+    **And it is why the project layer is gated on the same mode check the launcher makes.**
+    ``run_roster`` reads a project's declarations only in a worktree mode; offering them in a
+    sandbox thread would put a row in the menu whose launch resolves to nothing, and the
+    operator would meet that as a failed tool call mid-turn rather than as an absent option.
+    A thread files under a project in every mode, so a root alone is not the question.
+
+    One residual, inherent rather than fixable here: in a worktree mode before the thread's
+    first turn, ``root`` is still the operator's own checkout, so an agent file they have not
+    committed is offered and will not be in the worktree the launcher resolves against. The
+    command carries only the *name*, which is what makes that recoverable — the same
+    uncommitted-work gap code mode already has, rather than a new one.
+
     Every entry stays ``source="agent"``: a project's *agent* is still an agent, and filing
     it under "Project" would split one roster across two headings in the menu.
     """
     if LAUNCH_TOOL in withheld:
         return []
-    roster = merged_roster(BUILTIN, project_agent_specs(root) if root is not None else ())
-    return [_agent_command(spec) for spec in roster.values()]
+    declared = (
+        project_agent_specs(root)
+        if root is not None and mode_spec(mode).workspace == "worktree"
+        else ()
+    )
+    roster = merged_roster(BUILTIN, declared)
+    # Deduplicated on the *command* name, not the roster's: two entries whose names differ
+    # only by `_` versus `-` collapse onto one typed handle, and shipping both would give
+    # the loser a `shadowed_by` pointing at its own qualified name. First wins, which within
+    # `merged_roster`'s ordering is the more local declaration.
+    commands: dict[str, CommandSpec] = {}
+    for spec in roster.values():
+        command = _agent_command(spec)
+        commands.setdefault(command.name, command)
+    return list(commands.values())
 
 
 def _agent_command(spec: SubagentSpec) -> CommandSpec:

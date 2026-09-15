@@ -183,6 +183,37 @@ class TestRerunningTheTurn:
         # is the turn of record, on the way out of the composer and on the way back in.
         assert not [e for e in _injections(events) if e["contributor"] == "command"]
 
+    async def test_an_edit_to_a_longer_name_drops_the_command(self, monkeypatch):
+        patch_model_resolution(monkeypatch)
+        async with client_app() as (client, _app):
+            # A real command whose name is a prefix of the built-in `reviewer` sub-agent's.
+            await client.post(
+                "/commands/workflows",
+                json={"name": "review", "body": "Read it and say what is wrong."},
+            )
+            # Sent as `/review …`; edited to `/reviewer …`, which is a *different* name.
+            events, conversation_id = await _turn(
+                client, "/review the auth path", {"name": "review", "argument": "the auth path"}
+            )
+            assert events[-1]["type"] == "run.ended"
+            detail = (await client.get(f"/conversations/{conversation_id}")).json()
+            user_turn = next(m for m in detail["messages"] if m["role"] == "user")
+            resp = await client.post(
+                "/chat/edit",
+                json={
+                    "conversation_id": conversation_id,
+                    "message_id": user_turn["id"],
+                    "prompt": "/reviewer the auth path",
+                },
+            )
+            events = await collect_sse_events(client, resp.json()["run_id"])
+
+        # A prefix match would keep `review` and slice its argument at the wrong place,
+        # handing the template `er the auth path` — text nobody wrote. The name has to end
+        # where the token does.
+        rows = [e for e in _injections(events) if e["contributor"] == "command"]
+        assert not any("er the auth path" in row["text"] for row in rows)
+
     async def test_a_plain_turn_carries_no_stamp_to_rerun(self, monkeypatch):
         patch_model_resolution(monkeypatch)
         async with client_app() as (client, app):

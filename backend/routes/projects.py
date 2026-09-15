@@ -29,7 +29,7 @@ from routes import deps
 from routes.camel import CamelModel
 from routes.deps import OPERATOR_ID
 from services.projects import ProjectView, WorktreeError
-from services.projects.listing import list_files, worktree_root
+from services.projects.listing import list_files
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -182,16 +182,16 @@ async def list_project_files(
     conversation to its project and 404s until a thread is saved with a binding, which is
     precisely the moment the picker is most useful.
     """
-    try:
-        project = await deps.projects(request).get(OPERATOR_ID, project_id)
-    except NotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    root = Path(project.root_path)
-    from_worktree = False
-    if conversation_id:
-        root, from_worktree = await worktree_root(
-            deps.worktrees(request).path_for(project_id), conversation_id, root
-        )
+    # Through the shared resolver rather than repeating it: the `/` picker and the send
+    # that resolves a picked command read the same pair, and three copies of "which tree is
+    # this thread looking at" is three chances for them to disagree. The 404 stays here,
+    # because a listing for a project that does not exist is a request to refuse — where
+    # for the two pickers it is a keystroke, and an empty menu is the right answer.
+    root, from_worktree = await deps.composer_tree(
+        request, project_id, conversation_id
+    )
+    if root is None:
+        raise HTTPException(status_code=404, detail="project not found")
     listing = await list_files(root, query=query, limit=max(1, min(limit, 500)))
     return FilesOut(
         root="worktree" if from_worktree else "project",

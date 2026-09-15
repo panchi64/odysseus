@@ -19,18 +19,41 @@ export function rankCommands(query: string, commands: Command[]): Command[] {
   const q = query.trim().toLowerCase();
   if (!q) return commands;
   const byPrefix: Command[] = [];
+  const byQualifiedPrefix: Command[] = [];
   const byName: Command[] = [];
+  const byQualified: Command[] = [];
   const byTitle: Command[] = [];
   const byDescription: Command[] = [];
   for (const command of commands) {
     const name = command.name.toLowerCase();
+    // The qualified name is matched too, because it is a name the operator can
+    // legitimately type: the backend resolves it, `pick` writes it into the field for a
+    // shadowed row, and the whole point of it is to reach the command that *lost* the
+    // bare name. Matching only `name` meant typing `/agent:rev` found nothing at all —
+    // the menu closed on the one query that needs it.
+    //
+    // In its **own buckets**, below the bare ones, because a qualified name begins with a
+    // source label that many rows share: `skill` prefixes the qualified name of every
+    // skill, and sharing a bucket would let that crowd out the command actually *called*
+    // `skill`. A command's own name is the stronger field, exactly as the title is
+    // stronger than the description.
+    const qualified = command.qualifiedName.toLowerCase();
     if (name.startsWith(q)) byPrefix.push(command);
+    else if (qualified.startsWith(q)) byQualifiedPrefix.push(command);
     else if (name.includes(q)) byName.push(command);
+    else if (qualified.includes(q)) byQualified.push(command);
     else if (command.title.toLowerCase().includes(q)) byTitle.push(command);
     else if (command.description.toLowerCase().includes(q))
       byDescription.push(command);
   }
-  return [...byPrefix, ...byName, ...byTitle, ...byDescription];
+  return [
+    ...byPrefix,
+    ...byQualifiedPrefix,
+    ...byName,
+    ...byQualified,
+    ...byTitle,
+    ...byDescription,
+  ];
 }
 
 export interface RankedGroup {

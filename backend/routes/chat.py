@@ -19,6 +19,7 @@ run-submission path.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -499,10 +500,15 @@ def _still_named(stamps: TurnStamps, prompt: str) -> TurnStamps:
     reference survives while the prompt still contains its `@path`.
 
     Matching the *bare* name as well as the qualified one, because a client may have sent
-    either and the operator sees only what they typed. That is a deliberately generous
-    match: at worst an edit keeps a command whose token the operator had already mangled,
-    which shows up as an expansion they can see in the work log — where the opposite error,
-    quietly dropping it, shows up as an answer to a question nobody asked.
+    either and the operator sees only what they typed.
+
+    **Both halves match on a whole token, never on a prefix.** A bare ``startswith`` would
+    read ``/reviewer the auth`` as the command ``review`` carrying the argument
+    ``er the auth`` — the name is kept *and* its argument is sliced at the wrong place, so
+    a template runs on text nobody wrote. The same applies to a path: ``@src/a.ts`` is not
+    named by a message that says ``@src/a.tsx``. So the character after the token has to
+    end it, which for a command means whitespace or end of prompt, and for a path means
+    anything that could not be part of the path itself.
 
     **The argument is re-read from the edited text, never carried over.** The name says
     *which* command; everything after it is the operator's own words, and those are the
@@ -520,7 +526,7 @@ def _still_named(stamps: TurnStamps, prompt: str) -> TurnStamps:
                 for name in sorted(
                     {command.name, command.name.rpartition(":")[2]}, key=len, reverse=True
                 )
-                if typed.startswith(f"/{name}")
+                if _opens_with(typed, f"/{name}")
             ),
             None,
         )
@@ -531,8 +537,43 @@ def _still_named(stamps: TurnStamps, prompt: str) -> TurnStamps:
         )
     return TurnStamps(
         command=command,
-        file_refs=[path for path in stamps.file_refs if f"@{path}" in prompt],
+        file_refs=[path for path in stamps.file_refs if _names_path(prompt, path)],
     )
+
+
+def _opens_with(text: str, token: str) -> bool:
+    """``text`` begins with ``token`` and ends it there — not part of a longer name."""
+    return text.startswith(token) and (
+        len(text) == len(token) or text[len(token)].isspace()
+    )
+
+
+#: The run of characters after a token that could still be part of the same path.
+#: Deliberately broader than the path characters a picker offers: the question is whether
+#: the text names *this* file, and a token that continues into anything name-shaped names a
+#: different one.
+_PATH_RUN = re.compile(r"[^\s\"'`,;:)\]}>]*")
+
+
+def _names_path(text: str, path: str) -> bool:
+    """``text`` contains ``@path`` as a whole token rather than as the head of a longer one.
+
+    **A trailing dot is punctuation, not an extension.** "please read @src/a.ts." is an
+    ordinary sentence and the commonest way a path is written in one, so asking only
+    "is the next character path-shaped" would drop the reference on a full stop while
+    correctly dropping it on ``.bak``. The two are told apart by what follows the dots.
+
+    Mirrored in the composer (``features/chat/files/useFileRefs.namesPath``) — the same
+    question asked at two moments, and the two have to agree.
+    """
+    token = f"@{path}"
+    start = text.find(token)
+    while start != -1:
+        run = _PATH_RUN.match(text, start + len(token)).group()
+        if not run or run.strip(".") == "":
+            return True
+        start = text.find(token, start + 1)
+    return False
 
 
 async def _submit_turn(

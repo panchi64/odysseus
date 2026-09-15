@@ -100,6 +100,39 @@ describe("groupCommands", () => {
   });
 });
 
+describe("rankCommands and the qualified name", () => {
+  test("a qualified name the operator types finds its row", () => {
+    // The whole point of the qualified form is reaching the command that *lost* the bare
+    // name. Matching only `name` meant the menu closed on the one query that needs it —
+    // and on the exact text `pick` writes into the field for a shadowed row.
+    const rows = [cmd({ name: "reviewer", shadowedBy: "skill:reviewer" })];
+    expect(rankCommands("agent:rev", rows).map((c) => c.name)).toEqual([
+      "reviewer",
+    ]);
+    expect(rankCommands("agent:reviewer", rows).map((c) => c.name)).toEqual([
+      "reviewer",
+    ]);
+  });
+
+  test("a command's own name outranks a source label many rows share", () => {
+    // `skill` prefixes the qualified name of *every* skill, so one bucket would let the
+    // source label crowd out the command actually called `skill`. Declared with the
+    // qualified match first, so input order gives the wrong answer.
+    const rows = [
+      cmd({ name: "notes", qualifiedName: "skill:notes", group: "skill" }),
+      cmd({
+        name: "skill",
+        qualifiedName: "workflow:skill",
+        group: "workflow",
+      }),
+    ];
+    expect(rankCommands("skill", rows).map((c) => c.name)).toEqual([
+      "skill",
+      "notes",
+    ]);
+  });
+});
+
 describe("invocationName", () => {
   test("an unshadowed command goes by its bare name", () => {
     expect(invocationName(cmd({ name: "reviewer" }))).toBe("reviewer");

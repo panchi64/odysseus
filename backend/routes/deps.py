@@ -209,15 +209,17 @@ def command_store(request: Request) -> CommandStore:
     return request.app.state.command_store
 
 
-async def composer_root(
+async def composer_tree(
     request: Request, project_id: str | None, conversation_id: str | None
-) -> Path | None:
-    """The checkout a composer in this thread is looking at, or ``None`` when there is none.
+) -> tuple[Path | None, bool]:
+    """The checkout a composer in this thread is looking at, and whether it is the thread's
+    own worktree rather than the operator's checkout.
 
-    The question two surfaces ask in the same breath — the `@` picker listing files, and
-    the `/` picker offering what the project declares — and one a turn asks again on the way
-    out, so that a command the operator picked still resolves when they send it. Answering it
-    in three places would mean three chances to disagree about which tree a name came from.
+    The question three surfaces ask — the `@` picker listing files, the `/` picker offering
+    what the project declares, and the turn that has to resolve a picked command against the
+    same tree the menu listed from. Answering it in three places would mean three chances to
+    disagree about which tree a name came from, so it is answered here; the two that do not
+    care which tree answered call :func:`composer_root` instead.
 
     **Rooted on the project, upgraded by the conversation**, and never creating a worktree:
     typing a character must not acquire the project's single checkout. An unfiled thread, or
@@ -225,18 +227,25 @@ async def composer_root(
     either surface is worth failing a keystroke over.
     """
     if not project_id:
-        return None
+        return None, False
     try:
         project = await projects(request).get(OPERATOR_ID, project_id)
     except NotFoundError:
-        return None
+        return None, False
     root = Path(project.root_path)
     if not conversation_id:
-        return root
-    resolved, _from_worktree = await worktree_root(
+        return root, False
+    return await worktree_root(
         worktrees(request).path_for(project_id), conversation_id, root
     )
-    return resolved
+
+
+async def composer_root(
+    request: Request, project_id: str | None, conversation_id: str | None
+) -> Path | None:
+    """:func:`composer_tree` for the callers that only need the tree, not its provenance."""
+    root, _from_worktree = await composer_tree(request, project_id, conversation_id)
+    return root
 
 
 def uploads(request: Request) -> UploadStore:

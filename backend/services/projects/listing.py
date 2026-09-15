@@ -114,9 +114,16 @@ async def _candidates(root: Path) -> tuple[list[str], bool]:
 
 
 def _walk(root: Path) -> tuple[list[str], bool]:
-    """A bounded, ignore-free walk — for a directory git will not answer for."""
+    """A bounded, ignore-free walk — for a directory git will not answer for.
+
+    **Both bounds report.** The entry cap is the obvious one, but a subtree left unread
+    because it sits past ``_MAX_DEPTH`` is exactly as invisible, and a listing that says it
+    is complete when it is not sends the operator looking for a file the picker decided not
+    to mention. Saying "truncated" is what lets them reach for a full path instead.
+    """
     found: list[str] = []
     scanned = 0
+    truncated = False
     stack: list[tuple[Path, int]] = [(root, 0)]
     while stack:
         directory, depth = stack.pop()
@@ -133,14 +140,18 @@ def _walk(root: Path) -> tuple[list[str], bool]:
                     if entry.is_dir(follow_symlinks=False):
                         if depth < _MAX_DEPTH:
                             stack.append((Path(entry.path), depth + 1))
+                        else:
+                            truncated = True
                         continue
                     if entry.is_file(follow_symlinks=False):
                         found.append(Path(entry.path).relative_to(root).as_posix())
         except OSError:
             # A directory that vanished or cannot be read costs its own subtree and
-            # nothing else — the operator is typing, and half a list beats an error.
+            # nothing else — the operator is typing, and half a list beats an error. It is
+            # still a subtree the listing does not contain, so it counts as truncation.
+            truncated = True
             continue
-    return found, False
+    return found, truncated
 
 
 def _rank(query: str, paths: list[str]) -> list[str]:

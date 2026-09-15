@@ -32,6 +32,35 @@ export interface ComposerFileRefs {
 /** Row id: the path, which is unique within a listing by construction. */
 const rowId = (path: string): string => `file-${path}`;
 
+/** The run of characters after a token that could still be part of the same path. */
+const PATH_RUN = /^[^\s"'`,;:)\]}>]*/;
+
+/** `text` names `@path` as a whole token rather than as the head of a longer one.
+ *
+ *  A plain `includes` is not this rule: `@src/a.ts` is a substring of `@src/a.tsx`, so a
+ *  reference the operator has typed *past* would ride the send naming a file the message
+ *  does not. The backend applies the same rule when carrying references through an edit
+ *  (`routes/chat._names_path`), and the two have to agree — they are the same question
+ *  asked at two moments.
+ *
+ *  **A trailing dot is punctuation, not an extension.** "please read @src/a.ts." is an
+ *  ordinary sentence and the commonest way a path is written in one, so a rule that only
+ *  asked "is the next character path-shaped" would drop the reference on a full stop while
+ *  correctly dropping it on `.bak`. The two are told apart by what comes *after* the dots:
+ *  nothing more of the path means the sentence ended. */
+export function namesPath(text: string, path: string): boolean {
+  const token = `@${path}`;
+  for (
+    let start = text.indexOf(token);
+    start !== -1;
+    start = text.indexOf(token, start + 1)
+  ) {
+    const run = PATH_RUN.exec(text.slice(start + token.length))![0];
+    if (run === "" || /^\.+$/.test(run)) return true;
+  }
+  return false;
+}
+
 export function createComposerFileRefs(
   mode: () => SessionMode,
   projectId: () => string | null,
@@ -93,7 +122,7 @@ export function createComposerFileRefs(
       setStaged([]);
       // The **text is the turn of record**, so a reference only counts while the message
       // still names it — the operator may have picked a file and then deleted the token.
-      return all.filter((path) => text.includes(`@${path}`));
+      return all.filter((path) => namesPath(text, path));
     },
     clear: () => setStaged([]),
   };

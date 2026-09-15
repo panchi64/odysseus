@@ -315,6 +315,47 @@ class TestTheCatalogReadsTheCheckout:
             )
         assert all(e.spec.source != "project" for e in entries)
 
+    async def test_a_project_sub_agent_is_withheld_outside_a_worktree_mode(
+        self, tmp_path: Path
+    ):
+        _write(
+            tmp_path,
+            ".claude/agents/scout.md",
+            "---\ndescription: reads ahead\n---\nLook around and report.",
+        )
+        async with client_app() as (_client, app):
+            entries = await app.state.commands.catalog(
+                "operator", mode="normal", has_conversation=True, root=tmp_path
+            )
+        # A thread files under a project in *every* mode, so a resolvable root is not the
+        # question — `tools/project_agents.run_roster` reads a project's declarations only
+        # in a worktree mode. Offering `/scout` here would put a row in the menu whose
+        # launch resolves to nothing, and the operator would meet that as a failed tool
+        # call mid-turn rather than as an option that was never there.
+        assert all(e.spec.name != "scout" for e in entries)
+        # The built-ins are still offered — it is the project layer that is withheld.
+        assert any(e.spec.name == "explorer" for e in entries)
+
+    async def test_two_roster_names_differing_only_by_separator_ship_once(
+        self, tmp_path: Path
+    ):
+        _write(
+            tmp_path,
+            ".claude/agents/test-runner.md",
+            "---\ndescription: ours\n---\nRun them our way.",
+        )
+        async with client_app() as (_client, app):
+            entries = await app.state.commands.catalog(
+                "operator", mode="code", has_conversation=True, root=tmp_path
+            )
+        rows = [e for e in entries if e.spec.name == "test-runner"]
+        # The built-in is `test_runner` and the underscore folds to a hyphen, so both
+        # roster entries want one typed handle. Shipping both would give the loser a
+        # `shadowed_by` pointing at its own qualified name, and `resolve` would pick
+        # whichever came first without saying so.
+        assert len(rows) == 1
+        assert rows[0].shadowed_by is None
+
     async def test_a_project_command_is_withheld_outside_a_worktree_mode(
         self, tmp_path: Path
     ):
