@@ -123,7 +123,10 @@ async def prepare_turn(
 
     ``turn_context`` is the caller's block for this one invocation (a picked slash
     command's expansion). It joins the per-turn context at the tail, first, and leaves
-    with it — none of that is persisted, so the turn on record stays what was typed.
+    with it — none of that is persisted, so the turn on record stays what was typed. On a
+    regenerate the caller resolves it again from the invocation stamped on the turn being
+    re-answered, and it rides the replayed history's trailing request like the standing
+    providers do.
     """
 
     history = (
@@ -263,7 +266,14 @@ async def prepare_turn(
     # background the turn happens to carry. Announced under a fixed slug rather than a
     # provider's name, since there is no provider — the chassis put it here on the
     # operator's behalf, which is precisely what the injection row exists to say.
-    if turn_context and prompt is not None:
+    #
+    # Unguarded by `prompt is not None`, unlike the attachment and reference work above,
+    # and for the reason the standing providers below are: a **regenerate** has no fresh
+    # prompt but still has a turn to compose. Its block rides the trailing request of the
+    # replayed history instead (`with_tail_context`, at the foot of this function), which
+    # is the same place and the same non-persisted lifetime. Without this a re-answer would
+    # be answering a plain `/reviewer …` token — a different question than the first time.
+    if turn_context:
         context_texts.append(turn_context)
         announce_injection(run, "command", turn_context, "prompt")
     if refs_marker:

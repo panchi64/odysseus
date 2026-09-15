@@ -85,6 +85,114 @@ class TestWhatIsWrittenDown:
         assert "subagents_launch" not in user_turns[0]["content"]
 
 
+class TestRerunningTheTurn:
+    """A turn sent with a command has to be re-runnable — regenerated, or edited and
+    re-asked — and neither path receives one.
+
+    What makes that work is that the **invocation** is written down while the expansion is
+    not. The block is built again from whatever the name resolves to at the moment it is
+    needed, so a re-run picks up an edited template instead of replaying a copy of the old
+    one, and a directive reading "before anything else in this turn" is never left lying in
+    history where a later turn would read it.
+    """
+
+    async def _sent(self, client) -> tuple[str, dict]:
+        events, conversation_id = await _turn(
+            client,
+            "/reviewer check the auth path",
+            {"name": "reviewer", "argument": "check the auth path"},
+        )
+        assert events[-1]["type"] == "run.ended"
+        detail = (await client.get(f"/conversations/{conversation_id}")).json()
+        return conversation_id, detail
+
+    async def test_a_regenerate_expands_the_command_again(self, monkeypatch):
+        patch_model_resolution(monkeypatch)
+        async with client_app() as (client, _app):
+            conversation_id, detail = await self._sent(client)
+            assistant = next(m for m in detail["messages"] if m["role"] == "assistant")
+            resp = await client.post(
+                "/chat/regenerate",
+                json={"conversation_id": conversation_id, "message_id": assistant["id"]},
+            )
+            assert resp.status_code == 202, resp.text
+            events = await collect_sse_events(client, resp.json()["run_id"])
+
+        rows = [e for e in _injections(events) if e["contributor"] == "command"]
+        assert len(rows) == 1, "the second answer is to the same question as the first"
+        assert "subagents_launch" in rows[0]["text"]
+        assert "check the auth path" in rows[0]["text"]
+
+    async def test_the_expansion_still_never_lands_in_history(self, monkeypatch):
+        patch_model_resolution(monkeypatch)
+        async with client_app() as (client, app):
+            conversation_id, detail = await self._sent(client)
+            assistant = next(m for m in detail["messages"] if m["role"] == "assistant")
+            resp = await client.post(
+                "/chat/regenerate",
+                json={"conversation_id": conversation_id, "message_id": assistant["id"]},
+            )
+            await collect_sse_events(client, resp.json()["run_id"])
+            replay = await app.state.conversations.model_history(conversation_id)
+
+        # The point of stamping the invocation rather than the block: after a regenerate
+        # the thread still holds one copy of the operator's typed text and no copy of the
+        # directive. A persisted expansion would now be replayed on every later turn.
+        assert not any("subagents_launch" in str(m) for m in replay)
+
+    async def test_an_edit_keeps_the_command_its_new_text_still_names(self, monkeypatch):
+        patch_model_resolution(monkeypatch)
+        async with client_app() as (client, _app):
+            conversation_id, detail = await self._sent(client)
+            user_turn = next(m for m in detail["messages"] if m["role"] == "user")
+            resp = await client.post(
+                "/chat/edit",
+                json={
+                    "conversation_id": conversation_id,
+                    "message_id": user_turn["id"],
+                    # A typo fixed. The inline edit box has no picker, so nothing about the
+                    # command comes back from the client — it is carried forward or lost.
+                    "prompt": "/reviewer check the auth route",
+                },
+            )
+            assert resp.status_code == 202, resp.text
+            events = await collect_sse_events(client, resp.json()["run_id"])
+
+        rows = [e for e in _injections(events) if e["contributor"] == "command"]
+        assert len(rows) == 1
+        # The *edited* argument, not the one stamped on the turn being replaced: the block
+        # is rebuilt, and what the operator has just written is what they meant.
+        assert "check the auth route" in rows[0]["text"]
+
+    async def test_an_edit_that_removes_the_token_drops_the_command(self, monkeypatch):
+        patch_model_resolution(monkeypatch)
+        async with client_app() as (client, _app):
+            conversation_id, detail = await self._sent(client)
+            user_turn = next(m for m in detail["messages"] if m["role"] == "user")
+            resp = await client.post(
+                "/chat/edit",
+                json={
+                    "conversation_id": conversation_id,
+                    "message_id": user_turn["id"],
+                    "prompt": "actually, just tell me what the auth path does",
+                },
+            )
+            events = await collect_sse_events(client, resp.json()["run_id"])
+
+        # Deleting the token is how the operator says they no longer meant it — the text
+        # is the turn of record, on the way out of the composer and on the way back in.
+        assert not [e for e in _injections(events) if e["contributor"] == "command"]
+
+    async def test_a_plain_turn_carries_no_stamp_to_rerun(self, monkeypatch):
+        patch_model_resolution(monkeypatch)
+        async with client_app() as (client, app):
+            _events, conversation_id = await _turn(client, "say hi")
+            stamps = await app.state.conversations.turn_stamps(conversation_id)
+        # The overwhelmingly common case, and the one a defensive read has to get right:
+        # every turn recorded before any of this existed reads as "no command".
+        assert stamps.command is None
+
+
 class TestResolutionFailure:
     async def test_an_unknown_command_still_sends_the_turn(self, monkeypatch):
         patch_model_resolution(monkeypatch)

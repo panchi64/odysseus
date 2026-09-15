@@ -67,6 +67,7 @@ from runs import (
     Run,
     RunStatus,
 )
+from services.commands.spec import Invocation
 from services.conversations import (
     ConversationBinding,
     ConversationStore,
@@ -121,6 +122,7 @@ def build_chat_orchestrator(
     attachment_ids: list[str] | None = None,
     file_refs: list[str] | None = None,
     turn_context: str = "",
+    command: Invocation | None = None,
     vision: bool = False,
     auto_compact: AutoCompactPolicy | None = None,
     utility_context_window: int | None = None,
@@ -157,6 +159,14 @@ def build_chat_orchestrator(
     parameter rather than a ``PromptContextProvider`` because a provider re-resolves from
     ``(caps, owner_id, conversation_id)`` and never sees *this* request — which is exactly
     what a per-invocation block is.
+
+    ``command`` is the *invocation* behind that block — the name the operator typed and the
+    argument after it — written onto the turn's user request so a later regenerate can ask
+    what it meant and build the block again. Deliberately not the block itself: a template
+    persisted into history would replay an old copy of a file that has since been edited,
+    and a directive reading "before anything else in this turn" is false by the next turn.
+    The pair is not redundant, it is the split between *what to say now* and *what to write
+    down*, and only the second survives the turn.
 
     ``model`` is the resolved ``main`` model (the route resolves it from the
     registry, with any per-conversation override). ``categories`` overrides the
@@ -228,6 +238,12 @@ def build_chat_orchestrator(
         # an in-turn fold moves it: `drive_turn` rewrites it in place, and every reader
         # below reads through it rather than closing over a stale integer.
         setup = TurnSetup()
+        # Only a turn that carries a fresh prompt records a user request, and the stamp
+        # belongs on that request. A regenerate re-answers a request already in the tree —
+        # one that has carried its own stamp since the day it was sent — so stamping here
+        # would have nothing to write on, and `prepare_turn` ignores the expansion's twin
+        # for the same reason.
+        stamped = command if prompt is not None else None
         # Reachable mid-turn so a wall-clock/inactivity bound can flush whatever the
         # turn has produced before the registry force-cancels this task (which would
         # otherwise interrupt us before we reach `finalize` below and silently drop
@@ -262,6 +278,7 @@ def build_chat_orchestrator(
                 clean_drop=_flush_clean_drop(),
                 attachment_ids=setup.stamp_ids,
                 file_refs=setup.file_refs,
+                command=stamped,
                 persisted=setup.persisted,
             )
 
@@ -402,6 +419,7 @@ def build_chat_orchestrator(
                     clean_drop=turn.clean_drop,
                     attachment_ids=setup.stamp_ids,
                     file_refs=setup.file_refs,
+                    command=stamped,
                     persisted=setup.persisted,
                 ),
             )

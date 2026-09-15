@@ -103,3 +103,26 @@ class CommandSpec:
     def tier(self) -> int:
         """Locality — higher wins a collision on the bare name."""
         return _TIER[self.source]
+
+
+@dataclass(frozen=True)
+class Invocation:
+    """A picked command as it is *written down* on the turn it was sent with.
+
+    Two fields and no spec, deliberately. What ``/reviewer`` resolves to is a question with
+    a different answer on Tuesday than it had on Monday — a skill gets unpublished, a
+    project file is edited, a tool is switched off — and the honest record of a turn is that
+    the operator typed that name, not a frozen copy of what it meant at the time.
+
+    So this is what a regenerate re-reads, and the expansion is built again from whatever
+    the name means *now*. The alternative — persisting the expanded block into history —
+    was rejected twice over: a template body would replay forever after the file it came
+    from changed, and a directive reading "call this before anything else in this turn"
+    is a lie the moment there is another turn after it.
+    """
+
+    #: Exactly what the client sent — bare (``reviewer``) or qualified (``agent:reviewer``).
+    #: Not normalised to one or the other: which of them the operator typed is the whole of
+    #: what says whether they meant "the reviewer" or "*that* reviewer".
+    name: str
+    argument: str = ""

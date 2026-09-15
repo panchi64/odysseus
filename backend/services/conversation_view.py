@@ -32,6 +32,7 @@ from pydantic_ai import (
 
 from core.serde import jsonable
 from core.text import chars_to_tokens
+from services.commands.spec import Invocation
 from services.subagents.report import direction_body, report_body
 
 if TYPE_CHECKING:  # a type, not a dependency — nothing here calls into the run substrate
@@ -62,6 +63,19 @@ FILE_REFS_KEY = "file_refs"
 #: opposite directions and a sentinel is what settles them: one exact string, owned by the
 #: pair of functions on either side of it, rather than a parser trying to recognise prose.
 FILE_REFS_MARKER_OPEN = "[The operator referenced these files with @:"
+
+#: Where the slash command a turn was sent with rides — the same metadata channel again,
+#: and the only one of the three the **backend** reads back rather than the operator.
+#:
+#: A command's expansion is never persisted (``services/commands/expand``), so a regenerate
+#: replaying this turn's history would otherwise hand the model the bare ``/reviewer …``
+#: token and nothing else. Writing down the *invocation* instead of the expansion is what
+#: closes that without the stale copy: the name and the argument are facts about what the
+#: operator did, and the block is built again from whatever that name resolves to now.
+#:
+#: Read by ``ConversationStore.leaf_command`` and re-expanded by the chat route, which is
+#: the layer that holds the registry. Nothing in ``agent/`` resolves a command name.
+COMMAND_KEY = "command"
 
 
 @dataclass
@@ -510,7 +524,7 @@ def strip_file_refs_marker(text: str) -> str:
     return head.rstrip() if sep else text
 
 
-def _file_refs(message: Any) -> list[str]:
+def stamped_file_refs(message: Any) -> list[str]:
     """The `@` paths stamped on this request, or an empty list.
 
     Read defensively for the same reason ``_compaction_reason`` is: a turn recorded before
@@ -525,6 +539,28 @@ def _file_refs(message: Any) -> list[str]:
     if not isinstance(refs, list):
         return []
     return [ref for ref in refs if isinstance(ref, str) and ref]
+
+
+def stamped_command(message: Any) -> Invocation | None:
+    """The slash command this request was sent with, or ``None``.
+
+    Read as defensively as the two above, and for one more reason besides: this one is fed
+    straight back into a resolver on the regenerate path, so a malformed stamp must read as
+    "no command" rather than as a name made of the wrong type. A turn recorded before this
+    existed simply has no key, and replays exactly as it did before — which is the correct
+    outcome, not a degraded one.
+    """
+    metadata = getattr(message, "metadata", None)
+    if not isinstance(metadata, dict):
+        return None
+    stamp = metadata.get(COMMAND_KEY)
+    if not isinstance(stamp, dict):
+        return None
+    name = stamp.get("name")
+    argument = stamp.get("argument", "")
+    if not isinstance(name, str) or not name:
+        return None
+    return Invocation(name=name, argument=argument if isinstance(argument, str) else "")
 
 
 def _summary_part(message: Any) -> Any | None:
@@ -639,7 +675,7 @@ def project_tree(
                         content=strip_file_refs_marker(text if body is None else body),
                         timestamp=getattr(part, "timestamp", None),
                         id=node_id,
-                        file_refs=_file_refs(message),
+                        file_refs=stamped_file_refs(message),
                     )
                 )
                 continue

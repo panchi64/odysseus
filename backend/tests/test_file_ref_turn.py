@@ -159,3 +159,47 @@ class TestWhatIsWrittenDown:
         # regenerate leaves alone while it re-answers beneath it.
         user_turn = next(m for m in after["messages"] if m["role"] == "user")
         assert user_turn["file_refs"] == ["hello.txt"]
+
+    async def test_an_edit_keeps_the_references_its_new_text_still_names(
+        self, monkeypatch, tmp_path: Path
+    ):
+        patch_model_resolution(monkeypatch)
+        async with client_app() as (client, _app):
+            conversation_id, detail = await self._turn_with_refs(client, tmp_path)
+            user_turn = next(m for m in detail["messages"] if m["role"] == "user")
+            resp = await client.post(
+                "/chat/edit",
+                json={
+                    "conversation_id": conversation_id,
+                    "message_id": user_turn["id"],
+                    # The `@` token kept, the rest rewritten. An edit is a fresh request —
+                    # nothing of the old one is replayed — so a reference dropped here is
+                    # a chip the operator watches vanish for fixing a typo.
+                    "prompt": "look at @hello.txt and tell me what it says",
+                },
+            )
+            assert resp.status_code == 202, resp.text
+            await collect_sse_events(client, resp.json()["run_id"])
+            after = (await client.get(f"/conversations/{conversation_id}")).json()
+        edited = next(m for m in after["messages"] if m["role"] == "user")
+        assert edited["file_refs"] == ["hello.txt"]
+
+    async def test_an_edit_that_removes_the_token_drops_the_reference(
+        self, monkeypatch, tmp_path: Path
+    ):
+        patch_model_resolution(monkeypatch)
+        async with client_app() as (client, _app):
+            conversation_id, detail = await self._turn_with_refs(client, tmp_path)
+            user_turn = next(m for m in detail["messages"] if m["role"] == "user")
+            resp = await client.post(
+                "/chat/edit",
+                json={
+                    "conversation_id": conversation_id,
+                    "message_id": user_turn["id"],
+                    "prompt": "never mind the file, just say hello",
+                },
+            )
+            await collect_sse_events(client, resp.json()["run_id"])
+            after = (await client.get(f"/conversations/{conversation_id}")).json()
+        edited = next(m for m in after["messages"] if m["role"] == "user")
+        assert edited["file_refs"] == []

@@ -71,12 +71,16 @@ from models.conversation import Conversation, Message
 from runs.events import CompactionReason, LastRequestUsage
 from runs.overhead import TurnOverhead
 from runs.timings import ResponseTiming, TimingTotals
+from services.commands.spec import Invocation
 from services.conversation_view import (
+    COMMAND_KEY,
     COMPACTION_REASON_KEY,
     FILE_REFS_KEY,
     MessageView,
     estimate_footprint,
     project_tree,
+    stamped_command,
+    stamped_file_refs,
 )
 from services.embeddings import Embedder, embed_and_seal_rows, encode_vector
 from services.modes import DEFAULT_MODE, ModeId, mode_spec
@@ -538,6 +542,24 @@ class ConversationBinding:
     mode: ModeId = DEFAULT_MODE
     project_id: str | None = None
     permission: PermissionLevel = DEFAULT_PERMISSION
+
+
+@dataclass(frozen=True)
+class TurnStamps:
+    """What a turn's user request carries besides the operator's words.
+
+    Both fields ride the request's ``metadata`` rather than columns of their own (see
+    ``services/conversation_view``), and both exist for the same reason: a turn can be
+    **re-run** — regenerated, or edited and re-asked — and everything that composed it the
+    first time has to be recoverable from what was written down, not from a client that may
+    have been closed since.
+
+    Read as one record because both callers want both, and one round trip through the tree
+    is what they cost together.
+    """
+
+    command: Invocation | None = None
+    file_refs: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -1080,6 +1102,48 @@ class ConversationStore:
         tree = await self._tree(conversation_id)
         return [node.message for node in _replay_nodes(tree.active_path())]
 
+    async def turn_stamps(
+        self, conversation_id: str, message_id: str | None = None
+    ) -> TurnStamps:
+        """What a turn was sent with besides its text — the slash command, the `@` paths.
+
+        Two callers, both of them history-rewriting turns that have to reproduce a turn
+        they did not receive:
+
+        * **regenerate** passes no ``message_id`` and reads the trailing request on the
+          active path. It calls this *after* ``regenerate_point``, which is what puts the
+          turn being re-answered at the leaf.
+        * **edit** names the request being replaced, and must read *before* ``edit_point``,
+          which reseats the leaf to that request's **parent** — after it, the trailing
+          request is the previous turn and the stamps would belong to the wrong message.
+
+        The no-id form walks backwards to the last request rather than taking ``path[-1]``,
+        so that on a settled thread it still answers about the most recent turn rather than
+        about whichever node happens to sit at the end.
+
+        Cheap on purpose — the cached tree, and no decrypt beyond the one ``_tree`` already
+        did — because it runs on every regenerate and every edit, including the
+        overwhelming majority that carried neither.
+        """
+        tree = await self._tree(conversation_id)
+        if message_id is not None:
+            node = tree.nodes.get(message_id)
+            message = node.message if node is not None else None
+        else:
+            message = next(
+                (
+                    n.message
+                    for n in reversed(tree.active_path())
+                    if isinstance(n.message, ModelRequest)
+                ),
+                None,
+            )
+        if not isinstance(message, ModelRequest):
+            return TurnStamps()
+        return TurnStamps(
+            command=stamped_command(message), file_refs=stamped_file_refs(message)
+        )
+
     async def compaction_plan(
         self, conversation_id: str, *, keep_turns: int
     ) -> CompactionPlan | None:
@@ -1547,6 +1611,7 @@ class ConversationStore:
         new_messages: list[ModelMessage],
         attachment_ids: list[str] | None = None,
         file_refs: list[str] | None = None,
+        command: Invocation | None = None,
         persisted: list | None = None,
         blocked_reason: str | None = None,
         timings: list[ResponseTiming] | None = None,
@@ -1556,7 +1621,8 @@ class ConversationStore:
         Only projects and serializes here (no vault) — the drainer encrypts just
         before the write, on the lock-aware side of the queue. New messages branch
         automatically when a prior regenerate/edit moved the active leaf back.
-        ``attachment_ids``/``persisted`` belong to the turn's user request (the first one):
+        ``attachment_ids``/``file_refs``/``command``/``persisted`` belong to the turn's user
+        request (the first one):
         the ids are stamped on its node + row (chip rendering), and when ``persisted`` is
         given the request's *live* attachment content is replaced by that capped set before
         serialize — so replayed history carries only the retained-up-to-cap content, never
@@ -1609,10 +1675,24 @@ class ConversationStore:
                 # a column would have to be sealed on its own; nothing scans these the
                 # way `referenced_upload_ids` scans the attachment ids, so there is
                 # nothing a clear column would buy.
-                if file_refs:
+                #
+                # The picked command rides the same dict, one key over. What is written
+                # there is the *invocation* — the name typed and the argument after it —
+                # never the block it expanded to: that block is rebuilt from whatever the
+                # name means at the moment it is needed, which is what keeps a regenerate
+                # from replaying an old copy of a template that has since been edited.
+                stamp = {
+                    **({FILE_REFS_KEY: list(file_refs)} if file_refs else {}),
+                    **(
+                        {COMMAND_KEY: {"name": command.name, "argument": command.argument}}
+                        if command is not None
+                        else {}
+                    ),
+                }
+                if stamp:
                     node.message.metadata = {
                         **(getattr(node.message, "metadata", None) or {}),
-                        FILE_REFS_KEY: list(file_refs),
+                        **stamp,
                     }
                 install_persisted_attachments(node.message, persisted)
                 if blocked_on_request:

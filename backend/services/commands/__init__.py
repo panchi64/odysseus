@@ -18,7 +18,13 @@ from __future__ import annotations
 from services.commands.actions import BUILTIN_ACTIONS, NEEDS_CONVERSATION
 from services.commands.expand import expand
 from services.commands.registry import GROUPS, CatalogEntry, CommandRegistry
-from services.commands.spec import ActionId, CommandKind, CommandSource, CommandSpec
+from services.commands.spec import (
+    ActionId,
+    CommandKind,
+    CommandSource,
+    CommandSpec,
+    Invocation,
+)
 
 __all__ = [
     "BUILTIN_ACTIONS",
@@ -30,5 +36,6 @@ __all__ = [
     "CommandRegistry",
     "CommandSource",
     "CommandSpec",
+    "Invocation",
     "expand",
 ]

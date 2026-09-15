@@ -29,6 +29,7 @@ from typing import Any
 from pydantic_ai import ModelMessage
 
 from runs import Run
+from services.commands.spec import Invocation
 
 from .history import TurnStart
 
@@ -55,6 +56,10 @@ class PersistContext:
     clean_drop: tuple[int, int] | None = None
     attachment_ids: list[str] = field(default_factory=list)
     file_refs: list[str] = field(default_factory=list)
+    #: The slash command this turn was sent with, written down so a regenerate can build
+    #: its block again. ``None`` on a regenerate's *own* turn, which re-records no user
+    #: request and so has nothing to stamp.
+    command: Invocation | None = None
     persisted: list[Any] | None = None
 
 
