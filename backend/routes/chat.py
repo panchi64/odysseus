@@ -455,6 +455,7 @@ def compose_turn(
 async def _command_context(
     request: Request,
     command: Invocation | None,
+    conversation_id: str,
     binding: ConversationBinding,
     disabled_tools: frozenset[str],
 ) -> str:
@@ -481,6 +482,9 @@ async def _command_context(
         mode=binding.mode,
         has_conversation=True,
         disabled_tools=disabled_tools,
+        # The same tree the picker listed from, resolved the same way — a project's own
+        # `/release-notes` must mean the same thing on the way out as it did in the menu.
+        root=await deps.composer_root(request, binding.project_id, conversation_id),
     )
     return expand(spec, command.argument) if spec is not None else ""
 
@@ -566,7 +570,9 @@ async def _submit_turn(
         # Resolved here rather than in the engine, for the same reason the enabled-tool
         # policy is: it is a persisted read, and `compose_turn` is the synchronous step
         # after the caller has already mutated the conversation.
-        turn_context=await _command_context(request, command, binding, disabled),
+        turn_context=await _command_context(
+            request, command, conversation_id, binding, disabled
+        ),
         # Written onto the turn as well as spoken into it — see `compose_turn`. Harmless on
         # a regenerate, which records no user request for it to land on.
         command=command,

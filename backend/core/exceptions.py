@@ -63,13 +63,29 @@ class SkillSpanError(SpanEditError):
     """A :class:`SpanEditError` on a skill's ``SKILL.md`` body (`SKILL-3`)."""
 
 
-class SkillValidationError(OdysseusError):
-    """A skill bundle violates the Agent Skills standard. Carries the offending ``field`` so
-    the operator is told *which* part of their bundle to fix, not merely that it failed."""
+class FieldValidationError(OdysseusError):
+    """Something the operator authored is not well-formed, and this says *which part*.
+
+    The difference from :class:`InvalidInputError` is the audience, not the severity: that
+    one is a message a surface shows inline, while this is for a record with several fields
+    where "invalid" is useless on its own — the editor has to know which box to mark. The
+    routes that raise it turn ``field`` into a 422 body the editor renders verbatim, because
+    the backend decides what is valid and the frontend only shows it.
+    """
 
     def __init__(self, field: str, message: str) -> None:
         self.field = field
         super().__init__(message)
+
+
+class SkillValidationError(FieldValidationError):
+    """A skill bundle violates the Agent Skills standard. Carries the offending ``field`` so
+    the operator is told *which* part of their bundle to fix, not merely that it failed."""
+
+
+class CommandValidationError(FieldValidationError):
+    """A workflow the operator wrote is not usable as a command — a name that could not be
+    typed, a missing body, a field over its cap."""
 
 
 class ModelLoadError(OdysseusError):

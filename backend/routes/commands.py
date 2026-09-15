@@ -1,23 +1,33 @@
-"""The command catalog — what the composer's `/` menu may offer right now.
+"""The command catalog, and the workflows the operator writes into it.
 
-One read, thin over :class:`~services.commands.registry.CommandRegistry`. Everything the
-picker appears to decide was decided below this layer: which commands exist, which of them
-this thread can actually honour, which one wins a shared name, and what the headings are
-called.
+Two surfaces on one router, because they are two views of the same noun. ``GET /commands``
+is what a composer reads — thin over :class:`~services.commands.registry.CommandRegistry`,
+and everything it appears to decide was decided below this layer: which commands exist,
+which of them this thread can actually honour, which one wins a shared name, and what the
+headings are called. ``/commands/workflows`` is the editor for the one source the registry
+owns, and touches nothing the other four provide.
 
-**The groups ride the response.** A client that kept its own heading list would show a
-blank section the first time a source was added below it, so the labels come down with the
-rows. camelCase out, matching ``skills`` beside it.
+**The groups ride the catalog response.** A client that kept its own heading list would show
+a blank section the first time a source was added below it, so the labels come down with the
+rows.
+
+**Validation errors name their field**, matching ``skills``: the message reaches the editor
+as a 422 whose detail it renders verbatim, because the backend decides what is valid and the
+frontend only shows it. camelCase out, the same way.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from datetime import datetime
 
+from fastapi import APIRouter, HTTPException, Request
+
+from core.exceptions import CommandValidationError, NotFoundError
 from routes import deps
 from routes.camel import CamelModel
 from routes.deps import OPERATOR_ID
 from services.commands import GROUPS, CatalogEntry
+from services.commands.store import CommandView
 from services.modes import DEFAULT_MODE, ModeId
 
 router = APIRouter(prefix="/commands", tags=["commands"])
@@ -59,6 +69,42 @@ class CommandsOut(CamelModel):
     commands: list[CommandOut]
 
 
+class WorkflowOut(CamelModel):
+    """One saved workflow as its author sees it — including the body, which the catalog
+    never carries. The editor is the one place the template is meant to be read."""
+
+    id: str
+    name: str
+    title: str
+    description: str
+    body: str
+    argument_hint: str | None
+    enabled: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class WorkflowCreate(CamelModel):
+    name: str
+    body: str
+    title: str = ""
+    description: str = ""
+    argument_hint: str = ""
+    enabled: bool = True
+
+
+class WorkflowUpdate(CamelModel):
+    """Every field optional, and an omitted one is left unchanged — so the pane can save a
+    rename without resending the template."""
+
+    name: str | None = None
+    body: str | None = None
+    title: str | None = None
+    description: str | None = None
+    argument_hint: str | None = None
+    enabled: bool | None = None
+
+
 def _out(entry: CatalogEntry) -> CommandOut:
     spec = entry.spec
     argument = (
@@ -87,13 +133,20 @@ async def list_commands(
     request: Request,
     mode: ModeId = DEFAULT_MODE,
     conversation_id: str | None = None,
+    project_id: str | None = None,
 ) -> CommandsOut:
     """The commands offerable in a composer in ``mode``, with or without a thread.
 
-    ``conversation_id`` is presence, not identity: a composer that has not started a thread
-    yet cannot compact or fork one, so those rows are simply absent rather than shipped and
-    then refused. The thread's own mode is not read from it — the caller passes ``mode``,
-    because the launchpad's composer is choosing one rather than reporting one.
+    ``conversation_id`` is presence *and* identity, for two different questions. A composer
+    that has not started a thread yet cannot compact or fork one, so those rows are simply
+    absent rather than shipped and then refused — that part is presence. It is also what
+    says which worktree the project's declarations should be read from, since a code thread
+    works in a branch cut from the project rather than in the operator's own checkout.
+
+    The thread's own mode is not read from it — the caller passes ``mode``, because the
+    launchpad's composer is choosing one rather than reporting one. ``project_id`` is the
+    same: a thread's binding is settled at creation, and before then the composer is the
+    only thing that knows which project is about to be picked.
     """
     withheld = await deps.disabled_tools(request, mode)
     entries = await deps.commands(request).catalog(
@@ -101,6 +154,7 @@ async def list_commands(
         mode=mode,
         has_conversation=conversation_id is not None,
         disabled_tools=withheld,
+        root=await deps.composer_root(request, project_id, conversation_id),
     )
     offered = {entry.spec.source for entry in entries}
     return CommandsOut(
@@ -113,3 +167,86 @@ async def list_commands(
         ],
         commands=[_out(entry) for entry in entries],
     )
+
+
+# ── workflows: the one source this feature owns ──────────────────────────────────────────
+
+
+def _workflow_out(view: CommandView) -> WorkflowOut:
+    return WorkflowOut(
+        id=view.id,
+        name=view.name,
+        title=view.title,
+        description=view.description,
+        body=view.body,
+        argument_hint=view.argument_hint,
+        enabled=view.enabled,
+        created_at=view.created_at,
+        updated_at=view.updated_at,
+    )
+
+
+def _invalid(exc: CommandValidationError) -> HTTPException:
+    return HTTPException(status_code=422, detail={"field": exc.field, "message": str(exc)})
+
+
+@router.get("/workflows", response_model=list[WorkflowOut])
+async def list_workflows(request: Request) -> list[WorkflowOut]:
+    """Every saved workflow, disabled ones included — this is the editor, not the menu."""
+    views = await deps.command_store(request).list_commands(OPERATOR_ID)
+    return [_workflow_out(view) for view in views]
+
+
+@router.post("/workflows", status_code=201, response_model=WorkflowOut)
+async def create_workflow(request: Request, body: WorkflowCreate) -> WorkflowOut:
+    try:
+        view = await deps.command_store(request).create(
+            OPERATOR_ID,
+            name=body.name,
+            body=body.body,
+            title=body.title,
+            description=body.description,
+            argument_hint=body.argument_hint,
+            enabled=body.enabled,
+        )
+    except CommandValidationError as exc:
+        raise _invalid(exc) from None
+    return _workflow_out(view)
+
+
+@router.get("/workflows/{command_id}", response_model=WorkflowOut)
+async def get_workflow(request: Request, command_id: str) -> WorkflowOut:
+    try:
+        return _workflow_out(await deps.command_store(request).get(OPERATOR_ID, command_id))
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+
+
+@router.patch("/workflows/{command_id}", response_model=WorkflowOut)
+async def update_workflow(
+    request: Request, command_id: str, body: WorkflowUpdate
+) -> WorkflowOut:
+    try:
+        view = await deps.command_store(request).update(
+            OPERATOR_ID,
+            command_id,
+            name=body.name,
+            body=body.body,
+            title=body.title,
+            description=body.description,
+            argument_hint=body.argument_hint,
+            enabled=body.enabled,
+        )
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except CommandValidationError as exc:
+        raise _invalid(exc) from None
+    return _workflow_out(view)
+
+
+@router.delete("/workflows/{command_id}", status_code=204)
+async def delete_workflow(request: Request, command_id: str) -> None:
+    try:
+        await deps.command_store(request).delete(OPERATOR_ID, command_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None

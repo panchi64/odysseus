@@ -8,6 +8,7 @@ FastAPI ``Depends`` later).
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import httpx
 from fastapi import HTTPException, Request, WebSocket
@@ -17,6 +18,7 @@ from core.api_scopes import ScopeTable
 from core.auth import AuthManager
 from core.config import Settings
 from core.container import ServiceContainer
+from core.exceptions import NotFoundError
 from core.ratelimit import RateLimiter
 from core.vault import Vault
 from runs import ConversationBusyError, RunRegistry
@@ -27,6 +29,7 @@ from services.backup import BackupService
 from services.browser import BrowserSessionManager
 from services.calendar import CalendarService
 from services.commands import CommandRegistry
+from services.commands.store import CommandStore
 from services.conversation_search import ConversationSearch
 from services.conversations import ConversationStore
 from services.corpus import CorpusIndex
@@ -42,6 +45,7 @@ from services.notifications import NotificationService
 from services.offline import OfflineModeService
 from services.plan_mode import PlanMode
 from services.projects import ProjectStore, WorktreeManager, visible_project_ids
+from services.projects.listing import worktree_root
 from services.registry import ModelRegistry
 from services.reindex import EmbeddingReindexer
 from services.sandbox import SandboxSessionManager
@@ -199,6 +203,40 @@ def skills(request: Request) -> SkillStore:
 
 def commands(request: Request) -> CommandRegistry:
     return request.app.state.commands
+
+
+def command_store(request: Request) -> CommandStore:
+    return request.app.state.command_store
+
+
+async def composer_root(
+    request: Request, project_id: str | None, conversation_id: str | None
+) -> Path | None:
+    """The checkout a composer in this thread is looking at, or ``None`` when there is none.
+
+    The question two surfaces ask in the same breath — the `@` picker listing files, and
+    the `/` picker offering what the project declares — and one a turn asks again on the way
+    out, so that a command the operator picked still resolves when they send it. Answering it
+    in three places would mean three chances to disagree about which tree a name came from.
+
+    **Rooted on the project, upgraded by the conversation**, and never creating a worktree:
+    typing a character must not acquire the project's single checkout. An unfiled thread, or
+    a project that has since been deleted, is ``None`` rather than an error — nothing on
+    either surface is worth failing a keystroke over.
+    """
+    if not project_id:
+        return None
+    try:
+        project = await projects(request).get(OPERATOR_ID, project_id)
+    except NotFoundError:
+        return None
+    root = Path(project.root_path)
+    if not conversation_id:
+        return root
+    resolved, _from_worktree = await worktree_root(
+        worktrees(request).path_for(project_id), conversation_id, root
+    )
+    return resolved
 
 
 def uploads(request: Request) -> UploadStore:

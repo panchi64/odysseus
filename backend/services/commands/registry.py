@@ -4,6 +4,12 @@ The registry owns two questions and no others: *which names exist right now*, an
 spec a typed name means*. What a resolved command then does to the turn is
 ``expand``'s; what an action does is the client's, over a relay it already has.
 
+**Five sources, one shape.** What the installation ships (thread actions, the built-in
+sub-agent roster), what the operator wrote (published skills, saved workflows), and what the
+project declared (``.claude/commands/*.md``, ``.claude/agents/*.md``). None of them exists
+for this menu's sake; each is something the platform already had, given a name that can be
+typed.
+
 **Availability is decided here, never in the picker.** Three things narrow the catalog and
 all three are facts only the backend holds: a sub-agent command is pointless where
 ``subagents_launch`` has been withheld (the operator's own switch, offline mode, the
@@ -23,12 +29,16 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 from services.skills import SkillStore
-from services.subagents import BUILTIN
+from services.subagents import BUILTIN, SubagentSpec, merged_roster
+from services.subagents.definitions import project_specs as project_agent_specs
 
 from .actions import BUILTIN_ACTIONS, NEEDS_CONVERSATION
+from .definitions import project_specs as project_command_specs
 from .spec import CommandSpec
+from .store import CommandStore
 
 #: The tool a sub-agent command exists to ask for. Withheld — by the operator's switch, by
 #: offline mode, by the thread's mode — and the command is an offer the turn cannot honour.
@@ -59,8 +69,9 @@ class CatalogEntry:
 class CommandRegistry:
     """Assembles the catalog per request. Holds no state of its own."""
 
-    def __init__(self, skills: SkillStore) -> None:
+    def __init__(self, skills: SkillStore, commands: CommandStore) -> None:
         self._skills = skills
+        self._commands = commands
 
     async def catalog(
         self,
@@ -69,13 +80,26 @@ class CommandRegistry:
         mode: str,
         has_conversation: bool,
         disabled_tools: Iterable[str] = (),
+        root: Path | None = None,
     ) -> tuple[CatalogEntry, ...]:
-        """What the picker may show, already narrowed and already ranked."""
+        """What the picker may show, already narrowed and already ranked.
+
+        ``root`` is the checkout this thread is looking at, resolved by the caller
+        (``routes/deps.composer_root``) because *which tree* is a question about worktrees
+        and projects that a catalog has no business answering. Absent — an unfiled thread,
+        a sandbox mode, a composer with no project yet — the two project-declared sources
+        simply contribute nothing, which is the honest answer rather than a degraded one.
+        """
         withheld = frozenset(disabled_tools)
+        # Assembled in tier order — shipped, then written, then declared — so that `_merge`'s
+        # tiebreak between equals is also source order, and reading this list top to bottom
+        # is reading the precedence rule.
         specs: list[CommandSpec] = [
             *_actions(has_conversation=has_conversation),
             *await self._skill_specs(owner_id),
-            *_agent_specs(withheld=withheld),
+            *_agent_specs(root, withheld=withheld),
+            *await self._commands.specs(owner_id),
+            *(project_command_specs(root) if root is not None else ()),
         ]
         return _merge([spec for spec in specs if _in_mode(spec, mode)])
 
@@ -87,6 +111,7 @@ class CommandRegistry:
         mode: str,
         has_conversation: bool,
         disabled_tools: Iterable[str] = (),
+        root: Path | None = None,
     ) -> CommandSpec | None:
         """The spec a typed name means, bare or qualified — or ``None``.
 
@@ -100,6 +125,7 @@ class CommandRegistry:
             mode=mode,
             has_conversation=has_conversation,
             disabled_tools=disabled_tools,
+            root=root,
         )
         for entry in entries:
             if entry.spec.qualified_name == name:
@@ -139,36 +165,41 @@ def _actions(*, has_conversation: bool) -> list[CommandSpec]:
     ]
 
 
-def _agent_specs(*, withheld: frozenset[str]) -> list[CommandSpec]:
-    """One command per sub-agent on the roster.
+def _agent_specs(root: Path | None, *, withheld: frozenset[str]) -> list[CommandSpec]:
+    """One command per sub-agent on the roster — the built-ins, plus what the project says.
 
-    Built-ins only, for now. A project's own ``.claude/agents`` declarations need the
-    thread's worktree resolved, which is the same root-resolution the file picker needs and
-    is built once, with it. Nothing is lost at the moment of use: the command's block names
-    the sub-agent *by name*, and ``tools/project_agents.run_roster`` is what resolves that
-    name at launch — so a project that shadows ``reviewer`` still gets its own. What is
-    missing until then is only that a purely project-declared sub-agent does not appear in
-    the picker.
+    Merged through ``merged_roster``, which is the roster's own locality rule rather than a
+    second one written here: a project that declares ``reviewer`` replaces the built-in of
+    that name, because a repository that has written down how *its* reviewer works knows
+    something this installation cannot. That is also what ``tools/project_agents.run_roster``
+    does at launch, so the name the picker offers and the sub-agent that actually starts are
+    resolved the same way — which is the only reason it is safe for the command's block to
+    name a sub-agent by name and stop there.
+
+    Every entry stays ``source="agent"``: a project's *agent* is still an agent, and filing
+    it under "Project" would split one roster across two headings in the menu.
     """
     if LAUNCH_TOOL in withheld:
         return []
-    return [
-        CommandSpec(
-            name=spec.name.replace("_", "-"),
-            source="agent",
-            kind="prompt",
-            title=spec.name.replace("_", " "),
-            # Taken verbatim. A roster line is written as a fragment that follows the
-            # sub-agent's name ("explorer: searches and reads the workspace…"), which is
-            # exactly how the picker stacks a title over a description — so rewriting it
-            # here would mean two descriptions of one sub-agent, drifting apart.
-            description=spec.description,
-            target=spec.name,
-            argument_hint="the brief for this sub-agent",
-            argument_required=True,
-        )
-        for spec in BUILTIN
-    ]
+    roster = merged_roster(BUILTIN, project_agent_specs(root) if root is not None else ())
+    return [_agent_command(spec) for spec in roster.values()]
+
+
+def _agent_command(spec: SubagentSpec) -> CommandSpec:
+    return CommandSpec(
+        name=spec.name.replace("_", "-"),
+        source="agent",
+        kind="prompt",
+        title=spec.name.replace("_", " "),
+        # Taken verbatim. A roster line is written as a fragment that follows the
+        # sub-agent's name ("explorer: searches and reads the workspace…"), which is
+        # exactly how the picker stacks a title over a description — so rewriting it
+        # here would mean two descriptions of one sub-agent, drifting apart.
+        description=spec.description,
+        target=spec.name,
+        argument_hint="the brief for this sub-agent",
+        argument_required=True,
+    )
 
 
 def _in_mode(spec: CommandSpec, mode: str) -> bool:
