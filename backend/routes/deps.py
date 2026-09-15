@@ -26,6 +26,7 @@ from services.artifacts import ArtifactStore
 from services.backup import BackupService
 from services.browser import BrowserSessionManager
 from services.calendar import CalendarService
+from services.commands import CommandRegistry
 from services.conversation_search import ConversationSearch
 from services.conversations import ConversationStore
 from services.corpus import CorpusIndex
@@ -194,6 +195,10 @@ def egress(request: Request) -> EgressPolicy:
 
 def skills(request: Request) -> SkillStore:
     return request.app.state.skills
+
+
+def commands(request: Request) -> CommandRegistry:
+    return request.app.state.commands
 
 
 def uploads(request: Request) -> UploadStore:

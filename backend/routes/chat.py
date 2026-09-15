@@ -42,6 +42,7 @@ from runs import (
     RunRegistry,
 )
 from runs.registry import _UNSET
+from services.commands import expand
 from services.conversations import ConversationBinding, ConversationStore
 from services.modes import DEFAULT_MODE, ModeId, mode_spec
 from services.permissions import PermissionLevel
@@ -69,6 +70,16 @@ from tools import InstructionProvider, PromptContextProvider
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 _CONVERSATION_BUSY_DETAIL = "A response is already in progress in this conversation"
+
+
+class CommandInvocation(BaseModel):
+    """Which slash command was picked, and what the operator typed after it."""
+
+    #: A bare name (``reviewer``) or a qualified one (``agent:reviewer``). Resolved against
+    #: the same narrowed catalog the picker was served, so a command this thread is not
+    #: offered cannot be reached by typing its name.
+    name: str
+    argument: str = ""
 
 
 class ChatCreate(BaseModel):
@@ -110,6 +121,12 @@ class ChatCreate(BaseModel):
     # warning doesn't outlive the thing it was asking for. Ignored on a new
     # conversation — nothing there can be blocked yet.
     continues_message_id: str | None = None
+    # A slash command the operator picked in the composer. The prompt above is still their
+    # literal `/review the auth route` — this says which command that token was, so the
+    # backend can resolve it and expand it. Deliberately *not* a pre-expanded prompt: what
+    # a command means is the backend's to decide, and a client that sent the expansion
+    # would be sending a turn the operator never wrote.
+    command: CommandInvocation | None = None
 
 
 class RegenerateCreate(BaseModel):
@@ -314,6 +331,10 @@ def compose_turn(
     binding: ConversationBinding | None = None,
     owner_id: str = OPERATOR_ID,
     attachment_ids: list[str] | None = None,
+    # The expansion of a slash command this turn was sent with, already resolved by the
+    # caller. Rides the tail of the turn's user prompt and is stripped before the turn is
+    # recorded, so what persists is the `/name` the operator typed.
+    turn_context: str = "",
     ephemeral: bool = False,
     auto_compact: AutoCompactPolicy | None = None,
     request_limit: int | None = None,
@@ -365,6 +386,7 @@ def compose_turn(
         conversation_id=conversation_id,
         uploads=uploads,
         attachment_ids=attachment_ids,
+        turn_context=turn_context,
         vision=vision,
         # The operator's conversation-compaction policy; absent ⇒ the config defaults.
         auto_compact=auto_compact,
@@ -407,6 +429,33 @@ def compose_turn(
     return ChatCreated(run_id=run.id, conversation_id=conversation_id)
 
 
+async def _command_context(
+    request: Request,
+    command: CommandInvocation | None,
+    binding: ConversationBinding,
+    disabled_tools: frozenset[str],
+) -> str:
+    """The tail block a picked command contributes to this turn, or ``""``.
+
+    **A name that resolves to nothing is not an error.** The catalog narrows on facts that
+    move between the picker's read and the send — a skill unpublished in another tab, a
+    tool the operator just switched off — and failing the turn over one would throw away
+    the message they typed to punish them for a race they did not cause. The prompt still
+    carries their literal `/name`, which is a perfectly legible thing for the model to
+    receive and ask about, so the turn goes through with nothing added.
+    """
+    if command is None:
+        return ""
+    spec = await deps.commands(request).resolve(
+        OPERATOR_ID,
+        command.name,
+        mode=binding.mode,
+        has_conversation=True,
+        disabled_tools=disabled_tools,
+    )
+    return expand(spec, command.argument) if spec is not None else ""
+
+
 async def _submit_turn(
     request: Request,
     *,
@@ -414,6 +463,7 @@ async def _submit_turn(
     conversation_id: str,
     models: tuple[Model, Model, ModelSettings | None, int | None, bool, int | None],
     attachment_ids: list[str] | None = None,
+    command: CommandInvocation | None = None,
     ephemeral: bool = False,
 ) -> ChatCreated:
     """Gather this route's resources from the `Request` and hand off to `compose_turn`.
@@ -424,10 +474,23 @@ async def _submit_turn(
     # Read once and used twice — the mode decides which tools belong in this run as well
     # as where its file work happens, and the two must never be resolved separately.
     binding = await deps.store(request).binding(conversation_id)
+    # `models[4]` is the resolved main model's vision fact — the same one `compose_turn`
+    # passes to the engine for attachments. A tool that answers with an image is withheld
+    # from a model that can't read one.
+    #
+    # Hoisted out of the call below because the command catalog needs it too: a `/reviewer`
+    # is an offer to launch a sub-agent, and where `subagents_launch` has been withheld
+    # from this run there is nothing to offer. Resolving it twice would let the command the
+    # operator picked and the tools the turn actually has disagree.
+    disabled = await deps.disabled_tools(request, binding.mode, vision=models[4])
     return compose_turn(
         prompt=prompt,
         conversation_id=conversation_id,
         models=models,
+        # Resolved here rather than in the engine, for the same reason the enabled-tool
+        # policy is: it is a persisted read, and `compose_turn` is the synchronous step
+        # after the caller has already mutated the conversation.
+        turn_context=await _command_context(request, command, binding, disabled),
         # The app's one agent-facing capability bag — assembled at startup from every
         # feature manifest's `capabilities` export, so a turn never enumerates handles.
         capabilities=deps.capabilities(request),
@@ -440,12 +503,7 @@ async def _submit_turn(
         dormant=deps.dormant_summaries(request),
         instruction_providers=deps.instruction_providers(request),
         prompt_context_providers=deps.prompt_context_providers(request),
-        # `models[4]` is the resolved main model's vision fact — the same one
-        # `compose_turn` passes to the engine for attachments. A tool that answers with
-        # an image is withheld from a model that can't read one.
-        disabled_tools=await deps.disabled_tools(
-            request, binding.mode, vision=models[4]
-        ),
+        disabled_tools=disabled,
         binding=binding,
         attachment_ids=attachment_ids,
         ephemeral=ephemeral,
@@ -511,16 +569,24 @@ def _enqueue_steering(
     """Queue a mid-run message into the conversation's live chat run, or None when
     the busy conversation can't take one (the claim is held by a regenerate/edit
     with no run registered yet, the run isn't a chat turn, or the send carries
-    attachments — steering is text-only). Synchronous end to end: no ``await``
-    between finding the run and enqueueing, so the run can't reach terminal (or
-    drain) in between.
+    attachments or a command — steering is text-only). Synchronous end to end: no
+    ``await`` between finding the run and enqueueing, so the run can't reach terminal
+    (or drain) in between.
+
+    **A command is refused rather than queued**, and that is not an oversight. A queued
+    message is injected verbatim: there is no prelude around it to resolve a command
+    through, so `/deploy prod` would reach the model as the literal token. Expanding
+    before enqueueing is the alternative and is worse — the operator can edit a queued
+    message (`PATCH /runs/{id}/messages/{mid}`), and they would then be editing text
+    they never wrote. The 409 sends it down the ordinary path instead, where the whole
+    composition exists.
 
     "Is a chat turn" is membership in the composed kinds, not equality with ``chat``: a
     scheduled task's run and a research thread the agent opened both drive a conversation
     the operator can open and both drain the queued-message inbox, so both take steering.
     Only a run some other orchestrator submitted — which would never read the queue — is
     refused."""
-    if body.attachment_ids:
+    if body.attachment_ids or body.command:
         return None
     run = registry.active_run_for(conversation_id, OPERATOR_ID)
     if run is None or run.kind not in CHAT_TURN_KINDS:
@@ -647,6 +713,7 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
             conversation_id=conversation_id,
             models=models,
             attachment_ids=body.attachment_ids,
+            command=body.command,
             ephemeral=body.ephemeral,
         )
         # Only once the run is submitted — a rejected send leaves the operator with the

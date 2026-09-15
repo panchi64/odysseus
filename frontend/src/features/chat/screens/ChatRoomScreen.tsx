@@ -43,6 +43,8 @@ import { createBranchState } from "../branchState";
 import { createSubagentsState } from "../subagentsState";
 import { createTranscriptFollow } from "../transcriptScroll";
 import { createRenameConversation } from "../components/RenameConversationModal";
+import { createComposerCommands } from "../commands/useComposerCommands";
+import { isPermissionLevel } from "../model";
 
 /** The conversation's reading measure. A line of text on a 27" display is
  *  unreadable at full width long before it is uncomfortable, and the composer
@@ -279,6 +281,34 @@ export function ChatRoomScreen(): JSX.Element {
   // either the first-turn auto-title (stream) or a manual regenerate.
   const titleWorking = () => stream.titlePending() || actions.retitling();
 
+  // The composer's `/` menu. Every action it can fire is a relay this room already owns
+  // — a command is a second way to reach a control, never a second implementation of
+  // one. `fork` takes the newest turn, which is what "fork from here" means when the
+  // operator is typing rather than pointing at a message.
+  const commands = createComposerCommands(mode, currentId, {
+    compact: () => void stream.compactNow(),
+    fork: () => {
+      const last = stream.messages.at(-1);
+      if (last) void actions.fork(last.id);
+    },
+    retitle: () => void actions.retitle(),
+    newThread: clearThread,
+    setPermissionLevel: (level) => {
+      if (isPermissionLevel(level)) setPermission(level);
+      else toast.error(`"${level}" isn't a permission level.`);
+    },
+  });
+
+  /** Send, once the staged command has been read against what was actually typed.
+   *
+   *  An action resolves to nothing sent: the relay has already run (or just ran, for the
+   *  one that carries an argument), and there is no message for the model. */
+  const sendTurn = (text: string, attachmentIds: string[]): void => {
+    const intent = commands.consume(text);
+    if (intent.kind === "acted") return;
+    void stream.send(text, attachmentIds, { command: intent.command });
+  };
+
   return (
     <div ref={viewport.rowRef} class="flex h-full min-h-0">
       {/* Conversation — the thread list now lives in the app rail's RECENTS, so
@@ -359,7 +389,13 @@ export function ChatRoomScreen(): JSX.Element {
                 autofocus
                 streaming={stream.sending()}
                 onStop={() => void stopRun()}
-                onSend={(text, ids) => void stream.send(text, ids)}
+                onSend={sendTurn}
+                menu={{
+                  groups: commands.groups,
+                  onQuery: commands.onQuery,
+                  onPick: commands.onPick,
+                  onClear: commands.clear,
+                }}
                 // The backend refuses a turn it can't keep inside a context window; this
                 // is the same stop, arriving before the message is committed to it.
                 sendBlocked={sendBlocked()}

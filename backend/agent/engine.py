@@ -119,6 +119,7 @@ def build_chat_orchestrator(
     context_thresholds: ContextThresholds = DEFAULT_CONTEXT_THRESHOLDS,
     uploads: UploadStore | None = None,
     attachment_ids: list[str] | None = None,
+    turn_context: str = "",
     vision: bool = False,
     auto_compact: AutoCompactPolicy | None = None,
     utility_context_window: int | None = None,
@@ -141,6 +142,14 @@ def build_chat_orchestrator(
     still rides inline (and is retained on persist). Attachments are injected only on a
     fresh turn; a regenerate (``prompt is None``) re-runs prior history, which already
     carries the markers.
+
+    ``turn_context`` is a block the *caller* resolved for this one turn — today the
+    expansion of a slash command the operator picked. It rides the tail of the turn's user
+    prompt beside the manifests' own per-turn context and is stripped before the turn is
+    recorded, so what persists stays the text the operator actually typed. It is a
+    parameter rather than a ``PromptContextProvider`` because a provider re-resolves from
+    ``(caps, owner_id, conversation_id)`` and never sees *this* request — which is exactly
+    what a per-invocation block is.
 
     ``model`` is the resolved ``main`` model (the route resolves it from the
     registry, with any per-conversation override). ``categories`` overrides the
@@ -288,6 +297,7 @@ def build_chat_orchestrator(
             caps=capabilities,
             uploads=uploads,
             attachment_ids=attachment_ids,
+            turn_context=turn_context,
             vision=vision,
             binding=binding,
             prompt_context_providers=prompt_context_providers,

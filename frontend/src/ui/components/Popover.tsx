@@ -83,6 +83,23 @@ export interface FloatingPanelProps {
    *  dropdowns want; a context menu passes a handler that closes, so the operator's
    *  next right-click reaches the row underneath instead of the backdrop. */
   onBackdropContextMenu?: (e: MouseEvent) => void;
+  /** Place the panel and nothing else: **no backdrop, no Escape listener**. The caller
+   *  owns dismissal entirely.
+   *
+   *  For a panel anchored to something the operator is still *typing into* — the
+   *  composer's `/` and `@` menus. Both defaults are actively wrong there and in ways
+   *  that read as flakiness rather than as a bug:
+   *
+   *  - The backdrop is a full-screen `fixed inset-0`, so while the menu is open every
+   *    click on the field underneath hits it instead. The caret cannot be repositioned,
+   *    and mousedown on a non-focusable div blurs the field mid-sentence.
+   *  - The Escape listener is a bare `document` keydown with no editable-target check
+   *    (unlike `~/lib/keymap`), so one Escape would close the menu *and* whatever else
+   *    is listening behind it.
+   *
+   *  Dismissal is not lost, it moves: a menu that lives off the field's own content
+   *  closes when the token does, and the field handles its own Escape. */
+  passive?: boolean;
 }
 
 /** The floating half of every overlay in the system: portal, click-out backdrop,
@@ -159,9 +176,10 @@ export function FloatingPanel(props: FloatingPanelProps): JSX.Element {
     });
   });
 
-  // Escape closes while open (the backdrop handles outside clicks).
+  // Escape closes while open (the backdrop handles outside clicks). Both are skipped
+  // for a `passive` panel, whose caller owns dismissal — see the prop.
   createEffect(() => {
-    if (!props.open()) return;
+    if (!props.open() || props.passive) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") props.onClose();
     };
@@ -172,11 +190,13 @@ export function FloatingPanel(props: FloatingPanelProps): JSX.Element {
   return (
     <Show when={props.open()}>
       <Portal>
-        <div
-          class="fixed inset-0 z-40"
-          onClick={() => props.onClose()}
-          onContextMenu={(e) => props.onBackdropContextMenu?.(e)}
-        />
+        <Show when={!props.passive}>
+          <div
+            class="fixed inset-0 z-40"
+            onClick={() => props.onClose()}
+            onContextMenu={(e) => props.onBackdropContextMenu?.(e)}
+          />
+        </Show>
         <PopoverPanel
           ref={(el) => {
             panelRef = el;

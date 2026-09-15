@@ -275,10 +275,21 @@ export function createChatStream(
   async function send(
     text: string,
     attachmentIds: string[] = [],
-    /** Set only by `continueTurn`: the branch node id of the stopped turn this
-     *  send resumes, so the backend retires that turn's stop marker for good. */
-    continuesMessageId?: string,
+    /** Everything else this send carries. An options object rather than more
+     *  positional parameters: the third slot was `continuesMessageId`, called
+     *  positionally by `continueTurn`, and appending to it would have made every
+     *  later addition a place where two unrelated facts could be swapped. */
+    extras: {
+      /** Set only by `continueTurn`: the branch node id of the stopped turn this
+       *  send resumes, so the backend retires that turn's stop marker for good. */
+      continuesMessageId?: string;
+      /** The slash command this turn was started from. `text` is still the
+       *  operator's literal `/name …`; this says which command that token was, so
+       *  the backend can resolve and expand it. */
+      command?: { name: string; argument: string } | null;
+    } = {},
   ): Promise<void> {
+    const { continuesMessageId, command } = extras;
     // A turn needs either prompt text or at least one attachment to send.
     if (!text.trim() && attachmentIds.length === 0) return;
     if (sending()) {
@@ -288,6 +299,14 @@ export function createChatStream(
         toast.error(
           "Attachments can't be added while a response is in progress.",
         );
+        return;
+      }
+      // Nor can a command. A queued message is injected verbatim, with no prelude
+      // around it to resolve one through — so `/deploy prod` would reach the model
+      // as the literal token. The backend refuses it for the same reason; saying so
+      // here keeps the operator's typed message rather than spending it on a 409.
+      if (command) {
+        toast.error("A command can't be sent while a response is in progress.");
         return;
       }
       if (!text.trim()) return;
@@ -346,6 +365,9 @@ export function createChatStream(
         // the next send rather than by a write of its own.
         permission_level: options.permission?.(),
         continues_message_id: continuesMessageId,
+        // Never an expansion — what a command *means* is the backend's to decide, and a
+        // client that sent one would be sending a turn the operator never wrote.
+        command: command ?? undefined,
       });
     } catch (err) {
       if (isApiError(err) && err.status === 409) {
@@ -400,7 +422,7 @@ export function createChatStream(
     // in flight (the operator started a new one), don't inject "Continue." as a
     // steering message; just no-op.
     if (activeConversationId === null || sending()) return;
-    await send(CONTINUE_PROMPT, [], messageId);
+    await send(CONTINUE_PROMPT, [], { continuesMessageId: messageId });
   }
 
   /** Fold this thread's earlier turns, then resume the turn the model's context window

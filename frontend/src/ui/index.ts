@@ -151,7 +151,20 @@ export {
   Composer,
   type ComposerProps,
   type ComposerAttachmentsApi,
+  type ComposerMenuApi,
 } from "./components/Composer";
+export {
+  ComposerMenu,
+  type ComposerMenuProps,
+  type ComposerMenuGroup,
+  type ComposerMenuItem,
+} from "./components/ComposerMenu";
+export {
+  tokenAt,
+  replaceToken,
+  type ComposerToken,
+  type ComposerTrigger,
+} from "./components/composerToken";
 export {
   Markdown,
   markdownBlocks,

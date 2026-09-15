@@ -94,6 +94,7 @@ async def prepare_turn(
     caps: ServiceContainer,
     uploads: UploadStore | None,
     attachment_ids: list[str] | None,
+    turn_context: str,
     vision: bool,
     binding: ConversationBinding,
     prompt_context_providers: Sequence[PromptContextProvider],
@@ -113,6 +114,10 @@ async def prepare_turn(
     per-turn prompt context, folds the older turns away when the projected footprint calls
     for it, and fixes the persistence boundary against the list the model will actually be
     handed.
+
+    ``turn_context`` is the caller's block for this one invocation (a picked slash
+    command's expansion). It joins the per-turn context at the tail, first, and leaves
+    with it — none of that is persisted, so the turn on record stays what was typed.
     """
 
     history = (
@@ -220,6 +225,14 @@ async def prepare_turn(
     # them back off. One event type either way — the operator's question is what
     # they were not shown, not which seam delivered it.
     context_texts: list[str] = []
+    # The caller's own block for *this* invocation goes first, ahead of the standing
+    # per-turn providers: it is what the operator just asked for, and the providers are
+    # background the turn happens to carry. Announced under a fixed slug rather than a
+    # provider's name, since there is no provider — the chassis put it here on the
+    # operator's behalf, which is precisely what the injection row exists to say.
+    if turn_context and prompt is not None:
+        context_texts.append(turn_context)
+        announce_injection(run, "command", turn_context, "prompt")
     for provider in prompt_context_providers:
         text = await provider(caps, run.owner_id, conversation_id)
         if not text:

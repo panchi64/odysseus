@@ -27,6 +27,7 @@ from services.permissions.judge import Judgement, Tier, judge
 from services.permissions.levels import (
     ACTING_PERMISSIONS,
     DEFAULT_PERMISSION,
+    PERMISSION_LADDER,
     PERMISSION_LEVELS,
     PERMISSIONS,
     PLANNING_TOOLS,
@@ -55,6 +56,7 @@ __all__ = [
     "DEFAULT_PERMISSION",
     "DEFAULT_REACH",
     "PERMISSIONS",
+    "PERMISSION_LADDER",
     "PERMISSION_LEVELS",
     "PLANNING_TOOLS",
     "REACHES",

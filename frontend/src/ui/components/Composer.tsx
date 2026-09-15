@@ -13,7 +13,19 @@ import { Text } from "../primitives/Text";
 import { HIDDEN_FILE_INPUT, useFileDrop } from "../primitives/useFileDrop";
 import { AttachmentChip, type ComposerAttachment } from "./AttachmentChip";
 import { Button } from "./Button";
+import {
+  ComposerMenu,
+  type ComposerMenuGroup,
+  type ComposerMenuItem,
+} from "./ComposerMenu";
+import {
+  replaceToken,
+  tokenAt,
+  type ComposerToken,
+  type ComposerTrigger,
+} from "./composerToken";
 import { LedEdge } from "./LedEdge";
+import { type Rect } from "./popoverPlacement";
 import { Tooltip } from "./Tooltip";
 
 // Self-contained guarded storage: the design system does not depend on ~/lib, so
@@ -66,6 +78,31 @@ export interface ComposerAttachmentsApi {
   remove: (id: string) => void;
   toggleKbExcluded: (id: string) => void;
   clear: () => void;
+}
+
+/**
+ * The `/` and `@` menu controller, injected by the feature layer — the same split as
+ * `ComposerAttachmentsApi` above and for the same reason: the design system cannot reach
+ * a data seam, so the Composer owns the *token* and the *keys* and the feature owns what
+ * the rows are and what picking one means.
+ *
+ * The Composer calls `onQuery` whenever the token under the caret changes (and with
+ * `null` when there is none), renders `groups`, and routes the navigation keys here
+ * before applying its own Enter-sends rule.
+ */
+export interface ComposerMenuApi {
+  /** Rows to show for the current query. Empty closes the menu. */
+  groups: Accessor<ComposerMenuGroup[]>;
+  /** The token under the caret changed. `null` means there is none — the menu closes. */
+  onQuery: (token: { trigger: ComposerTrigger; query: string } | null) => void;
+  /** What picking a row inserts in place of the token, **without** its trigger
+   *  character (`reviewer`, `src/app.tsx`). Returning null leaves the field alone, for a
+   *  row that acts instead of completing — an action command fires its relay and the
+   *  composer clears. */
+  onPick: (item: ComposerMenuItem) => string | null;
+  /** Called after a pick that returned null, so the feature can clear the draft itself
+   *  once its relay has fired. */
+  onClear?: () => void;
 }
 
 export interface ComposerProps {
@@ -146,6 +183,9 @@ export interface ComposerProps {
   /** File-attachment controller. When supplied, the Composer shows an attach
    *  button + drag-drop and renders the attachment chips; omit to hide them. */
   attachments?: ComposerAttachmentsApi;
+  /** `/` and `@` menu controller. Omit and neither character does anything special,
+   *  which is what the compare bench and the approval dock want. */
+  menu?: ComposerMenuApi;
   class?: string;
 }
 
@@ -160,6 +200,122 @@ export interface ComposerProps {
 export function Composer(props: ComposerProps): JSX.Element {
   const [text, setText] = createSignal("");
   let field: HTMLTextAreaElement | undefined;
+
+  // ── The `/` and `@` menu ────────────────────────────────────────────────────────
+  // Three pieces of state and no more: the token under the caret, the field's rect to
+  // hang the panel off, and which row the keyboard is on. Everything else — what the
+  // rows *are*, what picking one means — is the feature's, through `props.menu`.
+  const [token, setToken] = createSignal<ComposerToken | null>(null);
+  const [anchor, setAnchor] = createSignal<Rect | null>(null);
+  const [activeId, setActiveId] = createSignal<string | null>(null);
+
+  const groups = () => props.menu?.groups() ?? [];
+  const rows = () => groups().flatMap((group) => group.items);
+  // Open only with something to show. A panel that appears empty on the first `/` and
+  // then fills in reads as a glitch; one that never appears reads as "no matches".
+  const menuOpen = () => token() !== null && rows().length > 0;
+
+  /** Re-read the token under the caret and tell the feature what to fetch.
+   *
+   *  Driven from input and from selection changes alike, because moving the caret back
+   *  into a half-typed `/rev` is the same situation as having just typed it. */
+  const syncToken = (): void => {
+    if (!props.menu || !field) return;
+    const next = tokenAt(field.value, field.selectionStart);
+    const current = token();
+    if (next?.trigger === current?.trigger && next?.query === current?.query) {
+      // Same token, moved: keep the rows, re-measure in case the field grew a line.
+      setToken(next);
+      setAnchor(field.getBoundingClientRect());
+      return;
+    }
+    setToken(next);
+    setAnchor(next ? field.getBoundingClientRect() : null);
+    props.menu.onQuery(next && { trigger: next.trigger, query: next.query });
+  };
+
+  // Keep the cursor on a row that still exists. A query narrowing under the operator's
+  // fingers otherwise leaves the selection pointing at a row that has been filtered
+  // away, and Enter would insert nothing.
+  createEffect(() => {
+    const ids = rows().map((row) => row.id);
+    if (ids.length === 0) {
+      setActiveId(null);
+      return;
+    }
+    setActiveId((current) =>
+      current !== null && ids.includes(current) ? current : ids[0]!,
+    );
+  });
+
+  const dismissMenu = (): void => {
+    setToken(null);
+    setAnchor(null);
+    props.menu?.onQuery(null);
+  };
+
+  const step = (delta: number): void => {
+    const ids = rows().map((row) => row.id);
+    if (ids.length === 0) return;
+    const at = ids.indexOf(activeId() ?? "");
+    // Wraps, because a menu of five rows is faster to reach the end of by going up.
+    setActiveId(ids[(at + delta + ids.length) % ids.length]!);
+  };
+
+  const pick = (item: ComposerMenuItem): void => {
+    const current = token();
+    if (!props.menu || !current) return;
+    const insert = props.menu.onPick(item);
+    if (insert === null) {
+      // The row acted rather than completed — an action command. The feature clears the
+      // draft once its relay has fired; the composer only takes the menu down.
+      setText("");
+      props.menu.onClear?.();
+      dismissMenu();
+      field?.focus();
+      return;
+    }
+    const next = replaceToken(text(), current, insert);
+    setText(next.text);
+    dismissMenu();
+    // After the DOM has the new value, or the caret lands at the old length.
+    queueMicrotask(() => {
+      field?.focus();
+      field?.setSelectionRange(next.caret, next.caret);
+    });
+  };
+
+  /** The navigation keys, taken **before** the Composer's own Enter-sends rule.
+   *
+   *  They have to be handled here rather than on the panel: focus never leaves this
+   *  textarea while the menu is up, and the panel is portalled to `document.body`, so
+   *  nothing typed here would ever reach a handler over there. Returns whether the key
+   *  was consumed.
+   */
+  const menuKey = (e: KeyboardEvent): boolean => {
+    if (!menuOpen()) return false;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      step(e.key === "ArrowDown" ? 1 : -1);
+      return true;
+    }
+    if (e.key === "Enter" || e.key === "Tab") {
+      const row = rows().find((item) => item.id === activeId());
+      if (!row) return false;
+      e.preventDefault();
+      pick(row);
+      return true;
+    }
+    if (e.key === "Escape") {
+      // Stopped as well as prevented: the menu is the innermost thing Escape can mean,
+      // and letting it through would also close the panel or the room behind it.
+      e.preventDefault();
+      e.stopPropagation();
+      dismissMenu();
+      return true;
+    }
+    return false;
+  };
 
   const items = () => props.attachments?.items() ?? [];
   const readyIds = () =>
@@ -236,6 +392,9 @@ export function Composer(props: ComposerProps): JSX.Element {
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
+    // The menu gets first refusal. Enter picks a row rather than sending the message —
+    // without this the operator's `/rev` would be sent as a literal prompt.
+    if (menuKey(e)) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       submit();
@@ -285,12 +444,29 @@ export function Composer(props: ComposerProps): JSX.Element {
     <textarea
       ref={field}
       value={text()}
-      onInput={(e) => setText(e.currentTarget.value)}
+      onInput={(e) => {
+        setText(e.currentTarget.value);
+        syncToken();
+      }}
       onKeyDown={onKeyDown}
+      // Arrow keys and clicks move the caret without changing the text, and moving back
+      // into a half-typed `/rev` is the same situation as having just typed it.
+      onKeyUp={syncToken}
+      onClick={syncToken}
+      // The menu hangs off the field's content, so it goes when the field does. This is
+      // also what replaces the backdrop `FloatingPanel` would otherwise draw over the
+      // whole screen — see its `passive` prop.
+      onBlur={dismissMenu}
       onPaste={props.attachments ? drop.pasteHandlers.onPaste : undefined}
       rows={lg() ? 3 : 1}
       placeholder={props.placeholder ?? "Message the agent…"}
       disabled={props.disabled}
+      role={props.menu ? "combobox" : undefined}
+      aria-expanded={props.menu ? menuOpen() : undefined}
+      aria-controls={props.menu ? "composer-menu" : undefined}
+      // Focus stays here the whole time, so this is the only thing that tells a screen
+      // reader which row the arrows are on.
+      aria-activedescendant={menuOpen() ? (activeId() ?? undefined) : undefined}
       class={fieldClass()}
     />
   );
@@ -434,9 +610,27 @@ export function Composer(props: ComposerProps): JSX.Element {
      top so the strip meets the card's own edges instead of overhanging them, and
      it keeps `shadow-1`: the bloom's hairline ring went with it, and in Paper
      that ring is the only thing separating a white card from a white page. */
+  // Portalled to the body by `FloatingPanel`, so it sits outside the composer's own
+  // stacking context and outside the transcript's `overflow-auto` — the two things that
+  // would otherwise clip it. Mounted inside the card only so it shares the card's
+  // lifetime.
+  const menu = (
+    <Show when={props.menu}>
+      <ComposerMenu
+        open={menuOpen()}
+        groups={groups()}
+        anchor={anchor}
+        activeId={activeId()}
+        onPick={pick}
+        onActivate={(item) => setActiveId(item.id)}
+      />
+    </Show>
+  );
+
   const body = (
     <>
       {dropOverlay}
+      {menu}
       <Show when={props.title}>
         <Text variant="label" tone="dim">
           {props.title}

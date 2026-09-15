@@ -639,6 +639,16 @@ export const PERMISSION_LEVELS: readonly PermissionLevelSpec[] = [
   },
 ];
 
+/** Whether a free-typed string names a level.
+ *
+ *  For the one path where it is not already narrowed: `/level auto` in the composer,
+ *  where the operator types the word themselves. Derived from the list above rather than
+ *  re-listing the four, so a fifth level is offered here the moment it is declared —
+ *  presentation only, and the backend re-validates whatever this lets through. */
+export function isPermissionLevel(value: string): value is PermissionLevel {
+  return PERMISSION_LEVELS.some((spec) => spec.id === value);
+}
+
 /** The level a thread runs at when nothing says otherwise — the backend's
  *  `DEFAULT_PERMISSION`, which is also each mode's default today.
  *
