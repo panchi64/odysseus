@@ -81,9 +81,10 @@ function toItem(command: Command): ComposerMenuItem {
 export function createComposerCommands(
   mode: () => SessionMode,
   conversationId: () => string | null,
+  projectId: () => string | null,
   actions: CommandActions,
 ): ComposerCommands {
-  const catalog = useCommands(mode, conversationId);
+  const catalog = useCommands(mode, conversationId, projectId);
   const [query, setQuery] = createSignal<string | null>(null);
   // The picked command, held until the send reads it back against the typed text. The
   // whole spec, not just its name: the send has to know whether this was a message or

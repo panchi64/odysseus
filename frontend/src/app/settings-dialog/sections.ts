@@ -118,6 +118,16 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
         keywords: ["prompt", "instructions", "playbook"],
       },
       {
+        id: "workflows",
+        label: "Workflows",
+        icon: "terminal",
+        description: "Prompts you invoke by name from the composer's / menu",
+        // "slash" and "command" are what an operator types looking for this, and
+        // neither appears in the label or the description — the row is about the
+        // things, not about the punctuation that reaches them.
+        keywords: ["slash", "command", "shortcut", "template", "snippet"],
+      },
+      {
         id: "projects",
         label: "Projects",
         icon: "layers",

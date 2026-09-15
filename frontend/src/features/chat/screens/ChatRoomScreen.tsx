@@ -282,11 +282,24 @@ export function ChatRoomScreen(): JSX.Element {
   // either the first-turn auto-title (stream) or a manual regenerate.
   const titleWorking = () => stream.titlePending() || actions.retitling();
 
+  // Which project this composer is about, for both menus. The saved thread's own, else
+  // the one staged in the rail for the next code thread — the same pair the send gate and
+  // the header subtitle already read, so neither picker can be browsing a directory the
+  // thread is not about to work in.
+  //
+  // Derived once and passed to both rather than resolved twice: the `@` picker lists that
+  // checkout's files and the `/` picker offers the commands that checkout declares, and a
+  // pair that disagreed would put a file from one tree beside a command from another.
+  const composerProjectId = (): string | null =>
+    currentSummary()?.projectId ??
+    (currentId() === null ? codeProjectId() : null) ??
+    null;
+
   // The composer's `/` menu. Every action it can fire is a relay this room already owns
   // — a command is a second way to reach a control, never a second implementation of
   // one. `fork` takes the newest turn, which is what "fork from here" means when the
   // operator is typing rather than pointing at a message.
-  const commands = createComposerCommands(mode, currentId, {
+  const commands = createComposerCommands(mode, currentId, composerProjectId, {
     compact: () => void stream.compactNow(),
     fork: () => {
       const last = stream.messages.at(-1);
@@ -302,15 +315,7 @@ export function ChatRoomScreen(): JSX.Element {
 
   // The `@` menu, over the thread's own filesystem. Offered only in a worktree mode —
   // a sandbox thread works in a container holding nothing the operator has ever seen.
-  //
-  // The saved thread's own project, else the one staged in the rail for the next code
-  // thread — the same pair the send gate and the header subtitle already read, so the
-  // picker cannot be browsing a directory the thread is not about to work in.
-  const fileProjectId = (): string | null =>
-    currentSummary()?.projectId ??
-    (currentId() === null ? codeProjectId() : null) ??
-    null;
-  const fileRefs = createComposerFileRefs(mode, fileProjectId, currentId);
+  const fileRefs = createComposerFileRefs(mode, composerProjectId, currentId);
 
   /** Both menus behind the Composer's one slot.
    *

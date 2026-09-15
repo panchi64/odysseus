@@ -90,12 +90,18 @@ export function SkillEditorScreen(props: {
 
   // Seed the draft once the skill resolves. Reset when the id changes so a reused
   // editor instance doesn't keep the previous skill's draft.
-  let seeded = false;
+  //
+  // A **signal**, not a plain `let`. Effects run after render, so this is still false
+  // when the SAVE button's `disabled` binding first evaluates — and `seeded && …`
+  // short-circuits, so that binding subscribed to nothing at all and never re-ran,
+  // leaving SAVE disabled however much was typed. Reading a signal registers the
+  // dependency even when everything after it is short-circuited past.
+  const [seeded, setSeeded] = createSignal(false);
   createEffect(
     on(
       () => props.id,
       () => {
-        seeded = false;
+        setSeeded(false);
         setSnapshot("");
         setErrors({});
       },
@@ -104,15 +110,15 @@ export function SkillEditorScreen(props: {
   );
   createEffect(() => {
     const s = skill();
-    if (seeded || !s) return;
-    seeded = true;
+    if (seeded() || !s) return;
     const init = draftOf(s);
     setDraft(init);
     setSnapshot(JSON.stringify(init));
+    setSeeded(true);
   });
 
   const currentJson = () => JSON.stringify({ ...draft });
-  const isDirty = () => seeded && currentJson() !== snapshot();
+  const isDirty = () => seeded() && currentJson() !== snapshot();
 
   /** Returns whether the working copy is now persisted — PUBLISH depends on knowing. */
   async function handleSave(): Promise<boolean> {

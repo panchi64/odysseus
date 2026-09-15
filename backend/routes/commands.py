@@ -21,6 +21,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
 
 from core.exceptions import CommandValidationError, NotFoundError
 from routes import deps
@@ -84,7 +85,7 @@ class WorkflowOut(CamelModel):
     updated_at: datetime
 
 
-class WorkflowCreate(CamelModel):
+class WorkflowCreate(BaseModel):
     name: str
     body: str
     title: str = ""
@@ -93,7 +94,7 @@ class WorkflowCreate(CamelModel):
     enabled: bool = True
 
 
-class WorkflowUpdate(CamelModel):
+class WorkflowUpdate(BaseModel):
     """Every field optional, and an omitted one is left unchanged — so the pane can save a
     rename without resending the template."""
 
