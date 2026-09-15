@@ -149,8 +149,20 @@ export function ChatRoomScreen(): JSX.Element {
       // Only adopt an explicit pick — an empty draft (discovery not yet resolved
       // on the overview) must not clobber the operator's sticky selection.
       if (draft.model) void setSelectedModel(draft.model);
+      // A `/level` picked on the launchpad, applied before the thread is created rather
+      // than after — the same relay the room's own control calls, so the level the
+      // operator chose is the one this first turn actually runs at.
+      if (draft.permissionLevel) setPermission(draft.permissionLevel);
       setCurrentId(null);
-      queueMicrotask(() => void stream.send(draft.text, draft.attachmentIds));
+      queueMicrotask(
+        () =>
+          void stream.send(draft.text, draft.attachmentIds, {
+            // Whatever `/` command the launchpad staged. Without this the room would
+            // send the operator's literal `/reviewer …` with nothing saying what that
+            // token was, and the turn would quietly mean less than it said.
+            command: draft.command ?? null,
+          }),
+      );
       markWarmResolved();
       return;
     }
