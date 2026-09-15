@@ -78,6 +78,45 @@ export function tokenAt(text: string, caret: number): ComposerToken | null {
   return null;
 }
 
+/** One highlighted run of the field's text. */
+export interface TokenSpan {
+  trigger: ComposerTrigger;
+  start: number;
+  /** One past the last character of the token. */
+  end: number;
+}
+
+/** **Every** command and file token in the text, in order — not just the one the caret
+ *  is in.
+ *
+ *  `tokenAt` answers "what is the operator choosing right now" and reads backwards from
+ *  the caret; this answers "what has been named in this message" and is what the accent
+ *  highlight is drawn from. A message can carry several — `/review @src/a.ts @src/b.ts` —
+ *  and all of them are named things, whether or not the caret happens to be in one.
+ *
+ *  The rules are the same two `tokenAt` applies, which is the point of them living beside
+ *  each other: a `/` only at the start of a line, an `@` only after whitespace, and a
+ *  token ending at the first space. A token with nothing after its trigger is not
+ *  highlighted — a bare `@` the operator has only just typed is not yet a reference, and
+ *  colouring it makes the accent flicker on every word boundary.
+ */
+export function tokenSpans(text: string): TokenSpan[] {
+  const spans: TokenSpan[] = [];
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i]!;
+    if (char !== "/" && char !== "@") continue;
+    const before = i === 0 ? "" : text[i - 1]!;
+    if (char === "/" && i !== 0 && before !== "\n") continue;
+    if (char === "@" && i !== 0 && !opensAfter(before)) continue;
+    let end = i + 1;
+    while (end < text.length && !/\s/.test(text[end]!)) end += 1;
+    if (end === i + 1) continue; // a bare trigger names nothing yet
+    spans.push({ trigger: char, start: i, end });
+    i = end;
+  }
+  return spans;
+}
+
 export interface TokenReplacement {
   text: string;
   /** Where the caret goes afterwards — always just past what was inserted. */

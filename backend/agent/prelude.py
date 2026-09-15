@@ -72,6 +72,10 @@ class TurnSetup:
     turn_start: TurnStart = field(default_factory=TurnStart)
     persisted: list | None = None
     stamp_ids: list[str] = field(default_factory=list)
+    #: The `@` references that resolved, stamped on the turn's user request so the
+    #: operator's chips come back on a reload. The marker naming them persists with the
+    #: prompt; this is the structured form of the same fact, for rendering.
+    file_refs: list[str] = field(default_factory=list)
     # filled by prepare_turn
     user_prompt: str | list[Any] | None = None
     history: list[ModelMessage] | None = None  # persistence baseline
@@ -226,16 +230,22 @@ async def prepare_turn(
 
     # Files the operator named with `@`. A **reference**, not an injection: the block
     # names the paths and the model reads what it wants with `files_read_file`, which is
-    # classified a read and so costs no approval at any level. The marker rides the tail
-    # with the rest of the per-turn context and is stripped before the turn is recorded —
-    # so a reference reaches the model and leaves no copy in history to go stale.
+    # classified a read and so costs no approval at any level.
     #
-    # It therefore does **not** survive a reload: the operator's own `@src/app.tsx` is
-    # still in their message, but nothing renders it as a chip and a regenerate replays
-    # the turn without the marker. Closing that needs a durable per-message field, which
-    # the command expansion needs too — one mechanism, built once, rather than two.
+    # It rides the prompt and **persists**, exactly like an attachment marker and for the
+    # same reason. A marker is a statement of fact — these paths were referenced — so
+    # replaying it is honest, where replaying a file's *contents* would be a copy going
+    # stale behind the file. Persisting is also what makes a regenerate work without a
+    # second mechanism: the marker is already in the history a regenerate replays.
     if file_refs and prompt is not None:
-        _resolved, refs_marker = resolve_file_refs(file_refs, workspace)
+        setup.file_refs, refs_marker = resolve_file_refs(file_refs, workspace)
+        if refs_marker:
+            base = user_prompt if isinstance(user_prompt, list) else [user_prompt]
+            user_prompt = [*base, refs_marker]
+            # Beside whatever the attachments left, never instead of it: a turn can carry
+            # both, and an empty list here is still the "strip to the typed prompt" signal
+            # the tail context relies on.
+            setup.persisted = [*(setup.persisted or []), refs_marker]
 
     # Per-turn prompt context (each manifest's `prompt_context` export — the
     # document state): appended at the *tail* of the current turn's user prompt,
@@ -257,7 +267,10 @@ async def prepare_turn(
         context_texts.append(turn_context)
         announce_injection(run, "command", turn_context, "prompt")
     if refs_marker:
-        context_texts.append(refs_marker)
+        # Announced, but not appended: it is already on the prompt above. The operator's
+        # question — what was put in front of the model that they did not write — is the
+        # same either way, and the row is how they see a reference was expanded into a
+        # block of instructions about reading files.
         announce_injection(run, "file_refs", refs_marker, "prompt")
     for provider in prompt_context_providers:
         text = await provider(caps, run.owner_id, conversation_id)

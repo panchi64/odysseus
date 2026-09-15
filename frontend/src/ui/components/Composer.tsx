@@ -21,6 +21,7 @@ import {
 import {
   replaceToken,
   tokenAt,
+  tokenSpans,
   type ComposerToken,
   type ComposerTrigger,
 } from "./composerToken";
@@ -200,6 +201,10 @@ export interface ComposerProps {
 export function Composer(props: ComposerProps): JSX.Element {
   const [text, setText] = createSignal("");
   let field: HTMLTextAreaElement | undefined;
+  // The accent layer behind the field. Held so its scroll can be kept in step with the
+  // field's — past `MAX_ROWS` the textarea scrolls, and a layer that stayed put would
+  // paint the colours of the first lines over whatever had scrolled into view.
+  let highlightRef: HTMLDivElement | undefined;
 
   // ── The `/` and `@` menu ────────────────────────────────────────────────────────
   // Three pieces of state and no more: the token under the caret, the field's rect to
@@ -436,9 +441,68 @@ export function Composer(props: ComposerProps): JSX.Element {
       /* `text-prose`, the reading scale — the field produces the operator's turn,
          which renders at reading size a few pixels above it. Typing at 13px and
          watching it come back at 16px is the same mismatch, one step earlier. */
-      "w-full resize-none border-0 bg-transparent px-1 py-1 text-prose font-sans text-bright placeholder:text-dim outline-none disabled:opacity-40",
+      /* `block`, because a textarea is inline-block and carries a baseline descender —
+         ~5px of dead space under it inside any block container. It cost nothing in the
+         flex column this used to sit in directly, and it is load-bearing now that the
+         field shares a wrapper with the accent layer measured against it. */
+      "block w-full resize-none border-0 bg-transparent px-1 py-1 text-prose font-sans text-bright placeholder:text-dim outline-none disabled:opacity-40",
       lg() ? "min-h-20" : "min-h-8",
     );
+
+  /** The field's text split into plain runs and accent-coloured tokens.
+   *
+   *  A textarea cannot colour part of its own value, so the standard arrangement is used:
+   *  this layer sits directly behind a text-transparent field, painting the same string
+   *  with the same metrics, and the operator sees the caret and selection of the real
+   *  control over the colours of this one.
+   *
+   *  Everything about it is therefore metric-bound to the field, which is why it shares
+   *  `fieldClass()` rather than restating the typography: any difference in font, size,
+   *  padding or wrapping shows up immediately as the colour drifting off the words. It
+   *  also has to render a trailing newline as a space, since a `<div>` collapses one that
+   *  a textarea shows — without it the last line scrolls out of step.
+   */
+  const highlighted = () => {
+    const value = text();
+    const spans = props.menu ? tokenSpans(value) : [];
+    const runs: { text: string; token: boolean }[] = [];
+    let at = 0;
+    for (const span of spans) {
+      if (span.start > at)
+        runs.push({ text: value.slice(at, span.start), token: false });
+      runs.push({ text: value.slice(span.start, span.end), token: true });
+      at = span.end;
+    }
+    if (at < value.length) runs.push({ text: value.slice(at), token: false });
+    return runs;
+  };
+
+  const highlightLayer = (
+    <Show when={props.menu}>
+      <div
+        aria-hidden="true"
+        ref={(el) => {
+          highlightRef = el;
+        }}
+        class={cx(
+          fieldClass(),
+          // Behind the field, exactly on top of it, and inert: the real control takes
+          // every click, caret move and selection.
+          "pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words text-bright",
+        )}
+      >
+        <For each={highlighted()}>
+          {(run) => (
+            <Show when={run.token} fallback={run.text}>
+              <span class="text-accent">{run.text}</span>
+            </Show>
+          )}
+        </For>
+        {/* A textarea shows a trailing newline; a div collapses it. */}
+        {text().endsWith("\n") ? " " : ""}
+      </div>
+    </Show>
+  );
 
   const textarea = (
     <textarea
@@ -457,6 +521,9 @@ export function Composer(props: ComposerProps): JSX.Element {
       // also what replaces the backdrop `FloatingPanel` would otherwise draw over the
       // whole screen — see its `passive` prop.
       onBlur={dismissMenu}
+      onScroll={(e) => {
+        if (highlightRef) highlightRef.scrollTop = e.currentTarget.scrollTop;
+      }}
       onPaste={props.attachments ? drop.pasteHandlers.onPaste : undefined}
       rows={lg() ? 3 : 1}
       placeholder={props.placeholder ?? "Message the agent…"}
@@ -467,7 +534,13 @@ export function Composer(props: ComposerProps): JSX.Element {
       // Focus stays here the whole time, so this is the only thing that tells a screen
       // reader which row the arrows are on.
       aria-activedescendant={menuOpen() ? (activeId() ?? undefined) : undefined}
-      class={fieldClass()}
+      class={cx(
+        fieldClass(),
+        // The field's own glyphs go transparent so the coloured layer behind shows
+        // through; the caret keeps a colour of its own, or typing would be invisible.
+        // `relative` so it stacks above that layer rather than under it.
+        props.menu && "relative bg-transparent text-transparent caret-bright",
+      )}
     />
   );
 
@@ -637,7 +710,20 @@ export function Composer(props: ComposerProps): JSX.Element {
         </Text>
       </Show>
       {chips}
-      {textarea}
+      {/* The two are one control: the layer paints the words, the field owns the caret,
+          and they must occupy the same box for the colours to land on the right glyphs.
+          The gap this wrapper would otherwise add is closed on the field itself (`block`
+          in `fieldClass`), not here: a textarea is inline-block, so a block wrapper puts
+          ~5px of baseline descender under it where the surrounding flex column never did.
+          The layer is `inset-0` of this wrapper, so those 5px made it taller than the
+          field, and past six rows the two scrolled by different amounts and the colours
+          slid off the words. Closing it with `flex` here instead looked equivalent and is
+          not: a stretched flex item breaks the `height:auto` measurement the autosize
+          takes, and the field collapses to one row. */}
+      <div class="relative">
+        {highlightLayer}
+        {textarea}
+      </div>
       <div class="flex items-center justify-between gap-2">
         <div class="flex min-w-0 items-center gap-1">
           {attachBtn}

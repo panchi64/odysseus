@@ -16,6 +16,7 @@ import type {
   ComposerTrigger,
 } from "~/ui";
 import { sessionModeSpec, type SessionMode } from "~/lib/modes";
+import { settled } from "~/lib/resource";
 import { useProjectFiles } from "./data";
 
 export interface ComposerFileRefs {
@@ -43,9 +44,13 @@ export function createComposerFileRefs(
   const rooted = () => sessionModeSpec(mode()).workspace === "worktree";
 
   const groups = (): ComposerMenuGroup[] => {
-    // `.latest`, never a call: the menu opens on a keystroke and must not suspend the
-    // room behind it while the listing is in flight.
-    const listing = files.latest;
+    // `settled`, not a bare `.latest`: the menu opens on a keystroke and must not suspend
+    // the room behind it while the listing is in flight. `latest` alone is not that read —
+    // on an *unresolved* resource it calls through, which inside this tracked scope
+    // registers with the nearest `Suspense` and takes the panel off screen rather than
+    // rendering it. `settled` guards on `state` first, so a fetch in flight reads
+    // `undefined` and the menu simply stays shut until the rows arrive.
+    const listing = settled(files);
     if (query() === null || !listing || listing.entries.length === 0) return [];
     return [
       {
@@ -74,7 +79,7 @@ export function createComposerFileRefs(
       setQuery(token?.trigger === "@" && rooted() ? token.query : null);
     },
     onPick: (item) => {
-      const path = files.latest?.entries.find(
+      const path = settled(files)?.entries.find(
         (file) => rowId(file.path) === item.id,
       )?.path;
       if (!path) return null;

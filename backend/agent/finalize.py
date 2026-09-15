@@ -56,6 +56,7 @@ def finalize(
             if context.clean_drop is not None:  # re-park: carry the drop range forward
                 run.parked_payload.clean_drop = context.clean_drop
             run.parked_payload.attachment_ids = list(context.attachment_ids)
+            run.parked_payload.file_refs = list(context.file_refs)
             run.parked_payload.persisted = context.persisted
         return
     if turn.answer is None and not turn.blocked_reason:
@@ -75,6 +76,7 @@ def finalize(
             conversation_id,
             split_injected_requests(context.start.slice(messages)),
             attachment_ids=list(context.attachment_ids),
+            file_refs=list(context.file_refs),
             persisted=context.persisted,
             blocked_reason=turn.blocked_reason,
             # The run's stopwatch, one entry per response it streamed, in the order the
@@ -135,5 +137,6 @@ def parked_context(parked: ParkedTurn, turn_start: TurnStart | None = None) -> P
         ),
         clean_drop=parked.clean_drop,
         attachment_ids=parked.attachment_ids,
+        file_refs=parked.file_refs,
         persisted=parked.persisted,
     )

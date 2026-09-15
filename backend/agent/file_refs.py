@@ -21,6 +21,7 @@ again is a worse trade than a turn that runs with one fewer reference.
 
 from __future__ import annotations
 
+from services.conversation_view import FILE_REFS_MARKER_OPEN
 from services.sandbox.base import contained_file
 from services.workspace import RunWorkspace
 
@@ -55,7 +56,7 @@ def _marker(paths: list[str], workspace: RunWorkspace) -> str:
         return ""
     lines = "\n".join(f"- {workspace.display(path)}" for path in paths)
     return (
-        "[The operator referenced these files with @:\n"
+        f"{FILE_REFS_MARKER_OPEN}\n"
         f"{lines}\n\n"
         "Read one with files_read_file when you need it — they were named to point you "
         "at the work, not to be summarised back. Nothing here has been read for you.]"

@@ -73,6 +73,7 @@ from runs.overhead import TurnOverhead
 from runs.timings import ResponseTiming, TimingTotals
 from services.conversation_view import (
     COMPACTION_REASON_KEY,
+    FILE_REFS_KEY,
     MessageView,
     estimate_footprint,
     project_tree,
@@ -1545,6 +1546,7 @@ class ConversationStore:
         conversation_id: str,
         new_messages: list[ModelMessage],
         attachment_ids: list[str] | None = None,
+        file_refs: list[str] | None = None,
         persisted: list | None = None,
         blocked_reason: str | None = None,
         timings: list[ResponseTiming] | None = None,
@@ -1599,6 +1601,19 @@ class ConversationStore:
             if not stamped and getattr(node.message, "kind", "") == "request":
                 if attachment_ids:
                     node.attachment_ids = list(attachment_ids)
+                # The `@` references ride the request's own ``metadata`` rather than a
+                # column of their own — the same place the compaction reason rides, and
+                # for the same three reasons: the library carries the field through
+                # serialization, never sends it to a provider, and it lands inside the
+                # sealed blob every read already opens. A host path is operator data and
+                # a column would have to be sealed on its own; nothing scans these the
+                # way `referenced_upload_ids` scans the attachment ids, so there is
+                # nothing a clear column would buy.
+                if file_refs:
+                    node.message.metadata = {
+                        **(getattr(node.message, "metadata", None) or {}),
+                        FILE_REFS_KEY: list(file_refs),
+                    }
                 install_persisted_attachments(node.message, persisted)
                 if blocked_on_request:
                     node.blocked_reason = blocked_reason

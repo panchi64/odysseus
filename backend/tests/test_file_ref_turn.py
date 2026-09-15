@@ -89,25 +89,73 @@ class TestWhatReachesTheModel:
 
 
 class TestWhatIsWrittenDown:
-    async def test_the_marker_does_not_persist(self, monkeypatch, tmp_path: Path):
+    """A reference has to outlive the turn that made it — a reload must still show the
+    chip, and a regenerate must still tell the model which files were meant.
+
+    It gets that the way an attachment does: the **marker persists** with the prompt. A
+    marker is a statement of fact — these paths were referenced — so replaying it is
+    honest, where replaying a file's contents would be a copy going stale behind the file.
+    That is also what makes a regenerate work with no second mechanism, since the marker
+    is already in the history a regenerate replays.
+    """
+
+    async def _turn_with_refs(self, client, tmp_path: Path) -> tuple[str, dict]:
+        project = await _project(client, tmp_path)
+        resp = await client.post(
+            "/chat",
+            json={
+                "prompt": "look at these",
+                "mode": "code",
+                "project_id": project["id"],
+                "file_refs": ["hello.txt"],
+            },
+        )
+        conversation_id = resp.json()["conversation_id"]
+        await collect_sse_events(client, resp.json()["run_id"])
+        detail = (await client.get(f"/conversations/{conversation_id}")).json()
+        return conversation_id, detail
+
+    async def test_the_paths_come_back_for_the_chips(self, monkeypatch, tmp_path: Path):
         patch_model_resolution(monkeypatch)
         async with client_app() as (client, _app):
-            project = await _project(client, tmp_path)
-            resp = await client.post(
-                "/chat",
-                json={
-                    "prompt": "look at these",
-                    "mode": "code",
-                    "project_id": project["id"],
-                    "file_refs": ["hello.txt"],
-                },
-            )
-            conversation_id = resp.json()["conversation_id"]
-            await collect_sse_events(client, resp.json()["run_id"])
-            detail = (await client.get(f"/conversations/{conversation_id}")).json()
-
+            _cid, detail = await self._turn_with_refs(client, tmp_path)
         user_turn = next(m for m in detail["messages"] if m["role"] == "user")
-        # The tail is stripped on record, exactly as it is for the per-turn context and
-        # a slash command's expansion — so the turn on record is what was typed.
+        # Structured, not parsed back out of the marker's prose.
+        assert user_turn["file_refs"] == ["hello.txt"]
+
+    async def test_the_operators_own_words_are_the_whole_of_their_turn(
+        self, monkeypatch, tmp_path: Path
+    ):
+        patch_model_resolution(monkeypatch)
+        async with client_app() as (client, _app):
+            _cid, detail = await self._turn_with_refs(client, tmp_path)
+        user_turn = next(m for m in detail["messages"] if m["role"] == "user")
+        # The marker rides the same request, so it is in the blob the model replays — and
+        # it is taken back off on the way to the transcript, because the bubble it would
+        # land in carries the operator's name and they did not write it.
         assert user_turn["content"] == "look at these"
-        assert "files_read_file" not in user_turn["content"]
+
+    async def test_a_regenerate_still_knows_which_files_were_meant(
+        self, monkeypatch, tmp_path: Path
+    ):
+        patch_model_resolution(monkeypatch)
+        async with client_app() as (client, app):
+            conversation_id, detail = await self._turn_with_refs(client, tmp_path)
+            assistant = next(m for m in detail["messages"] if m["role"] == "assistant")
+            resp = await client.post(
+                "/chat/regenerate",
+                json={"conversation_id": conversation_id, "message_id": assistant["id"]},
+            )
+            assert resp.status_code == 202, resp.text
+            await collect_sse_events(client, resp.json()["run_id"])
+            after = (await client.get(f"/conversations/{conversation_id}")).json()
+            # What the *model* would be handed, asked of the store directly. A regenerate
+            # re-runs from history with no fresh prompt, so the only way the marker can be
+            # in that replay is if it persisted with the turn.
+            replay = await app.state.conversations.model_history(conversation_id)
+
+        assert any("files_read_file" in str(m) for m in replay)
+        # And the chip survives too — it is stamped on the user request, which a
+        # regenerate leaves alone while it re-answers beneath it.
+        user_turn = next(m for m in after["messages"] if m["role"] == "user")
+        assert user_turn["file_refs"] == ["hello.txt"]

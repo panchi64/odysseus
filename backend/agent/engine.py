@@ -261,6 +261,7 @@ def build_chat_orchestrator(
                 start=TurnStart(),
                 clean_drop=_flush_clean_drop(),
                 attachment_ids=setup.stamp_ids,
+                file_refs=setup.file_refs,
                 persisted=setup.persisted,
             )
 
@@ -400,6 +401,7 @@ def build_chat_orchestrator(
                     start=setup.turn_start,
                     clean_drop=turn.clean_drop,
                     attachment_ids=setup.stamp_ids,
+                    file_refs=setup.file_refs,
                     persisted=setup.persisted,
                 ),
             )

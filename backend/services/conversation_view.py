@@ -46,6 +46,23 @@ if TYPE_CHECKING:  # a type, not a dependency — nothing here calls into the ru
 #: has no such key, which the projection reports as "unknown" rather than guessing.
 COMPACTION_REASON_KEY = "compaction_reason"
 
+#: Where a turn's `@` file references ride — the same metadata channel, chosen for the
+#: same reasons. The marker naming them is already in the persisted prompt, so this is not
+#: how the *model* learns about them; it is the structured form the operator's chips are
+#: drawn from, which reading back out of the marker's prose would be a parser nobody wants.
+FILE_REFS_KEY = "file_refs"
+
+#: How the `@` marker opens. Declared here, in the module that has to *remove* it, and
+#: imported by the one that writes it (`agent/file_refs.py`) — never the other way round,
+#: since `services` sits below `agent`.
+#:
+#: The marker has to persist, so that a regenerate replaying this turn still tells the
+#: model which files were meant. It must not be *rendered*, because the bubble it lands in
+#: is captioned with the operator's name and they did not write it. Those two pull in
+#: opposite directions and a sentinel is what settles them: one exact string, owned by the
+#: pair of functions on either side of it, rather than a parser trying to recognise prose.
+FILE_REFS_MARKER_OPEN = "[The operator referenced these files with @:"
+
 
 @dataclass
 class ToolImageView:
@@ -108,6 +125,10 @@ class MessageView:
     # Upload ids the operator attached to this (user) turn — the frontend renders them
     # as file chips. Empty for assistant turns and turns sent without attachments.
     attachment_ids: list[str] = field(default_factory=list)
+    # Workspace-relative paths the operator named with `@` on this (user) turn — chips
+    # again, beside the attachments. Read off the request's metadata rather than a column;
+    # empty for assistant turns and for turns that referenced nothing.
+    file_refs: list[str] = field(default_factory=list)
     # Set when the run behind this assistant turn ended `outcome: "blocked"` (a
     # usage/loop/context/time bound) — the human-readable reason. Filled in by the
     # store from the branch node, like `pinned`; None for every other turn.
@@ -474,6 +495,38 @@ def _compaction_reason(message: Any) -> str | None:
     return reason if isinstance(reason, str) and reason else None
 
 
+def strip_file_refs_marker(text: str) -> str:
+    """The operator's own words, with the chassis's `@` block taken back off.
+
+    The block is in the persisted turn on purpose — see ``FILE_REFS_MARKER_OPEN`` — and
+    the bubble it would otherwise show up in carries the operator's name. The references
+    are still reported, as chips, from the structured field beside this.
+
+    Splits on the sentinel rather than matching a shape, so a message that merely *talks*
+    about the marker is untouched unless it reproduces it exactly, and a marker whose
+    wording changes cannot quietly stop being stripped.
+    """
+    head, sep, _tail = text.partition(FILE_REFS_MARKER_OPEN)
+    return head.rstrip() if sep else text
+
+
+def _file_refs(message: Any) -> list[str]:
+    """The `@` paths stamped on this request, or an empty list.
+
+    Read defensively for the same reason ``_compaction_reason`` is: a turn recorded before
+    this existed has no such key, and metadata is a free-form dict the library round-trips
+    without inspecting — so anything unrecognised reads as "none", never as a crash in the
+    projection every transcript load goes through.
+    """
+    metadata = getattr(message, "metadata", None)
+    if not isinstance(metadata, dict):
+        return []
+    refs = metadata.get(FILE_REFS_KEY)
+    if not isinstance(refs, list):
+        return []
+    return [ref for ref in refs if isinstance(ref, str) and ref]
+
+
 def _summary_part(message: Any) -> Any | None:
     """A checkpoint's summary part — the one the divider renders.
 
@@ -583,9 +636,10 @@ def project_tree(
                 views.append(
                     MessageView(
                         role="subagent" if report is not None else "user",
-                        content=text if body is None else body,
+                        content=strip_file_refs_marker(text if body is None else body),
                         timestamp=getattr(part, "timestamp", None),
                         id=node_id,
+                        file_refs=_file_refs(message),
                     )
                 )
                 continue

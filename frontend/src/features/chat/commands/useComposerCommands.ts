@@ -23,6 +23,7 @@ import type {
   ComposerTrigger,
 } from "~/ui";
 import type { SessionMode } from "~/lib/modes";
+import { settled } from "~/lib/resource";
 import { useCommands } from "./data";
 import type { Command, CommandActionId, CommandInvocation } from "./model";
 import { groupCommands, invocationName, rankCommands } from "./rank";
@@ -95,9 +96,11 @@ export function createComposerCommands(
 
   const matched = createMemo(() => {
     const q = query();
-    // `.latest`, never a call: the menu opens on a keystroke and must not suspend the
-    // room behind it while the catalog is in flight. Nothing to show is a closed menu.
-    const loaded = catalog.latest;
+    // `settled`, not a bare `.latest`: the menu opens on a keystroke and must not suspend
+    // the room behind it while the catalog is in flight. `latest` alone calls through on
+    // an unresolved resource, which in this tracked scope registers with the nearest
+    // `Suspense` and takes the panel off screen instead of rendering it.
+    const loaded = settled(catalog);
     if (q === null || !loaded) return null;
     return {
       commands: rankCommands(q, loaded.commands),

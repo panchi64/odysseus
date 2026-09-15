@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { replaceToken, tokenAt } from "./composerToken";
+import { replaceToken, tokenAt, tokenSpans } from "./composerToken";
 
 /** Where `|` stands is the caret; the rest is what is in the field. Fixtures read as the
  *  thing the operator is looking at, which is the only way a case like `src/foo|` is
@@ -103,6 +103,51 @@ describe("the caret decides which token is being edited", () => {
 
   test("a caret in the second of two tokens reads the second", () => {
     expect(at("@one @two|")).toMatchObject({ query: "two" });
+  });
+});
+
+describe("tokenSpans", () => {
+  const spans = (text: string) =>
+    tokenSpans(text).map((s) => text.slice(s.start, s.end));
+
+  test("finds a command and every file reference", () => {
+    // All of them, not just the one the caret is in — the accent marks what has been
+    // named in the message, which is a different question from what is being chosen.
+    expect(spans("/review @src/a.ts and @src/b.ts")).toEqual([
+      "/review",
+      "@src/a.ts",
+      "@src/b.ts",
+    ]);
+  });
+
+  test("applies the same two rules `tokenAt` does", () => {
+    expect(spans("look at src/foo.ts")).toEqual([]);
+    expect(spans("mail bob@example.com")).toEqual([]);
+    expect(spans("vite@7.3.6")).toEqual([]);
+  });
+
+  test("a bare trigger names nothing yet", () => {
+    // Otherwise the accent flickers on at every word boundary as the operator types.
+    expect(spans("@")).toEqual([]);
+    expect(spans("/")).toEqual([]);
+    expect(spans("read @ now")).toEqual([]);
+  });
+
+  test("a slash opens on a later line too", () => {
+    expect(spans("notes\n/compact")).toEqual(["/compact"]);
+  });
+
+  test("a token ends at whitespace, so the argument is not coloured", () => {
+    expect(spans("/reviewer check the auth path")).toEqual(["/reviewer"]);
+  });
+
+  test("spans are in order and never overlap", () => {
+    const text = "/a @b @c";
+    const found = tokenSpans(text);
+    expect(found.map((s) => s.start)).toEqual([0, 3, 6]);
+    for (let i = 1; i < found.length; i += 1) {
+      expect(found[i]!.start).toBeGreaterThanOrEqual(found[i - 1]!.end);
+    }
   });
 });
 

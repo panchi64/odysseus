@@ -18,6 +18,7 @@ import { CompactionDivider } from "./CompactionDivider";
 import { SubagentReport } from "./SubagentReport";
 import { MessageActions, TURN_REVEAL_CLASS } from "./MessageActions";
 import { MessageAttachments } from "./MessageAttachments";
+import { MessageFileRefs } from "./MessageFileRefs";
 import { TurnBlocks } from "./TurnBlocks";
 import { TurnProgressRail } from "./TurnProgressRail";
 
@@ -456,6 +457,9 @@ function UserTurn(props: {
             </Show>
             <Show when={m().attachmentIds?.length}>
               <MessageAttachments ids={m().attachmentIds!} />
+            </Show>
+            <Show when={m().fileRefs?.length}>
+              <MessageFileRefs paths={m().fileRefs!} />
             </Show>
             {/* Sets the expectation the QUEUED badge alone doesn't: the run hands
                 this to the model at its next model call, so a reply already being

@@ -511,6 +511,9 @@ export interface ChatMessage {
   /** User turns: ids of the uploads attached to this message. Rendered as
    *  read-only chips on the sent turn; absent/empty on assistant turns. */
   attachmentIds?: string[];
+  /** User turns: workspace-relative paths the operator named with `@`. Rendered as
+   *  read-only chips beside the attachments; absent/empty everywhere else. */
+  fileRefs?: string[];
   /** Compaction dividers only: what the fold actually cost. `foldedMessages` counts
    *  **messages**, not exchanges — a plain exchange is two of them and a tool-heavy
    *  turn many more, so this is deliberately not called turns; the backend doesn't
