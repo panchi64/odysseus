@@ -29,6 +29,7 @@ from routes import deps
 from routes.camel import CamelModel
 from routes.deps import OPERATOR_ID
 from services.projects import ProjectView, WorktreeError
+from services.projects.listing import list_files, worktree_root
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -50,6 +51,23 @@ class ProjectOut(CamelModel):
     created_at: datetime
     last_opened_at: datetime
     repo: RepoOut
+
+
+class FileEntryOut(CamelModel):
+    #: Relative to the listed root, forward slashes, and the string the operator's
+    #: reference carries — so it resolves the same way wherever the run's files are.
+    path: str
+    name: str
+
+
+class FilesOut(CamelModel):
+    #: Which filesystem answered. `worktree` is the thread's own branch checkout;
+    #: `project` is the operator's checkout, which is what a thread gets before its
+    #: first turn has created a worktree.
+    root: str
+    entries: list[FileEntryOut]
+    #: The scan hit its bound. Said out loud rather than implying the tree is this small.
+    truncated: bool
 
 
 class ProjectCreate(CamelModel):
@@ -138,6 +156,48 @@ async def get_project(request: Request, project_id: str) -> ProjectOut:
         return _out(await deps.projects(request).get(OPERATOR_ID, project_id))
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/{project_id}/files", response_model=FilesOut)
+async def list_project_files(
+    request: Request,
+    project_id: str,
+    conversation_id: str | None = None,
+    query: str = "",
+    limit: int = 200,
+) -> FilesOut:
+    """The files a code thread can reference — what the composer's `@` picker browses.
+
+    **Rooted on the project, upgraded by the conversation.** `conversation_id` is
+    optional because the operator types `@` in a composer that may not have started a
+    thread yet; naming one asks for that thread's own worktree, and the resolver hands
+    back the project root whenever there isn't one. The response says which answered, so
+    the picker can label a listing that is the operator's checkout rather than the
+    agent's view of it.
+
+    It **never creates a worktree**: acquiring the project's single checkout as a side
+    effect of typing a character would take it from whatever else holds it.
+
+    Not on `/worktrees`, which is the natural-looking home: that router resolves a
+    conversation to its project and 404s until a thread is saved with a binding, which is
+    precisely the moment the picker is most useful.
+    """
+    try:
+        project = await deps.projects(request).get(OPERATOR_ID, project_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    root = Path(project.root_path)
+    from_worktree = False
+    if conversation_id:
+        root, from_worktree = await worktree_root(
+            deps.worktrees(request).path_for(project_id), conversation_id, root
+        )
+    listing = await list_files(root, query=query, limit=max(1, min(limit, 500)))
+    return FilesOut(
+        root="worktree" if from_worktree else "project",
+        entries=[FileEntryOut(path=e.path, name=e.name) for e in listing.entries],
+        truncated=listing.truncated,
+    )
 
 
 @router.patch("/{project_id}", response_model=ProjectOut)

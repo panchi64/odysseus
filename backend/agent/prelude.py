@@ -44,6 +44,7 @@ from tools import PromptContextProvider, default_workspace_key
 
 from .attachments import resolve_attachments
 from .compaction_context import CompactionContext, resolve_max_input_tokens
+from .file_refs import resolve_file_refs
 from .folding import incoming_request, maybe_compact
 from .history import (
     TurnStart,
@@ -94,6 +95,7 @@ async def prepare_turn(
     caps: ServiceContainer,
     uploads: UploadStore | None,
     attachment_ids: list[str] | None,
+    file_refs: list[str] | None,
     turn_context: str,
     vision: bool,
     binding: ConversationBinding,
@@ -184,26 +186,34 @@ async def prepare_turn(
     # inline in both the live and the persisted shape. Only on a fresh turn: a
     # regenerate (prompt is None) re-runs history, which already carries the markers.
     user_prompt: str | list[Any] | None = prompt
+    refs_marker = ""
+
+    # Resolved the one way the file tools resolve it, so an attachment lands in — and a
+    # reference points at — the very workspace the agent is about to work in: the
+    # conversation's sandbox, or its project worktree in code mode. Resolved **once**
+    # and shared, since both halves below need the same answer and a turn that resolved
+    # it twice could resolve it differently under a concurrent acquire.
+    workspace = None
+    if prompt is not None and (attachment_ids or file_refs):
+        workspace = await resolve_workspace(
+            mode=binding.mode,
+            project_id=binding.project_id,
+            conversation_id=conversation_id,
+            workspace_key=workspace_key or default_workspace_key(conversation_id, run),
+            owner_id=run.owner_id,
+            sessions=caps.get_optional(SandboxSessionManager),
+            projects=caps.get_optional(ProjectStore),
+            worktrees=caps.get_optional(WorktreeManager),
+            holder=run,
+        )
+
     if attachment_ids and prompt is not None and uploads is not None:
         resolved = await resolve_attachments(
             uploads,
             run.owner_id,
             attachment_ids,
             vision=vision,
-            # Resolved the one way the file tools resolve it, so an attachment
-            # lands in the very workspace the agent is about to work in — the
-            # conversation's sandbox, or its project worktree in code mode.
-            workspace=await resolve_workspace(
-                mode=binding.mode,
-                project_id=binding.project_id,
-                conversation_id=conversation_id,
-                workspace_key=workspace_key or default_workspace_key(conversation_id, run),
-                owner_id=run.owner_id,
-                sessions=caps.get_optional(SandboxSessionManager),
-                projects=caps.get_optional(ProjectStore),
-                worktrees=caps.get_optional(WorktreeManager),
-                holder=run,
-            ),
+            workspace=workspace,
         )
         # Only build a multimodal prompt when something actually resolved — else leave
         # the plain string, so an all-deleted-ids turn doesn't persist as a bare list
@@ -213,6 +223,19 @@ async def prepare_turn(
             user_prompt = [prompt, *resolved.content]
         setup.persisted = resolved.persisted or None
         setup.stamp_ids = resolved.ids
+
+    # Files the operator named with `@`. A **reference**, not an injection: the block
+    # names the paths and the model reads what it wants with `files_read_file`, which is
+    # classified a read and so costs no approval at any level. The marker rides the tail
+    # with the rest of the per-turn context and is stripped before the turn is recorded —
+    # so a reference reaches the model and leaves no copy in history to go stale.
+    #
+    # It therefore does **not** survive a reload: the operator's own `@src/app.tsx` is
+    # still in their message, but nothing renders it as a chip and a regenerate replays
+    # the turn without the marker. Closing that needs a durable per-message field, which
+    # the command expansion needs too — one mechanism, built once, rather than two.
+    if file_refs and prompt is not None:
+        _resolved, refs_marker = resolve_file_refs(file_refs, workspace)
 
     # Per-turn prompt context (each manifest's `prompt_context` export — the
     # document state): appended at the *tail* of the current turn's user prompt,
@@ -233,6 +256,9 @@ async def prepare_turn(
     if turn_context and prompt is not None:
         context_texts.append(turn_context)
         announce_injection(run, "command", turn_context, "prompt")
+    if refs_marker:
+        context_texts.append(refs_marker)
+        announce_injection(run, "file_refs", refs_marker, "prompt")
     for provider in prompt_context_providers:
         text = await provider(caps, run.owner_id, conversation_id)
         if not text:

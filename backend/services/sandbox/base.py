@@ -82,6 +82,29 @@ def contained_path(root: Path, relpath: str, *, what: str = "path") -> Path:
     return target
 
 
+def contained_file(root: Path, relpath: str) -> Path | None:
+    """:func:`contained_path`, as an **answer** rather than an exception, and only for a
+    file that is actually there.
+
+    Two callers need exactly this shape and neither is acting on a path the agent chose:
+    the file picker, describing what the operator may reference, and the turn composer,
+    resolving the references they sent. For both, a path that does not resolve is an
+    ordinary outcome — the operator is typing, and half a list beats an error — while for
+    every existing caller of ``contained_path`` an escape is a fault to raise on. Same
+    check, different register; the check itself is not restated.
+
+    A directory is refused too. ``@src`` is not a file reference, and letting one through
+    would hand the model a path its read tool cannot open.
+    """
+    if not relpath or relpath.startswith("/") or "\0" in relpath:
+        return None
+    try:
+        target = contained_path(root, relpath, what="file reference")
+        return target if target.is_file() else None
+    except (SandboxError, OSError):
+        return None
+
+
 @dataclass(frozen=True)
 class SandboxFile:
     """A file copied *into* the box before execution — a copy of an operator

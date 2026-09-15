@@ -119,6 +119,7 @@ def build_chat_orchestrator(
     context_thresholds: ContextThresholds = DEFAULT_CONTEXT_THRESHOLDS,
     uploads: UploadStore | None = None,
     attachment_ids: list[str] | None = None,
+    file_refs: list[str] | None = None,
     turn_context: str = "",
     vision: bool = False,
     auto_compact: AutoCompactPolicy | None = None,
@@ -142,6 +143,12 @@ def build_chat_orchestrator(
     still rides inline (and is retained on persist). Attachments are injected only on a
     fresh turn; a regenerate (``prompt is None``) re-runs prior history, which already
     carries the markers.
+
+    ``file_refs`` are workspace-relative paths the operator named with ``@``. A
+    **reference, not an injection**: the turn carries the paths and the model reads what it
+    wants with ``files_read_file``. Resolved against the run's own workspace and silently
+    narrowed to what is actually there, so a path picked before a worktree existed cannot
+    point the model at a file it has no way to open.
 
     ``turn_context`` is a block the *caller* resolved for this one turn — today the
     expansion of a slash command the operator picked. It rides the tail of the turn's user
@@ -297,6 +304,7 @@ def build_chat_orchestrator(
             caps=capabilities,
             uploads=uploads,
             attachment_ids=attachment_ids,
+            file_refs=file_refs,
             turn_context=turn_context,
             vision=vision,
             binding=binding,

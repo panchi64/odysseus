@@ -287,9 +287,12 @@ export function createChatStream(
        *  operator's literal `/name …`; this says which command that token was, so
        *  the backend can resolve and expand it. */
       command?: { name: string; argument: string } | null;
+      /** Workspace-relative paths the operator named with `@`. A reference only —
+       *  the backend names them to the model, which reads what it wants. */
+      fileRefs?: string[];
     } = {},
   ): Promise<void> {
-    const { continuesMessageId, command } = extras;
+    const { continuesMessageId, command, fileRefs } = extras;
     // A turn needs either prompt text or at least one attachment to send.
     if (!text.trim() && attachmentIds.length === 0) return;
     if (sending()) {
@@ -305,8 +308,11 @@ export function createChatStream(
       // around it to resolve one through — so `/deploy prod` would reach the model
       // as the literal token. The backend refuses it for the same reason; saying so
       // here keeps the operator's typed message rather than spending it on a 409.
-      if (command) {
-        toast.error("A command can't be sent while a response is in progress.");
+      // Nor a file reference, for the same reason and with the same backend refusal.
+      if (command || fileRefs?.length) {
+        toast.error(
+          "A command or file reference can't be sent while a response is in progress.",
+        );
         return;
       }
       if (!text.trim()) return;
@@ -368,6 +374,7 @@ export function createChatStream(
         // Never an expansion — what a command *means* is the backend's to decide, and a
         // client that sent one would be sending a turn the operator never wrote.
         command: command ?? undefined,
+        file_refs: fileRefs?.length ? fileRefs : undefined,
       });
     } catch (err) {
       if (isApiError(err) && err.status === 409) {

@@ -93,6 +93,11 @@ class ChatCreate(BaseModel):
     # uploads first via POST /uploads, then sends the ids here). They're handed to the
     # model for this turn and enrolled in the knowledge base via the upload pipeline.
     attachment_ids: list[str] = []
+    # Files the operator named with `@` in the composer, relative to the run's workspace.
+    # A **reference only**: the turn names the paths and the model reads what it wants
+    # with the file tools. Nothing here is read on the way in, so a reference cannot go
+    # stale in history the way a pasted copy would.
+    file_refs: list[str] = []
     # When creating a fresh conversation, mark it a scratch thread the listing
     # hides (the side-by-side compare panes set this). Ignored when continuing an
     # existing conversation.
@@ -331,6 +336,7 @@ def compose_turn(
     binding: ConversationBinding | None = None,
     owner_id: str = OPERATOR_ID,
     attachment_ids: list[str] | None = None,
+    file_refs: list[str] | None = None,
     # The expansion of a slash command this turn was sent with, already resolved by the
     # caller. Rides the tail of the turn's user prompt and is stripped before the turn is
     # recorded, so what persists is the `/name` the operator typed.
@@ -386,6 +392,7 @@ def compose_turn(
         conversation_id=conversation_id,
         uploads=uploads,
         attachment_ids=attachment_ids,
+        file_refs=file_refs,
         turn_context=turn_context,
         vision=vision,
         # The operator's conversation-compaction policy; absent ⇒ the config defaults.
@@ -463,6 +470,7 @@ async def _submit_turn(
     conversation_id: str,
     models: tuple[Model, Model, ModelSettings | None, int | None, bool, int | None],
     attachment_ids: list[str] | None = None,
+    file_refs: list[str] | None = None,
     command: CommandInvocation | None = None,
     ephemeral: bool = False,
 ) -> ChatCreated:
@@ -506,6 +514,7 @@ async def _submit_turn(
         disabled_tools=disabled,
         binding=binding,
         attachment_ids=attachment_ids,
+        file_refs=file_refs,
         ephemeral=ephemeral,
         # Resolved here, not at each caller, for the same reason as the request limit
         # below: send, regenerate and edit all want it and none of them should have to
@@ -586,7 +595,7 @@ def _enqueue_steering(
     the operator can open and both drain the queued-message inbox, so both take steering.
     Only a run some other orchestrator submitted — which would never read the queue — is
     refused."""
-    if body.attachment_ids or body.command:
+    if body.attachment_ids or body.command or body.file_refs:
         return None
     run = registry.active_run_for(conversation_id, OPERATOR_ID)
     if run is None or run.kind not in CHAT_TURN_KINDS:
@@ -713,6 +722,7 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
             conversation_id=conversation_id,
             models=models,
             attachment_ids=body.attachment_ids,
+            file_refs=body.file_refs,
             command=body.command,
             ephemeral=body.ephemeral,
         )

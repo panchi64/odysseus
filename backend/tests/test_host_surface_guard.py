@@ -20,7 +20,17 @@ from pathlib import Path
 
 import pytest
 
-_FORBIDDEN = ("host_picker", "PickerAvailability", "host_open")
+#: ``projects.listing`` is the third: it enumerates the operator's own checkout for the
+#: composer's `@` picker, which is the same reach as the file dialog and belongs to the
+#: operator alone. The agent already walks this filesystem through ``files_list_directory``
+#: and ``files_search_files``, rooted at the workspace *its run* resolved — a second path
+#: with the project root in its hand would be a way around that rooting.
+#:
+#: The containment check those references are resolved against is deliberately **not**
+#: here: it lives in ``services/sandbox/base`` with the rest of the containment, is what
+#: the file tools already use, and answering "does this path stay inside this root" is the
+#: opposite of a way out of one.
+_FORBIDDEN = ("host_picker", "PickerAvailability", "host_open", "projects.listing")
 _SCAN_DIRS = ("tools", "agent")
 
 
