@@ -1,8 +1,20 @@
-import { createMemo, createSignal, For, Show, type JSX } from "solid-js";
+import { createMemo, createSignal, Show, type JSX } from "solid-js";
 import { Button, Composer, ConstructionReveal, Row, Stack, Text } from "~/ui";
-import type { Park } from "../stream/approvals";
-import type { ApprovalDecision, QuestionAnswer, QuestionReply } from "../model";
+import type { Park, ParkDraft } from "../stream/approvals";
+import type {
+  ApprovalDecision,
+  ChatMessage,
+  QuestionAnswer,
+  QuestionReply,
+} from "../model";
+import {
+  allPagesAnswered,
+  answersFor,
+  pageAnswered,
+  parkPages,
+} from "../parkPages";
 import { ApprovalPanel } from "./ApprovalPanel";
+import { QueuedMessageList } from "./QueuedMessageList";
 import { QuestionPanel } from "./QuestionPanel";
 
 /**
@@ -18,6 +30,18 @@ import { QuestionPanel } from "./QuestionPanel";
  * **Everything the park holds submits together**, whichever kinds it holds: the run
  * resumes on one body covering every deferred call, so a second submission would arrive
  * at a run that had already gone on. Hence one button here rather than one per panel.
+ *
+ * **One question at a time.** The park's questions are flattened across its calls and
+ * walked a page at a time (`parkPages.ts`), with the approvals — already one batched
+ * decision — as the last page. Stacked, a park of six questions was a wall of radio
+ * buttons standing in front of a transcript the dock had already taken the composer
+ * from, with nothing to say how much of it was left. Pagination is presentation only:
+ * the submission is still one body, because the run still resumes once.
+ *
+ * **Nothing typed here is held by this component.** The draft lives on the controller
+ * (`ParkDraft`), because the dock is mounted by a `Show` over the park and a park can
+ * momentarily re-derive — a steering message arriving mid-park used to unmount this with
+ * the operator's half-written answers inside it.
  *
  * **A submitted plan is decided here too.** It used to be handed to the Plan panel, on
  * the reasoning that a document is answered where it is read — but that put the one
@@ -44,25 +68,48 @@ import { QuestionPanel } from "./QuestionPanel";
  */
 export function ParkDock(props: {
   park: Park;
+  /** What has been entered so far, and how to change it — held by the controller. */
+  draft: ParkDraft;
+  onDraft: (next: Partial<ParkDraft>) => void;
   onSubmit: (settlement: {
     decisions?: ApprovalDecision[];
     answers?: QuestionAnswer[];
   }) => void | Promise<void>;
   onStop: () => void;
+  /** Messages the operator queued before the run parked. Listed here because the dock
+   *  holds the slot they would otherwise be managed from, and because they land on the
+   *  same resume as the answer — a park is the one moment both are in flight at once. */
+  queued?: ChatMessage[];
+  onEditQueued?: (queuedMessageId: string, text: string) => void;
+  onWithdrawQueued?: (queuedMessageId: string) => void;
+  onHoldQueued?: (queuedMessageId: string, held: boolean) => void;
   /** Put the Plan panel on screen, for a park holding a submitted plan. Left unset by
    *  hosts that have no viewport — a compare pane — where the card simply does not offer
    *  the button. */
   onReadPlan?: () => void;
 }): JSX.Element {
-  const [decisions, setDecisions] = createSignal<ApprovalDecision[]>([]);
-  const [allDecided, setAllDecided] = createSignal(false);
-  const [replies, setReplies] = createSignal<Record<string, QuestionReply[]>>(
-    {},
-  );
+  const pages = createMemo(() => parkPages(props.park));
+  /** Clamped on read: a park can gain or lose a call while the dock is up (a stale
+   *  reconciliation, a replay), and a remembered index past the end would render
+   *  nothing at all rather than the last question. */
+  const index = () =>
+    Math.min(props.draft.page, Math.max(pages().length - 1, 0));
+  const page = () => pages()[index()];
+  const asking = () => {
+    const at = page();
+    return at?.kind === "question" ? at : undefined;
+  };
+  const isLast = () => index() >= pages().length - 1;
   const [submitting, setSubmitting] = createSignal(false);
 
-  const hasApprovals = () => props.park.approvals.length > 0;
-  const hasQuestions = () => props.park.questions.length > 0;
+  const setReply = (callId: string, at: number, reply: QuestionReply) => {
+    const current = props.draft.replies[callId] ?? [];
+    const next = [...current];
+    next[at] = reply;
+    props.onDraft({
+      replies: { ...props.draft.replies, [callId]: next },
+    });
+  };
 
   /** Whether the operator has asked for changes rather than given a verdict.
    *
@@ -73,29 +120,20 @@ export function ParkDock(props: {
    *  of an answer the card already holds, and the two would disagree the moment either
    *  moved. */
   const revising = createMemo(() =>
-    decisions().some((d) => !d.approved && d.intent === "revise"),
+    props.draft.decisions.some((d) => !d.approved && d.intent === "revise"),
   );
 
-  /** Every question in the park answered — each with a selection or something written.
-   *  The backend refuses a question answered with neither, so the button refuses first
-   *  rather than sending a body that will come back 422. */
-  const allAnswered = createMemo(() =>
-    props.park.questions.every((q) => {
-      const given = replies()[q.toolCallId];
-      return (
-        given?.length === q.questions.length &&
-        given.every((r) => r.selections.length > 0 || (r.text ?? "").trim())
-      );
-    }),
+  const ready = createMemo(() =>
+    allPagesAnswered(pages(), props.draft.replies, props.draft.allDecided),
   );
-
-  const ready = () =>
-    (!hasApprovals() || allDecided()) && (!hasQuestions() || allAnswered());
+  const canAdvance = () =>
+    page() !== undefined &&
+    pageAnswered(page(), props.draft.replies, props.draft.allDecided);
 
   const label = () =>
-    hasQuestions() && hasApprovals()
+    props.park.questions.length > 0 && props.park.approvals.length > 0
       ? "Answer and decide"
-      : hasQuestions()
+      : props.park.questions.length > 0
         ? "Send answer"
         : "Submit decision";
 
@@ -125,17 +163,15 @@ export function ParkDock(props: {
     setSubmitting(true);
     try {
       await props.onSubmit({
-        decisions: hasApprovals()
-          ? decisions().map((d) =>
-              !d.approved && d.intent === "revise" && note
-                ? { ...d, message: note }
-                : d,
-            )
-          : [],
-        answers: props.park.questions.map((q) => ({
-          tool_call_id: q.toolCallId,
-          replies: replies()[q.toolCallId] ?? [],
-        })),
+        decisions:
+          props.park.approvals.length > 0
+            ? props.draft.decisions.map((d) =>
+                !d.approved && d.intent === "revise" && note
+                  ? { ...d, message: note }
+                  : d,
+              )
+            : [],
+        answers: answersFor(props.park, props.draft.replies),
       });
     } finally {
       setSubmitting(false);
@@ -154,33 +190,81 @@ export function ParkDock(props: {
             </Text>
           }
         >
-          <Show when={hasQuestions()}>
-            <Stack gap={4}>
-              <For each={props.park.questions}>
-                {(question) => (
-                  <QuestionPanel
-                    question={question}
-                    onChange={(given) =>
-                      setReplies((current) => ({
-                        ...current,
-                        [question.toolCallId]: given,
-                      }))
-                    }
-                  />
-                )}
-              </For>
-            </Stack>
+          {/* What the operator queued before the run stopped to ask. It is listed
+              first because it is context for the answer rather than part of it: a
+              message written a minute ago may be what the agent is now asking about,
+              and it will reach the model on the same resume this answer does. Without
+              it the queue is invisible from the one surface the operator is looking at
+              — the dock has taken the slot its bubbles are normally managed from. */}
+          <Show when={props.queued?.length}>
+            <QueuedMessageList
+              messages={props.queued ?? []}
+              onEdit={props.onEditQueued}
+              onWithdraw={props.onWithdrawQueued}
+              onHold={props.onHoldQueued}
+            />
           </Show>
 
-          <Show when={hasApprovals()}>
-            <ApprovalPanel
-              approvals={props.park.approvals}
-              onReadPlan={props.onReadPlan}
-              onChange={(given, decided) => {
-                setDecisions(given);
-                setAllDecided(decided);
-              }}
-            />
+          {/* Where the operator is, when there is more than one place to be. A single
+              question says nothing — a position readout over one item is furniture. */}
+          <Show when={pages().length > 1}>
+            <Row justify="between" align="center">
+              <Text variant="micro" tone="dim">
+                {page()?.kind === "approvals"
+                  ? `Step ${index() + 1} of ${pages().length} — permissions`
+                  : `Question ${index() + 1} of ${pages().length}`}
+              </Text>
+              <Row gap={1} align="center">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  leading="chevron-left"
+                  disabled={index() === 0}
+                  onClick={() => props.onDraft({ page: index() - 1 })}
+                >
+                  Back
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  trailing="chevron-right"
+                  disabled={isLast() || !canAdvance()}
+                  onClick={() => props.onDraft({ page: index() + 1 })}
+                >
+                  Next
+                </Button>
+              </Row>
+            </Row>
+          </Show>
+
+          <Show when={asking()}>
+            {(at) => (
+              <QuestionPanel
+                question={at().question}
+                reply={props.draft.replies[at().callId]?.[at().index]}
+                onChange={(reply) => setReply(at().callId, at().index, reply)}
+              />
+            )}
+          </Show>
+
+          {/* **Mounted for the life of the dock, hidden off its page**, where a question
+              is mounted only on its own. The asymmetry is not a style choice: a question
+              is stateless here (its reply lives in the draft, so remounting it costs
+              nothing), while the approval cards hold their own verdicts and grant ticks
+              and publish them *on change*. Unmounted on the way to another page, they
+              come back blank while the draft still says decided — cards showing nothing
+              chosen above an enabled submit — and the next click would rebuild the batch
+              from that empty state, dropping every verdict beside it. */}
+          <Show when={props.park.approvals.length > 0}>
+            <div classList={{ hidden: page()?.kind !== "approvals" }}>
+              <ApprovalPanel
+                approvals={props.park.approvals}
+                onReadPlan={props.onReadPlan}
+                onChange={(given, decided) =>
+                  props.onDraft({ decisions: given, allDecided: decided })
+                }
+              />
+            </div>
           </Show>
 
           {/* Asking for changes is the one answer that needs words, so it borrows the
@@ -196,7 +280,7 @@ export function ParkDock(props: {
               they are handed back is the ordinary one, where saying why is just the next
               message. So the card that used to carry a textarea for both answers now
               stops the operator for the one that cannot wait. */}
-          <Show when={revising()}>
+          <Show when={revising() && isLast()}>
             <Composer
               bare
               autofocus
@@ -221,8 +305,12 @@ export function ParkDock(props: {
             {/* While the note is being written, SEND is the composer's own — a second
                 submit beside it would be two buttons doing one thing, one of which
                 would post an empty request for changes. It carries the same refusal the
-                button would have (`sendBlocked`), so hiding the button hides no state. */}
-            <Show when={!revising()}>
+                button would have (`sendBlocked`), so hiding the button hides no state.
+
+                The submit only appears on the last page: offering it earlier would put
+                a disabled primary button under every question, which reads as the form
+                being broken rather than as unfinished. */}
+            <Show when={!revising() && isLast()}>
               <Button
                 variant="primary"
                 disabled={!ready() || submitting()}

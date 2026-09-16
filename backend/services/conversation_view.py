@@ -32,6 +32,7 @@ from pydantic_ai import (
 
 from core.serde import jsonable
 from core.text import chars_to_tokens
+from services.answers import ASK_USER_TOOL, AnsweredQuestion, parse_answer, questions_of
 from services.subagents.report import direction_body, report_body
 
 if TYPE_CHECKING:  # a type, not a dependency — nothing here calls into the run substrate
@@ -74,6 +75,12 @@ class ToolView:
     result: Any = None
     error: str | None = None
     images: list[ToolImageView] = field(default_factory=list)
+    # `ask_user` only — the questions this call asked and what the operator said to each,
+    # taken apart from the prose the call returned (`services/answers.py`). The live stream
+    # carries the same list on `question.answered`, built from the replies before they were
+    # rendered, so the card a reload draws is the card the operator watched arrive. Empty
+    # for every other tool, and for an asking call the operator never answered.
+    answers: list[AnsweredQuestion] = field(default_factory=list)
 
 
 @dataclass
@@ -460,6 +467,23 @@ def _attach_tool_images(
             tool.images.extend(images)
 
 
+def _attach_answers(tool: ToolView) -> None:
+    """Put a settled ``ask_user`` call's answers back on its row, as structure.
+
+    Live, the answers reach the client on ``question.answered`` before they are ever
+    rendered. Cold, the only record that survived is the prose in the call's own result —
+    so it is read back here rather than by the client, for the same reason the questions
+    were parsed here in the first place: one side owns the format, and it is the side that
+    writes it.
+
+    The questions come from the **call's** arguments and the answers from its **result**,
+    which is what keeps the pair honest: a card is drawn only where both halves of the
+    exchange are present, and an unanswered or unreadable one leaves the row as it was."""
+    if tool.name != ASK_USER_TOOL or not isinstance(tool.result, str):
+        return
+    tool.answers = parse_answer(questions_of(tool.args), tool.result)
+
+
 def _compaction_reason(message: Any) -> str | None:
     """Why this checkpoint folded, off its own ``ModelRequest.metadata`` — or ``None``.
 
@@ -596,6 +620,7 @@ def project_tree(
                     if tool is not None:
                         tool.status = "ok"
                         tool.result = jsonable(part.content)
+                        _attach_answers(tool)
                 elif isinstance(part, RetryPromptPart):
                     tool = by_call.get(part.tool_call_id)
                     if tool is not None:

@@ -18,8 +18,14 @@ from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 
 from agent import stream_agent_run
-from agent.answers import AnswerError, questions_of, render_answer
 from runs import QuestionOption, QuestionSpec, Run, RunStream
+from services.answers import (
+    ASK_USER_TOOL,
+    AnswerError,
+    parse_answer,
+    questions_of,
+    render_answer,
+)
 from services.registry import ModelRegistry
 from services.tool_policy import lane_disabled_tools
 from tools import RunDeps, build_agent_toolsets
@@ -34,7 +40,10 @@ from ._helpers import (
 )
 
 OWNER = "operator"
-ASK = "builtin_ask_user"
+# The constant the projection keys on. Used rather than a literal so the tests below —
+# which reach the real tool through a model that calls it by name — are what pins it
+# against the name the catalog actually registers.
+ASK = ASK_USER_TOOL
 
 # One two-question call: a single-select and a multi-select, so the shapes the panel
 # renders and the shapes the renderer writes are both exercised by one park.
@@ -237,6 +246,55 @@ def test_a_question_answered_with_nothing_is_refused():
         raise AssertionError("an empty reply was accepted")
 
 
+# --- reading the reply back ---------------------------------------------------------
+
+# One case per shape the renderer can write, since the round trip is only as good as its
+# least-exercised branch: a bare selection, prose instead of a selection, both together,
+# several selections, and a label that contains the separator the selections are joined on.
+ROUND_TRIPS = [
+    ([_spec("Which database?", ["Postgres", "SQLite"])], [(["SQLite"], None)]),
+    ([_spec("Which database?", ["Postgres"])], [([], "DuckDB, actually")]),
+    ([_spec("Which database?", ["Postgres"])], [(["Postgres"], "with PostGIS")]),
+    (
+        [_spec("Which extras?", ["Auth", "Billing"], multi=True)],
+        [(["Auth", "Billing"], None)],
+    ),
+    (
+        [_spec("Which order?", ["Postgres, then MySQL", "MySQL"], multi=True)],
+        [(["Postgres, then MySQL", "MySQL"], "in that order")],
+    ),
+    (
+        [_spec("Which database?", ["Postgres", "SQLite"]), _spec("Which extras?", ["Auth"])],
+        [(["Postgres"], None), ([], "none of them")],
+    ),
+]
+
+
+def test_render_and_parse_are_a_round_trip():
+    """The two halves are one format, and the cold transcript is read back with the
+    parser while the live stream is built from the replies — so a wording change on one
+    side that the other doesn't know about is a card that silently empties on reload."""
+    for questions, replies in ROUND_TRIPS:
+        parsed = parse_answer(questions, render_answer(questions, replies))
+        assert [a.question for a in parsed] == [q.question for q in questions]
+        assert [a.selections for a in parsed] == [list(s) for s, _ in replies]
+        assert [a.text for a in parsed] == [(t or "").strip() or None for _, t in replies]
+
+
+def test_parsing_recovers_what_it_can_from_a_string_it_cannot_read():
+    """It runs over history stored long before it existed. An unreadable string costs the
+    operator the card, never the transcript."""
+    assert parse_answer([], "") == []
+    assert parse_answer([], "nothing that was ever rendered") == []
+    # A question whose answer line was lost still reports the question.
+    [only] = parse_answer([], "Q: Which database?")
+    assert (only.question, only.selections, only.text) == ("Which database?", [], None)
+    # An option renamed since the answer was written is no longer in the offered set, so
+    # the separator is all there is to go on — the label still comes back.
+    [renamed] = parse_answer([_spec("Which?", ["Postgres 17"])], "Q: Which?\nA: Postgres 16")
+    assert renamed.selections == ["Postgres 16"]
+
+
 def test_a_reply_per_question_is_required():
     try:
         render_answer([_spec("a", ["x"]), _spec("b", ["y"])], [(["x"], None)])
@@ -334,6 +392,72 @@ async def test_asking_parks_the_run_and_announces_the_questions(monkeypatch):
     completed = [e for e in events if e["type"] == "tool.completed" and e["name"] == ASK]
     assert completed and "Postgres" in str(completed[0]["result"])
     assert [e["type"] for e in events][-1] == "run.ended"
+
+
+async def test_the_answers_payload_agrees_warm_and_cold(monkeypatch):
+    """The card is drawn twice from two different sources — live from
+    ``question.answered``, built out of the replies before they were ever rendered, and on
+    a reload from the call's own arguments and the prose in its result. They must say the
+    same thing, or the panel changes under the operator when they refresh the page."""
+    _install_asking_model(monkeypatch, QUESTIONS)
+    async with client_app() as (client, app):
+        swap_tool_catalog(app, {"builtin": builtin_toolset()})
+        created = (await client.post("/chat", json={"prompt": "pick one"})).json()
+        run_id, conversation_id = created["run_id"], created["conversation_id"]
+        run = await _await_parked(app, run_id)
+        call_id = run.parked_payload.requests.calls[0].tool_call_id
+
+        resp = await client.post(
+            f"/runs/{run_id}/approve",
+            json={
+                "answers": [
+                    {
+                        "tool_call_id": call_id,
+                        "replies": [
+                            {"selections": ["Postgres"], "text": "  with PostGIS  "},
+                            {"selections": ["Auth", "Billing"]},
+                        ],
+                    }
+                ]
+            },
+        )
+        assert resp.status_code == 202
+        events = await collect_sse_events(client, run_id)
+
+        [live] = [e for e in events if e["type"] == "question.answered"]
+        assert live["tool_call_id"] == call_id
+        assert live["answers"] == [
+            {
+                "question": "Which database?",
+                "selections": ["Postgres"],
+                # Trimmed on the way in, so the card never carries the composer's padding.
+                "text": "with PostGIS",
+            },
+            {"question": "Which extras?", "selections": ["Auth", "Billing"], "text": None},
+        ]
+
+        # …and again with nothing left in memory to read it from: the sealed blob holds
+        # the call and its result, and the projection takes the same answer back out.
+        store = app.state.conversations
+        await store._worker.join()
+        store._cache.clear()
+        detail = (await client.get(f"/conversations/{conversation_id}")).json()
+        [cold] = [
+            tool
+            for message in detail["messages"]
+            for tool in message["tools"]
+            if tool["name"] == ASK
+        ]
+        assert cold["answers"] == live["answers"]
+
+        # Every other tool row stays empty — this is a card for one tool, not a field
+        # every call now has to mean something by.
+        assert all(
+            tool["answers"] == []
+            for message in detail["messages"]
+            for tool in message["tools"]
+            if tool["name"] != ASK
+        )
 
 
 async def test_an_approval_and_a_question_park_once_and_resume_once(monkeypatch):

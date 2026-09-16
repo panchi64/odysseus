@@ -402,6 +402,25 @@ export function toMessage(dto: MessageDTO): ChatMessage {
       });
     else
       blocks.push({ kind: "tool", id: `${dto.id}-${t.id}`, tool: toTool(t) });
+    // A settled `ask_user` carries what it asked and what it was told. Rebuilt as the
+    // same answered question block the live `question.answered` fold produces, so a
+    // reload renders the exchange rather than leaving it as prose inside a tool row.
+    // Placed after its own call for the same reason the live one sits on the turn it
+    // belongs to.
+    if (t.answers?.length)
+      blocks.push({
+        kind: "question",
+        id: `${dto.id}-${t.id}-answers`,
+        question: {
+          toolCallId: t.id,
+          questions: [],
+          answers: t.answers.map((a) => ({
+            question: a.question,
+            selections: a.selections ?? [],
+            text: a.text ?? undefined,
+          })),
+        },
+      });
     for (const c of citationsFromToolResult(t.name, t.result))
       if (!citations.some((existing) => existing.url === c.url))
         citations.push(c);

@@ -241,6 +241,7 @@ export function createChatStream(
     messages,
     patchById,
     sending,
+    activeRunId: () => foldState.activeRunId,
     reconcileStaleDecision: () => resume.reconcileStaleDecision(),
   });
 
@@ -464,6 +465,10 @@ export function createChatStream(
     // now, so restore them to the composer. (The drive's own teardown also calls
     // this; it's idempotent, and this covers the detached case it skips.)
     steering.restoreUndelivered();
+    // Whatever was half-answered in the dock goes with the run it was answering. Kept
+    // any longer it would be seeded into the *next* park — a different question wearing
+    // the last one's answers.
+    approvals.clearParkDraft();
   }
 
   // Branching, version-cycling and the rest of what can be done to a recorded turn.
@@ -539,12 +544,17 @@ export function createChatStream(
     withdrawQueued: (id: string) => steering.withdrawQueued(id),
     /** Rewrite a queued (not-yet-injected) steering message in place. */
     editQueued: (id: string, text: string) => steering.editQueued(id, text),
+    holdQueued: (id: string, held: boolean) => steering.holdQueued(id, held),
     /** Text of queued messages the run never consumed (restored on terminal) —
      *  the screen prefills the composer with it, then clears it. */
     undeliveredDraft: steering.undeliveredDraft,
     clearUndeliveredDraft: steering.clearUndeliveredDraft,
     reattachRun: drive.reattachRun,
     resolvePark: approvals.resolvePark,
+    /** What the operator has entered into the dock but not yet submitted — held here
+     *  rather than in the dock, which a re-derived park unmounts. */
+    parkDraft: approvals.parkDraft,
+    patchParkDraft: approvals.patchParkDraft,
     resolveHostCommands: approvals.resolveHostCommands,
     regenerate: branching.regenerate,
     edit: branching.edit,

@@ -23,6 +23,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from devkit import ports
+
 #: Where a running instance records the process groups it started, so a later, unrelated
 #: command can stop them. Process *groups* rather than pids: both services spawn (the
 #: backend's reloader runs the app in a child, `bun run dev` wraps vite), and signalling
@@ -46,11 +48,26 @@ class Service:
     log: Path
 
 
-def listening(port: int, host: str = "127.0.0.1") -> bool:
-    """Whether something accepts connections on this port right now."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.settimeout(0.25)
-        return probe.connect_ex((host, port)) == 0
+def listening(port: int) -> bool:
+    """Whether something accepts connections on this port right now.
+
+    **Every loopback address, because a server picks its own.** Uvicorn is told
+    ``127.0.0.1``; vite binds the *name* ``localhost`` and takes whatever it resolves to
+    first, which on a stock macOS is ``::1``. Probing v4 alone therefore never saw a
+    frontend that had started in 200ms and was serving perfectly — ``up`` waited out its
+    ninety seconds and then tore the whole instance down, with a log showing a healthy
+    server that had been sent SIGTERM for no stated reason.
+    """
+    for family, host in ports.LOOPBACKS:
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as probe:
+                probe.settimeout(0.25)
+                if probe.connect_ex((host, port)) == 0:
+                    return True
+        except OSError:
+            # No stack for that family on this host — not an answer either way.
+            continue
+    return False
 
 
 def await_listening(port: int, *, timeout_s: float = STARTUP_TIMEOUT_S) -> bool:

@@ -164,6 +164,23 @@ export interface QuestionSpec {
   multiSelect: boolean;
 }
 
+/** What the operator said to one question, as the transcript reads it back. The words of
+ *  the question come with it because the backend pairs the two — from the parked call's
+ *  own arguments, never from what the client sent — so a card cannot restate a question
+ *  as something other than what was asked. */
+export interface AnsweredQuestion {
+  question: string;
+  selections: string[];
+  text?: string;
+}
+
+/** Whether a parked call has been answered — the one test, because `answers` is an
+ *  *array* and an empty one is truthy. A malformed `ask_user` can parse to no questions
+ *  at all, and treating its empty reply list as an answer both retires a park nobody
+ *  answered and renders a card with a heading and nothing under it. */
+export const isAnswered = (question: Question): boolean =>
+  (question.answers?.length ?? 0) > 0;
+
 /** A parked `ask_user` call: everything the agent asked, in one place, answered in one
  *  submit. The call is the unit because the run resumes on the call, not on a question. */
 export interface Question {
@@ -172,6 +189,10 @@ export interface Question {
   /** True once a submitted answer 409'd — the run had already resumed elsewhere.
    *  Same meaning, and the same reconciliation, as `Approval.stale`. */
   stale?: boolean;
+  /** What was said, once it has been said — one entry per question, positionally.
+   *  Present is the whole state: an answered call is no longer a park (the dock has
+   *  nothing to collect) and starts being a row in the transcript instead. */
+  answers?: AnsweredQuestion[];
 }
 
 /** Lifecycle of a host-machine command (`run_host_command`) — the one
@@ -499,6 +520,11 @@ export interface ChatMessage {
    *  the send response's `queued_message_id`) — the handle `withdrawQueued`
    *  addresses. Kept after injection for event idempotency. */
   queuedMessageId?: string;
+  /** User turns only: the run has been told to hold this message back because the
+   *  operator has it open in an editor. Backend-owned (`message.held`) — the client asks
+   *  for the hold, the run is what refuses to drain. Rendered so a queue that has stopped
+   *  moving says why rather than looking stuck. */
+  queuedHeld?: boolean;
   createdAt: string;
   /** Model/endpoint that produced an assistant message. */
   model?: string;

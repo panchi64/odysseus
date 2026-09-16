@@ -52,6 +52,15 @@ export interface ToolImageDTO {
   data: string;
 }
 
+/** One question an `ask_user` call asked, and what the operator said to it — the cold
+ *  twin of the live `question.answered` items, paired by the backend from the same
+ *  parked arguments so the card reads the same either way. */
+export interface ToolCallAnswerDTO {
+  question: string;
+  selections?: string[];
+  text?: string | null;
+}
+
 export interface ToolCallDTO {
   id: string;
   name: string;
@@ -60,6 +69,8 @@ export interface ToolCallDTO {
   result?: unknown;
   error?: string | null;
   images?: ToolImageDTO[];
+  /** Non-empty only on a settled `ask_user` call. */
+  answers?: ToolCallAnswerDTO[];
 }
 
 /** An inline View chip re-attached to the message that minted it — references the

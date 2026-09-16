@@ -15,10 +15,22 @@ from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai import ToolApproved, ToolDenied
 
 from agent import ParkedTurn, build_resume_orchestrator
-from agent.answers import AnswerError, questions_of, render_answer
 from agent.gating import GrantApproved
 from routes import deps
-from runs import Run, RunStatus, parse_last_event_id, sse_response
+from runs import (
+    AnsweredQuestionOut,
+    QuestionAnswered,
+    Run,
+    RunStatus,
+    parse_last_event_id,
+    sse_response,
+)
+from services.answers import (
+    AnswerError,
+    answered_questions,
+    questions_of,
+    render_answer,
+)
 from services.approval_grants import ONCE_ONLY_TOOLS, covered_by_grant, grant_scopes
 from services.plan_mode import PLAN_SUBMIT_TOOL
 from services.settings_store import get_inactivity_timeout, get_wall_clock_timeout
@@ -184,6 +196,32 @@ async def withdraw_queued_message(
     return {"status": "withdrawn"}
 
 
+class QueuedMessageHold(BaseModel):
+    held: bool
+
+
+@router.post("/{run_id}/messages/{message_id}/hold", status_code=200)
+async def hold_queued_message(
+    run_id: str, message_id: str, body: QueuedMessageHold, request: Request
+) -> dict[str, str]:
+    """Hold a queued message back from the run's next drain, or release it again.
+
+    The operator opening a queued message to rewrite it is the case this exists for: the
+    run can reach a model-request boundary mid-edit, and without a hold it injects the
+    draft they were still changing. The decision is the backend's because the drain is —
+    a client-side "don't send this yet" cannot be consulted by the thing doing the
+    sending.
+
+    Same 404 envelope as the edit/withdraw pair: unknown id, already injected, already
+    withdrawn, or the run is gone/terminal — the message can no longer be held either
+    way. Setting the hold it already has is a 200, so a client reconciling its own state
+    never has to know which side it is on."""
+    run = _require_run(request, run_id)
+    if run.is_terminal or not run.hold_message(message_id, body.held):
+        raise HTTPException(status_code=404, detail="queued message not found")
+    return {"status": "held" if body.held else "released"}
+
+
 class ApprovalDecision(BaseModel):
     tool_call_id: str
     approved: bool
@@ -298,14 +336,33 @@ async def approve_run(
     # said is read back off the call the model actually made, so the transcript and the
     # model cannot be shown two different questions.
     answers: dict[str, str] = {}
+    # The same reply as structure, for the card the client draws beside the transcript.
+    # Built from the same two inputs the prose is — the parked call's questions and the
+    # replies just validated against them — because a client that had to read the answer
+    # back out of the prose would be parsing a format it does not own.
+    announced: list[QuestionAnswered] = []
     for answer in body.answers:
+        replies = [(r.selections, r.text) for r in answer.replies]
+        questions = questions_of(asked[answer.tool_call_id])
         try:
-            answers[answer.tool_call_id] = render_answer(
-                questions_of(asked[answer.tool_call_id]),
-                [(r.selections, r.text) for r in answer.replies],
-            )
+            answers[answer.tool_call_id] = render_answer(questions, replies)
         except AnswerError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        announced.append(
+            QuestionAnswered(
+                tool_call_id=answer.tool_call_id,
+                answers=[
+                    AnsweredQuestionOut(
+                        question=one.question, selections=one.selections, text=one.text
+                    )
+                    for one in answered_questions(questions, replies)
+                ],
+            )
+        )
+    # Emitted only once every answer has rendered: a body whose second answer is refused
+    # settles nothing, so a frame for its first would announce an answer the run never got.
+    for frame in announced:
+        run.emit(frame)
 
     grants = deps.approval_grants(request)
     # Re-validate the grant-driven pre-approvals against the *current* grants: a grant

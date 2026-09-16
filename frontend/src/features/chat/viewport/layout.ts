@@ -124,3 +124,29 @@ export function pruneLayout(layout: ViewportLayout): ViewportLayout {
   }
   return next;
 }
+
+/**
+ * The same layout with every surface that currently has nothing in it taken out.
+ *
+ * `pruneLayout` above is about the *registry* — an id that no longer exists, or exists in
+ * the other shape — and its answer is permanent, so it runs where the layout is read back
+ * from storage. This one is about the *thread*, and its answer changes minute to minute:
+ * a View with no versions yet, a plan not written, a branch a sandbox thread will never
+ * have. So it is applied **on read and never written back**, the same discipline
+ * `clampWidth` keeps and for the same reason — a surface that is empty right now must not
+ * lose its remembered place in the arrangement by being empty.
+ *
+ * Without it a layout can name a surface with nothing to show and the host will render it
+ * anyway: a fresh plan-mode thread opened onto a View pane with nothing in it, while the
+ * Plan — the one thing the thread had to show, and the thing it was waiting on an answer
+ * about — sat behind the panel's own header button.
+ */
+export function retainAvailable(
+  layout: ViewportLayout,
+  available: (id: SurfaceId) => boolean,
+): ViewportLayout {
+  let next = layout;
+  for (const id of tree.surfacesOf(layout))
+    if (isSurfaceId(id) && !available(id)) next = tree.closeSurface(next, id);
+  return next;
+}

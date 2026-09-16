@@ -20,6 +20,7 @@ was using them.
 
 from __future__ import annotations
 
+import errno
 import socket
 
 #: The first port of each service's range. Chosen well above the operator's 8000/5173.
@@ -42,19 +43,42 @@ def slot_ports(slot: int) -> tuple[int, int, int]:
     return BACKEND_BASE + slot, FRONTEND_BASE + slot, STUB_BASE + slot
 
 
+#: The loopback addresses a local server can be reached on. Both are checked everywhere
+#: a port is probed, because which one a server picks is the runtime's choice and not
+#: ours: uvicorn is told ``127.0.0.1`` explicitly, while vite binds the name
+#: ``localhost`` and takes whatever it resolves to first — ``::1`` on a stock macOS.
+LOOPBACKS: tuple[tuple[int, str], ...] = (
+    (socket.AF_INET, "127.0.0.1"),
+    (socket.AF_INET6, "::1"),
+)
+
+
+def _can_bind(family: int, host: str, port: int) -> bool:
+    """Whether this port is free on one loopback address. A family the host has no
+    stack for is not an occupied port — it answers free, so a v4-only machine is not
+    told every port is taken."""
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.bind((host, port))
+    except OSError as exc:
+        return exc.errno in (errno.EAFNOSUPPORT, errno.EADDRNOTAVAIL)
+    return True
+
+
 def is_free(port: int) -> bool:
     """Whether nothing is listening on this loopback port.
 
     Deliberately without ``SO_REUSEADDR``: the question is "can a server take this
     port", not "can I momentarily bind it", and the reuse flag would answer yes over a
     socket another process is still holding.
+
+    **Both loopback families, because a server may be on either.** Vite binds
+    ``localhost``, which on this host resolves to ``::1`` — so an IPv4-only bind test
+    succeeds over a running dev server and reports its port free. That reads as "the
+    frontend is down" in ``status`` and as a free slot in ``allocate``, which is how a
+    second instance ends up handed a port the first is already serving on.
     """
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        try:
-            probe.bind(("127.0.0.1", port))
-        except OSError:
-            return False
-    return True
+    return all(_can_bind(family, host, port) for family, host in LOOPBACKS)
 
 
 def allocate(taken: set[int]) -> int:

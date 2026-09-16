@@ -45,10 +45,10 @@ from pydantic_ai import (
 )
 
 from runs import ApprovalRequired, QuestionAsked, Run
+from services.answers import questions_of
 from services.conversations import ConversationBinding, ConversationStore
 from services.notifications import NotificationService
 
-from .answers import questions_of
 from .compaction_context import CompactionContext
 from .naming import TitleContext, approval_conversation_title
 

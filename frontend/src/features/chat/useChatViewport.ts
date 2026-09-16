@@ -42,10 +42,10 @@ import {
   focusInStack,
   hasSurface,
   isEmpty,
-  leaf,
   openSurface,
   panelSurfacesOf,
   resizeSplit,
+  retainAvailable,
   surfacesOf,
   toggleSurface as toggleLayout,
   type TilingContext,
@@ -59,7 +59,7 @@ import {
   type ViewportPersistedState,
   type ViewSurfaceState,
 } from "./viewport/persistence";
-import { SURFACE_IDS, type SurfaceId } from "./viewport/surfaces";
+import { shapeOf, SURFACE_IDS, type SurfaceId } from "./viewport/surfaces";
 import {
   claimAutoOpen,
   collectViewItems,
@@ -105,6 +105,14 @@ export interface ChatViewport {
   refetchSubagents: () => void;
   /** Whether a surface has anything to show — which header buttons exist. */
   available: (id: SurfaceId) => boolean;
+  /** The first surface in registry order that has anything to show, or `undefined` on a
+   *  thread that has nothing at all. The header row's leftmost button, and what an empty
+   *  panel opens onto — one derivation, because those two must be the same surface. */
+  firstAvailable: () => SurfaceId | undefined;
+  /** What the panel is actually showing — the stored arrangement with every surface that
+   *  has nothing in it taken out, or `null` when that leaves nothing. What the host
+   *  renders; `state().layout` is the record, which can name more than this. */
+  layout: Accessor<ViewportLayout | null>;
   /** Whether a surface is currently in the layout. */
   isOpen: (id: SurfaceId) => boolean;
   /** Put a surface on screen beside whatever is already open, bring it to the front of
@@ -164,9 +172,6 @@ export interface ChatViewport {
   triggerRef: (el: HTMLButtonElement) => void;
 }
 
-/** What an empty panel opens onto when it has no remembered arrangement. */
-const DEFAULT_LAYOUT: ViewportLayout = { strips: [], panels: leaf("view") };
-
 export function useChatViewport(
   currentId: () => string | null,
   source: ViewportSource,
@@ -194,12 +199,41 @@ export function useChatViewport(
     subagents: source.subagents,
   });
   const available = (id: SurfaceId): boolean => sources[id].available();
+  const firstAvailable = (): SurfaceId | undefined =>
+    SURFACE_IDS.find(available);
+  /** What an empty panel opens onto: the first available surface that is a **panel**.
+   *
+   *  Not `firstAvailable` — the registry opens on `tasks`, which is a strip, so the
+   *  panel region would be left empty and the operator would toggle the viewport open
+   *  to find a thin bar of task rows and nothing under it. A thread with only strips
+   *  falls back to the strip, which is then genuinely all there is to show. */
+  const firstToOpen = (): SurfaceId | undefined =>
+    SURFACE_IDS.find((id) => available(id) && shapeOf(id) === "panel") ??
+    firstAvailable();
 
   // The pane only makes sense with something to show. Gating the effective open state
   // on that keeps a persisted-open thread that has since lost its content (or a fresh
   // chat that never had any) from showing an empty panel.
   const hasContent = () => SURFACE_IDS.some(available);
-  const shown = () => state().layout !== null && hasContent();
+
+  /**
+   * **What is actually on screen** — the stored arrangement with every surface that has
+   * nothing in it taken out, and the accessor everything that renders or measures reads.
+   *
+   * `hasContent` above only asks whether *some* surface has something, so it passed while
+   * the layout named a different one: a plan-mode thread with no versions opened onto a
+   * View pane with nothing in it, and the plan it was waiting on an answer about was
+   * behind a header button. The prune happens on read and is never patched back, so a
+   * surface that is empty for a moment keeps its place in the arrangement — see
+   * `retainAvailable`, and `clampWidth`, which reads the same way for the same reason.
+   */
+  const liveLayout = createMemo<ViewportLayout | null>(() => {
+    const stored = state().layout;
+    if (stored === null) return null;
+    const next = retainAvailable(stored, available);
+    return isEmpty(next) ? null : next;
+  });
+  const shown = () => liveLayout() !== null;
 
   /** Put `id` on screen, remembering the arrangement as the restore point.
    *
@@ -224,24 +258,49 @@ export function useChatViewport(
     // `showSurface`.
     if (hasSurface(current, id)) return;
     const next = openSurface(current, id, tiling());
-    widenFor(panelSurfacesOf(next));
+    widenFor(panelSurfacesOf(retainAvailable(next, available)));
     patch({
       layout: next,
       lastLayout: next,
       ...(focus ? { focused: id } : {}),
     });
   };
+  /** Reopen onto what the operator was last looking at — or, where that is nothing they
+   *  could look at now, onto the first surface that has something.
+   *
+   *  It used to fall back to a hardcoded `leaf("view")`, which is how a thread whose only
+   *  content was a plan opened onto an empty View pane. The registry's order is already
+   *  declared by how much a surface can be waiting on the operator, so its first available
+   *  *panel* is the right answer — see `firstToOpen` for why the strip at the head of that
+   *  order is not. */
   const open = () => {
-    if (state().layout !== null) return;
-    const restore = state().lastLayout ?? DEFAULT_LAYOUT;
-    patch({ layout: restore, focused: surfacesOf(restore)[0] ?? null });
+    // The *visible* layout, so a stored arrangement whose every surface has since emptied
+    // counts as shut — which is what the operator is looking at, and what `toggle` means.
+    if (liveLayout() !== null) return;
+    const remembered = state().lastLayout;
+    const first = firstToOpen();
+    // Built through `openSurface` rather than as a literal, so the fallback files the
+    // surface by its own shape — the registry's first available entry is often `tasks`,
+    // a strip, and a strip dropped into the panel slot renders a document in a row of a
+    // list (the reshape `pruneLayout` exists to catch).
+    const restore =
+      remembered !== null && !isEmpty(retainAvailable(remembered, available))
+        ? remembered
+        : first !== undefined
+          ? openSurface(emptyLayout(), first, tiling())
+          : null;
+    if (restore === null) return;
+    patch({
+      layout: restore,
+      focused: surfacesOf(retainAvailable(restore, available))[0] ?? null,
+    });
   };
   const close = () => {
     const current = state().layout;
     if (current === null) return;
     patch({ layout: null, lastLayout: current });
   };
-  const toggle = () => (state().layout === null ? open() : close());
+  const toggle = () => (shown() ? close() : open());
 
   /** What the splitting policy divides, and how far it may divide it. Three panes
    *  is generous at full screen and too many beside a transcript, so the cap is the
@@ -252,7 +311,7 @@ export function useChatViewport(
   });
 
   const isOpen = (id: SurfaceId): boolean => {
-    const layout = state().layout;
+    const layout = liveLayout();
     return layout !== null && hasSurface(layout, id);
   };
   /** A header button's click. Closing the last surface closes the panel rather
@@ -260,14 +319,17 @@ export function useChatViewport(
    *  the layout deliberately cannot express. */
   const toggleSurface = (id: SurfaceId): void => {
     const next = toggleLayout(state().layout ?? emptyLayout(), id, tiling());
-    if (isEmpty(next)) {
+    // Emptiness is judged on what is *visible*: a stored layout can still name a surface
+    // with nothing in it (`retainAvailable`), and closing the last one the operator can
+    // actually see is closing the panel whether or not that remnant is in the record.
+    if (isEmpty(retainAvailable(next, available))) {
       close();
       return;
     }
     // A surface arriving into a panel too narrow for it widens the panel once. Only
     // on arrival, and only upward: a surface opened and closed repeatedly must not
     // ratchet the panel wider each time.
-    widenFor(panelSurfacesOf(next));
+    widenFor(panelSurfacesOf(retainAvailable(next, available)));
     // Which surface is now current. Opening one makes it current; *closing* one must
     // not, and it used to — `focused` was left pointing at the pane that had just gone,
     // so the full-screen sheet titled itself after it and the surface-scoped bindings
@@ -275,19 +337,31 @@ export function useChatViewport(
     // survives: closing something they were not working in is not a reason to move
     // them, and `surfacesOf` lists strips first, so falling back unconditionally would
     // hand a stack of panels to the task strip above them.
+    const live = retainAvailable(next, available);
     const current = state().focused;
-    const focused = hasSurface(next, id)
+    const focused = hasSurface(live, id)
       ? id
-      : current !== null && hasSurface(next, current)
+      : current !== null && hasSurface(live, current)
         ? current
-        : (surfacesOf(next)[0] ?? null);
+        : (surfacesOf(live)[0] ?? null);
     patch({ layout: next, lastLayout: next, focused });
   };
 
   // Which surface the operator is in. Persisted rather than held in a signal of its
   // own: it is part of the arrangement, and a thread returned to should come back
   // with the same pane current as when it was left.
-  const focusedSurface = (): SurfaceId | null => state().focused;
+  //
+  // Read through the *visible* layout: a stored `focused` can name a surface that has
+  // since emptied, and every consumer of this — the sheet's title, the surface-scoped
+  // key bindings, the pane marked current — would then be pointing at a pane nobody can
+  // see. Falling back to the first visible surface keeps all three answerable.
+  const focusedSurface = (): SurfaceId | null => {
+    const layout = liveLayout();
+    if (layout === null) return null;
+    const current = state().focused;
+    if (current !== null && hasSurface(layout, current)) return current;
+    return surfacesOf(layout)[0] ?? null;
+  };
   const setFocusedSurface = (id: SurfaceId): void => {
     if (state().focused !== id) patch({ focused: id });
   };
@@ -299,11 +373,19 @@ export function useChatViewport(
     patch({ layout: focusInStack(layout, id), focused: id });
   };
 
-  /** Drag a split's divider. `path` addresses which split; `ratio` is `a`'s share. */
+  /** Drag a split's divider. `path` addresses which split; `ratio` is `a`'s share.
+   *
+   *  Applied to the **visible** layout and written back as the stored one — the only
+   *  place the prune is committed rather than read through. It has to be: the path comes
+   *  from the tree the host rendered, so addressing the stored tree instead would resize
+   *  a different split whenever the two differ. An operator dragging a divider is
+   *  rearranging what they can see, which is a fair moment to let the remembered place of
+   *  a surface that has nothing in it go. */
   const adjustSplit = (path: readonly ("a" | "b")[], ratio: number): void => {
-    const layout = state().layout;
+    const layout = liveLayout();
     if (layout === null) return;
-    patch({ layout: resizeSplit(layout, path, ratio) });
+    const next = resizeSplit(layout, path, ratio);
+    patch({ layout: next, lastLayout: next });
   };
 
   /** Close one surface from its own chrome, rather than from the header. */
@@ -314,7 +396,9 @@ export function useChatViewport(
   // The aside's width, and the drag that changes it (see `panelResize.ts` for why the
   // live width is an override rather than a seeded copy).
   const { liveWidth, onResize, onResizeEnd } = createPanelResize(() => {
-    const layout = state().layout;
+    // What is on screen, not what is recorded: a surface with nothing in it must not set
+    // a floor on the width of a panel it is not being drawn into.
+    const layout = liveLayout();
     return layout === null ? [] : panelSurfacesOf(layout);
   });
 
@@ -486,6 +570,8 @@ export function useChatViewport(
     subagents: source.subagents,
     refetchSubagents: source.refetchSubagents,
     available,
+    firstAvailable,
+    layout: liveLayout,
     isOpen,
     // Open it if it is shut, then bring it forward — the two halves of what a control
     // elsewhere in the room means by "show me this". `show` alone would leave an

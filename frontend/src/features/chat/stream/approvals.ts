@@ -25,11 +25,12 @@
  * the same question, and the one that goes stale is always the flag.
  */
 
-import { createMemo, type Accessor } from "solid-js";
+import { createMemo, createSignal, type Accessor } from "solid-js";
 import { api, isApiError } from "~/lib/api";
 import { toast } from "~/ui";
 import { bumpGrantsRevision } from "../data/conversations";
 import type { ApprovalOutcomeDTO } from "../data/wire";
+import { isAnswered } from "../model";
 import type {
   Approval,
   ApprovalDecision,
@@ -37,6 +38,7 @@ import type {
   HostCommandBlock,
   QuestionAnswer,
   QuestionBlock,
+  QuestionReply,
 } from "../model";
 import type { PatchById } from "./patch";
 
@@ -45,6 +47,9 @@ export interface ApprovalDeps {
   patchById: PatchById;
   /** Whether a turn is in flight — a park is by definition the live turn waiting. */
   sending: () => boolean;
+  /** The run the room is currently attached to. What decides whether a parked call is
+   *  *this* turn's — see `park` for why the streaming flag could not. */
+  activeRunId: () => string | null;
   /** Reconcile with whatever the winning decision did, after this one lost the race. */
   reconcileStaleDecision: () => Promise<void>;
 }
@@ -81,9 +86,48 @@ export interface Park {
   stale: boolean;
 }
 
+/**
+ * What the operator has said to the park so far, before they submit it.
+ *
+ * **Held by the controller, not by the dock**, and that is the whole point: the dock is
+ * mounted by a `Show` over `park()`, so anything kept in its own signals is destroyed by
+ * any re-render that momentarily drops the park — and the run being steered mid-park does
+ * exactly that. Several minutes of reading and half a written answer went with it, with
+ * nothing on screen to say why. The controller outlives every remount of the dock.
+ *
+ * It is unsent input — the same class of thing as a composer draft — so keeping it here
+ * does not make the client the authority on anything: the backend re-validates the body
+ * and is what settles the park.
+ */
+export interface ParkDraft {
+  /** One per parked approval, as the cards have collected them. */
+  decisions: ApprovalDecision[];
+  /** Whether every approval in the park has a verdict — the cards' own answer, which
+   *  they know and a count here would only approximate. */
+  allDecided: boolean;
+  /** Replies per parked `ask_user` call, positional within the call. */
+  replies: Record<string, QuestionReply[]>;
+  /** Which page of the dock the operator is on. Part of the draft rather than the
+   *  dock's own state for the same reason the answers are: losing their place in a
+   *  five-question park is losing the same work in a smaller way. */
+  page: number;
+}
+
+const emptyDraft = (): ParkDraft => ({
+  decisions: [],
+  allDecided: false,
+  replies: {},
+  page: 0,
+});
+
 export interface ApprovalOps {
   /** True while the room has a live, unanswered park — an approval or a question. */
   awaitingInput: Accessor<boolean>;
+  /** What the operator has entered into the dock but not yet submitted. */
+  parkDraft: Accessor<ParkDraft>;
+  patchParkDraft: (next: Partial<ParkDraft>) => void;
+  /** Throw away what was entered — on a stop, and once a park has settled. */
+  clearParkDraft: () => void;
   /** What the live turn is parked on, or `null`. The dock renders this. */
   park: Accessor<Park | null>;
   /** Settle everything a park is waiting on — decisions and answers in one call,
@@ -104,7 +148,61 @@ export interface ApprovalOps {
   ) => Promise<void>;
 }
 
+/**
+ * Which message holds the live turn's park.
+ *
+ * It used to be "the last message still streaming", and that is wrong for one reason
+ * nothing on screen explains: **a turn can be split into two assistant messages while it
+ * is parked.** `message.injected` closes the current bubble and opens a fresh one, so the
+ * blocks the operator is answering end up on a message that is no longer streaming, the
+ * park reads as gone, the dock unmounts with their half-written answers in it, and the
+ * composer comes back — over a run that is still waiting. Anything then typed there
+ * queues into that same parked run, so the message takes the question's place.
+ *
+ * The run is the honest discriminator. A parked call belongs to the turn whose run is
+ * still attached, wherever the flow has since put it; a call on an *earlier* run is an
+ * old turn's and answers for nobody. A message still streaming or detached counts even
+ * with no run id, which is the moment before the first event lands.
+ */
+const inLiveRun =
+  (runId: string | null) =>
+  (m: ChatMessage): boolean =>
+    m.runId !== undefined
+      ? m.runId === runId
+      : Boolean(m.streaming || m.detached);
+
+/**
+ * The run the transcript is attached to, **read reactively**.
+ *
+ * The controller's own `activeRunId` is a field on a plain object, not a signal — so a
+ * memo that read it alone would not re-run when it changed, and would go on answering
+ * from whichever run happened to be live the last time the messages moved. The messages
+ * carry the same fact and are a store: the turn in flight is the last message still
+ * streaming or detached, and its `runId` is the run. The controller's value is the
+ * fallback for the one moment the messages cannot answer — the placeholder pushed before
+ * `run.started` has patched an id onto it.
+ */
+const liveRunIdOf = (deps: ApprovalDeps): string | null =>
+  deps.messages.findLast((m) => m.streaming || m.detached)?.runId ??
+  deps.activeRunId();
+
+const parkedIn =
+  (runId: string | null) =>
+  (m: ChatMessage): boolean =>
+    inLiveRun(runId)(m) &&
+    Boolean(
+      m.blocks?.some((b) => b.kind === "approval" || b.kind === "question"),
+    );
+
 export function createApprovalOps(deps: ApprovalDeps): ApprovalOps {
+  const [draft, setDraft] = createSignal<ParkDraft>(emptyDraft());
+  const patchParkDraft = (next: Partial<ParkDraft>): void => {
+    setDraft((current) => ({ ...current, ...next }));
+  };
+  const clearParkDraft = (): void => {
+    setDraft(emptyDraft());
+  };
+
   // What the live turn stopped on, read straight off its blocks — folded there by
   // `approval.required` and `question.asked`. A derived memo rather than its own
   // set/clear pair: the blocks are already the single source of truth for "is something
@@ -122,13 +220,18 @@ export function createApprovalOps(deps: ApprovalDeps): ApprovalOps {
   // server-side.
   const park = createMemo<Park | null>(() => {
     if (!deps.sending()) return null;
-    const live = deps.messages.findLast((m) => m.streaming || m.detached);
+    const live = deps.messages.findLast(parkedIn(liveRunIdOf(deps)));
     if (!live) return null;
     const approvals: Approval[] = [];
     const questions: QuestionBlock["question"][] = [];
     for (const b of live.blocks ?? []) {
       if (b.kind === "approval") approvals.push(b.approval);
-      else if (b.kind === "question") questions.push(b.question);
+      // An answered question is a row in the transcript, not something the dock is
+      // still collecting — see `clearPark`. Length, not presence: an `ask_user` whose
+      // arguments parsed to no questions at all answers to an empty list, and an empty
+      // list is not an answer.
+      else if (b.kind === "question" && !isAnswered(b.question))
+        questions.push(b.question);
     }
     if (!approvals.length && !questions.length) return null;
     // Marked, not removed — see `Park.planApproval`. In practice a plan is the whole park
@@ -156,11 +259,16 @@ export function createApprovalOps(deps: ApprovalDeps): ApprovalOps {
     const p = park();
     if (p) return !p.stale;
     if (!deps.sending()) return false;
-    const live = deps.messages.findLast((m) => m.streaming || m.detached);
-    return (
-      live?.blocks?.some(
-        (b) => b.kind === "host_command" && b.command.phase === "pending",
-      ) ?? false
+    // Keyed to the run for the same reason the park is: a terminal awaiting its first
+    // decision does not stop waiting because a steering message split the flow under it.
+    const runId = liveRunIdOf(deps);
+    return deps.messages.some(
+      (m) =>
+        inLiveRun(runId)(m) &&
+        (m.blocks?.some(
+          (b) => b.kind === "host_command" && b.command.phase === "pending",
+        ) ??
+          false),
     );
   });
 
@@ -230,15 +338,39 @@ export function createApprovalOps(deps: ApprovalDeps): ApprovalOps {
   return {
     awaitingInput,
     park,
+    parkDraft: draft,
+    patchParkDraft,
+    clearParkDraft,
     resolvePark: (messageId, settlement) =>
       submitDecisions(messageId, settlement, (m) => {
-        // Both kinds clear together, whichever the park held: one submission settled
-        // the whole park, so leaving either behind would leave a dock up over a run
-        // that has already resumed.
+        // One submission settled the whole park, so nothing may be left behind that
+        // would keep the dock up over a run that has already resumed. An approval goes;
+        // a question *stays*, now carrying what was said, because that is the row the
+        // transcript shows. The optimistic answers are the labels the operator was
+        // offered — the same words the backend will pair its own reply against — so
+        // `question.answered` lands on a card that already reads correctly.
+        const answered = new Map(
+          (settlement.answers ?? []).map((a) => [a.tool_call_id, a.replies]),
+        );
+        for (const b of m.blocks ?? [])
+          if (b.kind === "question" && !isAnswered(b.question)) {
+            const replies = answered.get(b.question.toolCallId);
+            // Only where there is something to show: a call that parsed to no questions
+            // would otherwise be kept as a card with a heading and nothing under it.
+            if (replies && b.question.questions.length > 0)
+              b.question.answers = b.question.questions.map((q, i) => ({
+                question: q.question,
+                selections: replies[i]?.selections ?? [],
+                text: replies[i]?.text,
+              }));
+          }
         if (m.blocks)
           m.blocks = m.blocks.filter(
-            (b) => b.kind !== "approval" && b.kind !== "question",
+            (b) =>
+              b.kind !== "approval" &&
+              !(b.kind === "question" && !isAnswered(b.question)),
           );
+        clearParkDraft();
       }),
     resolveHostCommands: (messageId, decisions) =>
       submitDecisions(messageId, { decisions }, (m) => {

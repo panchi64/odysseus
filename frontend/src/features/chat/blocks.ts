@@ -2,6 +2,7 @@
  *  No Solid/DOM here — just data → data, so the rules (grouping, compaction,
  *  transcript assembly) stay testable and live in one place. */
 
+import { isAnswered } from "./model";
 import type {
   AssistantBlock,
   BlockKind,
@@ -112,10 +113,27 @@ export function assembleTranscript(
         );
         break;
       case "question":
-        // Only what was *asked*. What was answered rides back as the call's own
-        // result, so it is already in this transcript as the tool call above.
+        // Both halves once there are two. The answers are on the block itself now, so
+        // the export no longer has to send a reader to the tool call above to find out
+        // what was said — and a question still waiting exports as the question alone.
         parts.push(
-          b.question.questions.map((q) => `ASKED: ${q.question}`).join("\n"),
+          (
+            b.question.answers ??
+            b.question.questions.map((q) => ({
+              question: q.question,
+              selections: [] as string[],
+              text: undefined as string | undefined,
+            }))
+          )
+            .map((a) => {
+              const said = [a.selections.join(", "), a.text]
+                .filter(Boolean)
+                .join(" — ");
+              return said
+                ? `ASKED: ${a.question}\nANSWERED: ${said}`
+                : `ASKED: ${a.question}`;
+            })
+            .join("\n"),
         );
         break;
       case "view_version":
@@ -148,25 +166,34 @@ export interface BlockGroup {
 
 const AGGREGATED: ReadonlySet<BlockKind> = new Set(["host_command"]);
 
-/** Blocks the transcript does not render: the two the operator answers in the dock
- *  that takes over the composer (`ParkDock`).
+/** Blocks the transcript does not render *while they are waiting*: the two the operator
+ *  answers in the dock that takes over the composer (`ParkDock`).
  *
  *  Dropped here rather than never folded, because the block is still how the dock
  *  learns what is pending — and how it learns again after a reconnect replays the
  *  stream. Rendering them in both places would put the same decision on screen twice,
  *  with two submit buttons for one run that resumes once.
  *
- *  Nothing is lost from the record by the omission: a deferred call emits `tool.started`
- *  when it parks and `tool.completed` when it resumes, so what the operator was asked and
- *  what they said is already in the transcript as the tool call itself. */
+ *  **Docking is a phase, not a kind, and a question leaves it.** Once answered it is no
+ *  longer anything the dock collects, and it becomes the one thing the transcript most
+ *  owes the operator: what they were asked and what they said. That used to be reachable
+ *  only as the `ask_user` call's own result — prose, inside a collapsed work log, behind
+ *  a disclosure — which is a record rather than a reading of it. An approval has no such
+ *  second life: its outcome is the call that ran, and the review row beside it already
+ *  says on what grounds. */
 const DOCKED: ReadonlySet<BlockKind> = new Set(["approval", "question"]);
+
+/** Whether this block is still waiting in the dock, as opposed to merely being of a
+ *  kind that docks. */
+const isDocked = (b: AssistantBlock): boolean =>
+  DOCKED.has(b.kind) && !(b.kind === "question" && isAnswered(b.question));
 
 export function groupBlocks(
   blocks: AssistantBlock[] | undefined,
 ): BlockGroup[] {
   const groups: BlockGroup[] = [];
   for (const b of blocks ?? []) {
-    if (DOCKED.has(b.kind)) continue;
+    if (isDocked(b)) continue;
     const last = groups[groups.length - 1];
     if (last && last.kind === b.kind && AGGREGATED.has(b.kind)) {
       last.blocks.push(b);
@@ -267,9 +294,12 @@ function pinsRunInline(group: BlockGroup): boolean {
  *  of one, a lone chip would become `Work log · View · 1 step` and the handle
  *  would be behind a disclosure.
  *
- *  Parks are absent from this reckoning because they are absent from the transcript:
- *  an approval or a question is answered in the dock, and `groupBlocks` never emits
- *  a group for either. */
+ *  An *unanswered* park is absent from this reckoning because it is absent from the
+ *  transcript — it is answered in the dock, and `groupBlocks` emits no group for it. An
+ *  **answered question does reach here, and must not fold**: it falls through to the
+ *  `false` below for the same reason the View chip does. It is a result rather than
+ *  process, it renders full-width rather than on the rail, and an exchange the operator
+ *  has to expand a work log to find is one they will not read. */
 function isCollapsible(group: BlockGroup): boolean {
   if (group.kind === "thinking") return true;
   // Injected context is the frame around the work, never the work — it has no state to

@@ -398,6 +398,43 @@ export function createFolder(
         });
         break;
       }
+      case "question.answered": {
+        // Marked, not removed — the block stops being a park (nothing left for the dock
+        // to collect) and starts being a row in the transcript. The words of each
+        // question ride on the event rather than being read off the block, because the
+        // backend pairs them from the parked call's own arguments and a cold load is
+        // projected from the same pairing: warm and reloaded must not be two renderings.
+        //
+        // Found across the transcript rather than on the fold target, for the same reason
+        // the dock stopped keying its park on "the last streaming message": a
+        // `message.injected` boundary retargets the fold, so the question can sit on the
+        // segment *before* the one events are landing on now. Addressed by its call id,
+        // which is unique, so the wider search cannot hit the wrong block.
+        //
+        // An empty list is deliberately not written: a malformed call that parsed to no
+        // questions would otherwise be kept as a card with a heading and nothing under it.
+        if ((ev.answers ?? []).length > 0)
+          setMessages(
+            produce((list) => {
+              for (const m of list) {
+                const block = m.blocks?.find(
+                  (b) =>
+                    b.kind === "question" &&
+                    b.question.toolCallId === ev.tool_call_id,
+                );
+                if (block?.kind === "question") {
+                  block.question.answers = (ev.answers ?? []).map((a) => ({
+                    question: a.question,
+                    selections: a.selections ?? [],
+                    text: a.text ?? undefined,
+                  }));
+                  return;
+                }
+              }
+            }),
+          );
+        break;
+      }
       case "view.live": {
         // One live head per *conversation*, not per turn: clear any prior live
         // block (it may sit on an earlier turn) before marking this turn's, so a
@@ -505,6 +542,19 @@ export function createFolder(
               (m) => m.queuedMessageId === ev.message_id && m.queuedPending,
             );
             if (bubble) bubble.content = ev.text;
+          }),
+        );
+        break;
+      case "message.held":
+        // The run is holding this one back (or has stopped). Folded rather than left to
+        // the request that asked for it, so a second tab — and a reattaching client
+        // replaying the stream — see a stalled queue for what it is.
+        setMessages(
+          produce((list) => {
+            const bubble = list.find(
+              (m) => m.queuedMessageId === ev.message_id && m.queuedPending,
+            );
+            if (bubble) bubble.queuedHeld = ev.held;
           }),
         );
         break;

@@ -25,13 +25,11 @@ import { SURFACES } from "../viewport/surfaces";
 export function ViewportSurfaceBar(props: {
   viewport: ChatViewport;
 }): JSX.Element {
-  /** The leftmost button actually rendered — the row is a filtered view of the
-   *  registry, so the *registry's* first surface is usually not in it (`plan`
-   *  rarely is), and keying focus-return on its index left the common thread with
-   *  no return target at all. */
-  const firstShown = (): string | undefined =>
-    SURFACES.find((spec) => props.viewport.available(spec.id))?.id;
-
+  // The leftmost button actually rendered is `viewport.firstAvailable()` — the row is a
+  // filtered view of the registry, so the *registry's* first surface is usually not in it
+  // (`plan` rarely is), and keying focus-return on its index left the common thread with
+  // no return target at all. Read off the facade rather than re-derived here, because it
+  // is also what an empty panel opens onto: those two must name the same surface.
   return (
     <For each={SURFACES}>
       {(spec) => (
@@ -42,7 +40,8 @@ export function ViewportSurfaceBar(props: {
               // them would do; the leftmost is the one that is there whenever
               // the row is.
               ref={(el) => {
-                if (spec.id === firstShown()) props.viewport.triggerRef(el);
+                if (spec.id === props.viewport.firstAvailable())
+                  props.viewport.triggerRef(el);
               }}
               variant="ghost"
               leading={spec.icon}

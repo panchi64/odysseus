@@ -26,6 +26,7 @@ import type { ModelSelection } from "~/lib/stores/models";
 import { toast } from "~/ui";
 import type { ChatCreatedDTO } from "../data/wire";
 import type { ChatMessage } from "../model";
+import { forgetQueuedDraft, queuedDraft } from "../queuedDraft";
 import { nextId, type PatchById } from "./patch";
 
 /** What the steering ops need from the controller they belong to. Handed in rather
@@ -62,6 +63,9 @@ export interface SteeringOps {
   sendWhileStreaming: (text: string) => Promise<void>;
   withdrawQueued: (queuedMessageId: string) => Promise<void>;
   editQueued: (queuedMessageId: string, text: string) => Promise<void>;
+  /** Ask the run to hold a queued message back, or to stop holding it. Taken while the
+   *  operator has it open in an editor, released when they save or give up. */
+  holdQueued: (queuedMessageId: string, held: boolean) => Promise<void>;
 }
 
 export function createSteeringOps(deps: SteeringDeps): SteeringOps {
@@ -92,7 +96,19 @@ export function createSteeringOps(deps: SteeringDeps): SteeringOps {
     const leftovers = deps.messages.filter(mine);
     if (leftovers.length === 0) return;
     deps.setMessages(reconcile(deps.messages.filter((m) => !mine(m))));
-    stash(leftovers.map((m) => m.content).join("\n"));
+    // What they last typed, not what was last saved. A message being edited when the run
+    // died is the one whose bubble is furthest behind the operator's intent, and handing
+    // back the superseded text would quietly discard the edit the hold existed to protect.
+    stash(
+      leftovers
+        .map(
+          (m) =>
+            (m.queuedMessageId && queuedDraft(m.queuedMessageId)) || m.content,
+        )
+        .join("\n"),
+    );
+    for (const m of leftovers)
+      if (m.queuedMessageId) forgetQueuedDraft(m.queuedMessageId);
     toast.warn(
       "Your queued message wasn't delivered — it's back in the input.",
     );
@@ -234,10 +250,40 @@ export function createSteeringOps(deps: SteeringDeps): SteeringOps {
     }
   }
 
+  /** Hold a queued message back, or release it.
+   *
+   *  It is the *run* that holds, not this client: the drain is server-side, so a message
+   *  the operator is still writing would otherwise be injected out from under the editor
+   *  and the edit lost. A failure is reported and nothing is assumed — a 404 means the
+   *  run consumed it first, which is exactly the race the hold exists to close and the
+   *  one case where it genuinely is too late. Releasing is best-effort and silent: it
+   *  runs on teardown paths where a toast would be noise about a message that is gone. */
+  async function holdQueued(
+    queuedMessageId: string,
+    held: boolean,
+  ): Promise<void> {
+    const runId = deps.activeRunId();
+    if (!runId) return;
+    try {
+      await api.post(`/runs/${runId}/messages/${queuedMessageId}/hold`, {
+        held,
+      });
+    } catch (err) {
+      if (!held) return;
+      if (isApiError(err) && err.status === 404)
+        toast.warn("Too late to edit — the message already reached the model.");
+      else
+        toast.error(
+          (err as { detail?: string })?.detail ?? "Unable to hold the message.",
+        );
+    }
+  }
+
   return {
     undeliveredDraft,
     clearUndeliveredDraft: () => setUndeliveredDraft(null),
     stash,
+    holdQueued,
     restoreUndelivered,
     sendWhileStreaming,
     withdrawQueued,

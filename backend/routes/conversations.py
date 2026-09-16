@@ -92,6 +92,16 @@ class ToolCallImageOut(BaseModel):
     data: str
 
 
+class ToolCallAnswerOut(BaseModel):
+    """One question an ``ask_user`` call asked, and what the operator said to it. The wire
+    twin of the live stream's ``question.answered`` items, so the card renders identically
+    whether the operator watched themselves answer or reloaded into it."""
+
+    question: str
+    selections: list[str] = Field(default_factory=list)
+    text: str | None = None
+
+
 class ToolCallOut(BaseModel):
     id: str
     name: str
@@ -100,6 +110,7 @@ class ToolCallOut(BaseModel):
     result: Any = None
     error: str | None = None
     images: list[ToolCallImageOut] = Field(default_factory=list)
+    answers: list[ToolCallAnswerOut] = Field(default_factory=list)
 
 
 class ViewVersionRefOut(BaseModel):
@@ -299,6 +310,12 @@ def _message(view: MessageView, by_id: dict[str, SnapshotView]) -> MessageOut:
                 result=t.result,
                 error=t.error,
                 images=[ToolCallImageOut(media_type=i.media_type, data=i.data) for i in t.images],
+                answers=[
+                    ToolCallAnswerOut(
+                        question=a.question, selections=a.selections, text=a.text
+                    )
+                    for a in t.answers
+                ],
             )
             for t in view.tools
         ],

@@ -24,6 +24,7 @@ from .events import (
     ContextThresholds,
     Event,
     MessageEdited,
+    MessageHeld,
     MessageInjected,
     MessageQueued,
     MessageSource,
@@ -76,6 +77,10 @@ class QueuedMessage:
     text: str
     queued_at: datetime
     source: MessageSource = "operator"
+    #: Held back from the drain while the operator has this message open in an editor.
+    #: The message keeps its place in the queue — a hold is a pause, not a removal — and
+    #: the drain stops at it rather than stepping over it (see :meth:`Run.drain_messages`).
+    held: bool = False
 
 
 @dataclass
@@ -273,10 +278,53 @@ class Run:
         ``enqueue_message``: it can never interleave with a concurrent drain."""
         for i, message in enumerate(self.pending_messages):
             if message.id == message_id:
+                # Everything but the text is carried across, because the record is frozen
+                # and rebuilt rather than mutated: a rewrite that dropped ``source`` would
+                # relabel a sub-agent's queued report as the operator's own words, which
+                # is the one fact about a queued message nothing downstream can recover.
                 self.pending_messages[i] = QueuedMessage(
-                    id=message.id, text=text, queued_at=message.queued_at
+                    id=message.id,
+                    text=text,
+                    queued_at=message.queued_at,
+                    source=message.source,
+                    held=message.held,
                 )
                 self.emit(MessageEdited(message_id=message_id, text=text))
+                return True
+        return False
+
+    def hold_message(self, message_id: str, held: bool) -> bool:
+        """Hold a queued message back from the drain, or release it again.
+
+        What it is for: the operator opens a queued message in the composer to rewrite it,
+        and the run reaches a model-request boundary while they are still typing. Without
+        a hold the draft they were editing is injected as it stood and the edit lands on a
+        message that is already part of the turn. The state has to be the **backend's** —
+        the drain is here, and a flag held only by the editor is a flag the drain cannot
+        read.
+
+        Returns False for an unknown id — already injected, already withdrawn, or never
+        queued — exactly like its neighbours. Setting a hold to the value it already has
+        succeeds and emits nothing: idempotent, because the client may be reconciling
+        rather than toggling, and a frame saying nothing changed is one a replaying client
+        has to decide to ignore.
+
+        Synchronous for the same reason as ``enqueue_message``: no ``await`` between the
+        mutation and the emit, so under single-threaded asyncio it cannot interleave with
+        a concurrent drain — which is the very race a hold exists to settle.
+        """
+        for i, message in enumerate(self.pending_messages):
+            if message.id == message_id:
+                if message.held == held:
+                    return True
+                self.pending_messages[i] = QueuedMessage(
+                    id=message.id,
+                    text=message.text,
+                    queued_at=message.queued_at,
+                    source=message.source,
+                    held=held,
+                )
+                self.emit(MessageHeld(message_id=message_id, held=held))
                 return True
         return False
 
@@ -291,9 +339,28 @@ class Run:
         return False
 
     def drain_messages(self) -> list[QueuedMessage]:
-        """Take every pending message (in queue order), emitting ``message.injected``
-        for each — the caller is committing to hand them to the model."""
-        drained, self.pending_messages = self.pending_messages, []
+        """Take the pending messages up to the first **held** one (in queue order),
+        emitting ``message.injected`` for each — the caller is committing to hand them to
+        the model. Everything from the held message onwards stays queued.
+
+        A held message therefore blocks the ones behind it, and that is the point rather
+        than a limitation. The alternative — stepping over the hold and draining what
+        follows — delivers the operator's third message before their second, and the
+        second one is the one they were still writing when they held it: the model would
+        read their afterthought as the instruction and their instruction as a correction
+        of it. A hold is short (it lasts while an editor is open), it is the operator's own
+        doing, and a stalled queue is visible to them; a silently reordered conversation is
+        not. So the drain stalls, deliberately, and resumes in order the moment the hold
+        comes off.
+        """
+        stop = next(
+            (i for i, message in enumerate(self.pending_messages) if message.held),
+            len(self.pending_messages),
+        )
+        drained, self.pending_messages = (
+            self.pending_messages[:stop],
+            self.pending_messages[stop:],
+        )
         for message in drained:
             self.emit(MessageInjected(message_id=message.id, source=message.source))
         return drained

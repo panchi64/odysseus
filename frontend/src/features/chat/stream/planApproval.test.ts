@@ -178,6 +178,7 @@ describe("marking the plan in the park", () => {
       messages,
       patchById: () => {},
       sending: () => true,
+      activeRunId: () => "run-1",
       reconcileStaleDecision: async () => {},
     }).park();
   };

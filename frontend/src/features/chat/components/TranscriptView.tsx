@@ -119,6 +119,13 @@ export function TranscriptView(props: TranscriptViewProps): JSX.Element {
                           text,
                         );
                     }}
+                    onHoldQueued={(held) => {
+                      if (message.queuedMessageId)
+                        void props.stream.holdQueued(
+                          message.queuedMessageId,
+                          held,
+                        );
+                    }}
                     onOpenInView={props.viewport.openViewTo}
                     viewItems={props.viewport.items}
                     seenKey={() => props.viewport.state().seen.view ?? null}

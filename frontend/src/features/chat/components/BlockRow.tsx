@@ -6,6 +6,7 @@ import type {
   CompactionProgressBlock,
   ContextBlock,
   HostCommandBlock,
+  QuestionBlock,
   ReviewBlock,
   TextBlock,
   ThinkingBlock,
@@ -24,6 +25,7 @@ import { AnswerText } from "./AnswerText";
 import { CompactionProgressCard } from "./CompactionProgressCard";
 import { ContextInjectionCard } from "./ContextInjectionCard";
 import { HostCommandCard } from "./HostCommandCard";
+import { QuestionAnswerCard } from "./QuestionAnswerCard";
 import { ReasoningBlock } from "./ReasoningBlock";
 import { ReviewCard } from "./ReviewCard";
 import { ToolCallCard } from "./ToolCallCard";
@@ -134,8 +136,11 @@ function chipMeta(
 /** Render one block group by kind. Host commands arrive as a group (consecutive blocks
  *  batched) so their cards keep one shared decision.
  *
- *  Approvals and questions have no case here: a parked run is answered in the dock that
- *  takes over the composer, not on the rail (`ParkDock`, and `groupBlocks`'s `DOCKED`). */
+ *  Approvals have no case here, and neither does a question still *waiting*: a parked run
+ *  is answered in the dock that takes over the composer, not on the rail (`ParkDock`, and
+ *  `groupBlocks`'s `DOCKED`). An **answered** question does reach here — it is a result
+ *  rather than something to act on, so it renders full-width like a View chip rather than
+ *  on the rail with the process. */
 export function BlockRow(
   props: {
     group: BlockGroup;
@@ -196,6 +201,21 @@ export function BlockRow(
             </div>
           );
         })()}
+      </Match>
+      {/* Only an *answered* one reaches here (`groupBlocks`), and only ever with
+          something in it — but the card is guarded rather than trusting that, since an
+          empty one would render a heading over nothing. */}
+      <Match
+        when={
+          g().kind === "question" &&
+          (g().blocks[0] as QuestionBlock).question.answers?.length
+        }
+      >
+        <div class={fullWidthTop(props.top)}>
+          <QuestionAnswerCard
+            answers={(g().blocks[0] as QuestionBlock).question.answers ?? []}
+          />
+        </div>
       </Match>
       <Match when={g().kind === "thinking"}>
         <Rail active={props.active} top={props.top}>

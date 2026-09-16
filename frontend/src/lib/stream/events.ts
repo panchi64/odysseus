@@ -368,6 +368,27 @@ export interface QuestionAsked extends Base {
   tool_call_id: string;
   questions: QuestionSpec[];
 }
+/** What the operator said to one question of a parked `ask_user` call. The question's own
+ *  words ride with the answer because the backend pairs them from the *parked call's
+ *  arguments* — never from what the client posted — so the transcript restates what was
+ *  actually asked. */
+export interface AnsweredQuestion {
+  question: string;
+  selections: string[];
+  text?: string | null;
+}
+/** The park was answered: what the agent asked, and what it was told.
+ *
+ *  The answer already reaches the model as the deferred call's own result, so this exists
+ *  purely so the *transcript* can show it. Reading it back off that result would mean the
+ *  client parsing prose the backend wrote, which is the backend's job and is done there
+ *  (the same pairing feeds a cold load's projection), so warm and reloaded renders agree.
+ *  Additive to v1. */
+export interface QuestionAnswered extends Base {
+  type: "question.answered";
+  tool_call_id: string;
+  answers: AnsweredQuestion[];
+}
 /** An action at the Auto permission level is being ruled on in the operator's place.
  *
  *  Announced *before* it is ruled on, so a review that takes a model call reads as work
@@ -458,6 +479,19 @@ export interface MessageEdited extends Base {
 export interface MessageWithdrawn extends Base {
   type: "message.withdrawn";
   message_id: string;
+}
+/** The run has been asked to hold a queued message back, or to stop holding it.
+ *
+ *  Its own event rather than a field on `message.edited`, because the two are different
+ *  facts with different lifetimes: an edit is a new text, a hold is a *state* the message
+ *  sits in for as long as the operator has it open. It exists at all because the hold has
+ *  to be the run's — the drain is server-side, so a client that merely declined to show
+ *  the message as sendable would still watch it go. Replayed and broadcast like the rest,
+ *  so a second tab sees the queue stop moving and why. */
+export interface MessageHeld extends Base {
+  type: "message.held";
+  message_id: string;
+  held: boolean;
 }
 /** A queued message was handed to the model (emitted in drain order); from here
  *  on it is part of the turn and persists as a normal user message. */
@@ -578,10 +612,12 @@ export type RunEvent =
   | CitationAdded
   | ApprovalRequired
   | QuestionAsked
+  | QuestionAnswered
   | ReviewStarted
   | ReviewCompleted
   | MessageQueued
   | MessageEdited
+  | MessageHeld
   | MessageWithdrawn
   | MessageInjected
   | TasksUpdated

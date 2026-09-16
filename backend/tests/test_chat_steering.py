@@ -246,6 +246,64 @@ async def test_inbox_edit_rewrites_in_place():
     assert [(b.message_id, b.text) for b in edited] == [(first.id, "final wording")]
 
 
+async def test_a_held_message_stalls_the_drain_and_releases_in_order():
+    """A hold is a pause, not a removal — and it blocks what is behind it on purpose: the
+    operator's queue is theirs in the order they wrote it, and delivering the third message
+    while the second is still being edited reorders their own conversation."""
+    run = Run(id="r1", kind="chat", owner_id=OWNER, stream=RunStream())
+    first = run.enqueue_message("first")
+    second = run.enqueue_message("second")
+    third = run.enqueue_message("third")
+
+    assert run.hold_message(second.id, True)
+    # Setting the hold it already has succeeds and says nothing new.
+    assert run.hold_message(second.id, True)
+    assert not run.hold_message("nope", True)
+
+    # The prefix ahead of the hold goes; the held message and everything behind it stay.
+    assert [m.id for m in run.drain_messages()] == [first.id]
+    assert [m.id for m in run.pending_messages] == [second.id, third.id]
+    # And the stall holds — a second boundary still delivers nothing.
+    assert run.drain_messages() == []
+
+    assert run.hold_message(second.id, False)
+    assert [m.id for m in run.drain_messages()] == [second.id, third.id]
+
+    bodies = _bodies(run)
+    held = [(b.message_id, b.held) for b in bodies if b.type == "message.held"]
+    assert held == [(second.id, True), (second.id, False)]
+    assert [b.message_id for b in bodies if b.type == "message.injected"] == [
+        first.id,
+        second.id,
+        third.id,
+    ]
+
+
+async def test_a_hold_survives_an_edit_and_an_edit_keeps_the_source():
+    """The two mutators rebuild a frozen record, so each has to carry what the other
+    owns: an edit that dropped ``source`` would re-label a sub-agent's queued report as
+    the operator's own words, and one that dropped the hold would inject the very draft
+    the hold exists to protect."""
+    run = Run(id="r1", kind="chat", owner_id=OWNER, stream=RunStream())
+    report = run.enqueue_message("I found it", source="subagent")
+
+    assert run.hold_message(report.id, True)
+    assert run.edit_message(report.id, "I found it, eventually")
+    [pending] = run.pending_messages
+    assert (pending.text, pending.source, pending.held) == (
+        "I found it, eventually",
+        "subagent",
+        True,
+    )
+    assert run.drain_messages() == []
+
+    assert run.hold_message(report.id, False)
+    [drained] = run.drain_messages()
+    assert (drained.text, drained.source) == ("I found it, eventually", "subagent")
+    injected = [b for b in _bodies(run) if b.type == "message.injected"]
+    assert [b.source for b in injected] == ["subagent"]
+
+
 def _echo_user_texts():
     """Answer with every user text on the incoming request, so the assertion reads
     straight off the answer what the model was actually shown."""

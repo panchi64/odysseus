@@ -191,6 +191,8 @@ export function ComparePaneView(props: {
           <div class="shrink-0 px-2 pb-2">
             <ParkDock
               park={park()}
+              draft={stream().parkDraft()}
+              onDraft={stream().patchParkDraft}
               onStop={() => void stream().cancel()}
               onSubmit={(settlement) =>
                 stream().resolvePark(park().messageId, settlement)

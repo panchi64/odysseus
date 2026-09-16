@@ -175,7 +175,7 @@ export function ChatViewportMounts(
               <ViewportHost
                 // The gate requires `shown()`, which requires a layout — the
                 // fallback is for the frame the reveal keeps around on the way out.
-                layout={props.viewport.state().layout ?? emptyLayout()}
+                layout={props.viewport.layout() ?? emptyLayout()}
                 ctx={{
                   viewport: props.viewport,
                   onClose,

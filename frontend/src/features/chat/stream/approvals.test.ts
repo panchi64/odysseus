@@ -53,6 +53,7 @@ function waiting(messages: ChatMessage[], sending = true): boolean {
       messages: store,
       patchById: () => {},
       sending: live,
+      activeRunId: () => "run-1",
       reconcileStaleDecision: async () => {},
     });
     const answer = ops.awaitingInput();

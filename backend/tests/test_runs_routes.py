@@ -149,6 +149,68 @@ async def test_edit_queued_message_matrix():
         assert types.count("message.edited") == 1
 
 
+async def test_hold_queued_message_matrix():
+    async with client_app() as (client, app):
+        gate = asyncio.Event()
+
+        async def orch(run):
+            await gate.wait()
+
+        run = app.state.runs.submit(kind="chat", owner_id="operator", orchestrator=orch)
+        await asyncio.sleep(0)
+        message = run.enqueue_message("still writing this")
+
+        # Hold while live and pending → 200, the message stays queued and held.
+        resp = await client.post(
+            f"/runs/{run.id}/messages/{message.id}/hold", json={"held": True}
+        )
+        assert resp.status_code == 200
+        assert [(m.id, m.held) for m in run.pending_messages] == [(message.id, True)]
+        assert run.drain_messages() == []
+
+        # Holding again is the state it is already in — a 200, and no second frame.
+        assert (
+            await client.post(
+                f"/runs/{run.id}/messages/{message.id}/hold", json={"held": True}
+            )
+        ).status_code == 200
+
+        # Released, and the drain takes it.
+        assert (
+            await client.post(
+                f"/runs/{run.id}/messages/{message.id}/hold", json={"held": False}
+            )
+        ).status_code == 200
+        assert [m.id for m in run.drain_messages()] == [message.id]
+
+        # An injected message, an unknown id, and an unknown run → 404.
+        assert (
+            await client.post(
+                f"/runs/{run.id}/messages/{message.id}/hold", json={"held": True}
+            )
+        ).status_code == 404
+        assert (
+            await client.post(f"/runs/{run.id}/messages/nope/hold", json={"held": True})
+        ).status_code == 404
+        assert (
+            await client.post("/runs/nope/messages/x/hold", json={"held": True})
+        ).status_code == 404
+
+        # A message still queued when the run ends can't be held either: a terminal run
+        # will never drain again, so there is nothing left to hold it back from.
+        stranded = run.enqueue_message("too late")
+        gate.set()
+        await run.wait()
+        assert (
+            await client.post(
+                f"/runs/{run.id}/messages/{stranded.id}/hold", json={"held": True}
+            )
+        ).status_code == 404
+
+        types = [e.body.type for e in run.stream.replay()]
+        assert types.count("message.held") == 2  # on, then off — the no-op emits nothing
+
+
 async def test_list_runs_active_only_by_default():
     async with client_app() as (client, app):
 

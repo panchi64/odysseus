@@ -13,6 +13,7 @@ import { hostLabel, longTimestamp } from "~/lib/format";
 import { CONTEXT_OVERFLOW_DETAIL } from "~/lib/stream";
 import type { ApprovalDecision, ChatMessage, Citation } from "../model";
 import { hasLayers as turnHasLayers } from "../blocks";
+import { createQueuedEdit } from "../queuedEdit";
 import type { ViewItem } from "../viewport/viewItems";
 import { CompactionDivider } from "./CompactionDivider";
 import { SubagentReport } from "./SubagentReport";
@@ -47,6 +48,8 @@ export interface MessageItemProps {
   /** Rewrite this still-queued steering message in place (it keeps its spot in
    *  the queue) — the queued counterpart of `onEditMessage`. */
   onEditQueued?: (text: string) => void;
+  /** Hold this queued message back while its editor is open — see `UserTurn`. */
+  onHoldQueued?: (held: boolean) => void;
   /** Open a View item (a version or the live head) in the side viewport, by key. */
   onOpenInView?: (key: string) => void;
   /** Re-attach to this turn's run after its transport detached (reconnect
@@ -126,6 +129,7 @@ export function MessageItem(props: MessageItemProps): JSX.Element {
               onTogglePin={props.onTogglePin}
               onWithdraw={props.onWithdraw}
               onEditQueued={props.onEditQueued}
+              onHoldQueued={props.onHoldQueued}
               onContinue={props.onContinue}
               onCompactAndRetry={props.onCompactAndRetry}
             />
@@ -351,27 +355,32 @@ function UserTurn(props: {
   onTogglePin?: () => void;
   onWithdraw?: () => void;
   onEditQueued?: (text: string) => void;
+  /** Ask the run to hold this queued message back while it is being edited, or to stop
+   *  holding it. Absent on hosts that do not steer (a compare pane). */
+  onHoldQueued?: (held: boolean) => void;
   onContinue?: () => void;
   onCompactAndRetry?: () => void;
 }): JSX.Element {
   const m = () => props.message;
-  const [editing, setEditing] = createSignal(false);
-  const [draft, setDraft] = createSignal("");
-  const startEdit = () => {
-    setDraft(m().content);
-    setEditing(true);
-  };
-  const save = () => {
-    const text = draft().trim();
-    // Route by the bubble's state *at save time*: a still-queued message edits
-    // in place on the live run; a delivered one re-asks as a new version (so a
-    // bubble injected mid-edit falls through to the normal edit path).
-    if (text) {
+  // The hold/draft protocol is shared with the dock's own list of queued messages —
+  // see `queuedEdit.ts`. What stays here is which write the save is.
+  const edit = createQueuedEdit({
+    messageId: () => m().queuedMessageId,
+    queued: () => m().queuedPending === true,
+    initial: () => m().content,
+    onHold: (held) => props.onHoldQueued?.(held),
+    // Routed by the bubble's state *at save time*: a still-queued message edits in place
+    // on the live run; a delivered one re-asks as a new version, so a bubble injected
+    // mid-edit falls through to the normal edit path rather than 404ing on the queue.
+    onSave: (text) => {
       if (m().queuedPending) props.onEditQueued?.(text);
       else props.onEditMessage?.(m().id, text);
-    }
-    setEditing(false);
-  };
+    },
+  });
+  const editing = edit.editing;
+  const draft = edit.draft;
+  const startEdit = edit.start;
+  const save = edit.save;
 
   return (
     // `bg-sunken`, not `bg-surface`. The operator's turn is told apart from the
@@ -420,6 +429,15 @@ function UserTurn(props: {
           <Show when={m().queuedPending}>
             <Text variant="label" tone="warn">
               Queued
+            </Text>
+          </Show>
+          {/* A queue that has stopped moving says so. The hold is what makes editing
+              safe, and it is also the one state in which the run is waiting on the
+              operator without having asked them for anything — silence there reads as
+              the agent having stalled. */}
+          <Show when={m().queuedPending && m().queuedHeld}>
+            <Text variant="label" tone="dim">
+              Held
             </Text>
           </Show>
           <PinMarker message={m()} />
@@ -485,11 +503,11 @@ function UserTurn(props: {
           <Textarea
             value={draft()}
             rows={3}
-            onInput={(e) => setDraft(e.currentTarget.value)}
+            onInput={(e) => edit.write(e.currentTarget.value)}
             aria-label="Edit message"
           />
           <div class="mt-1 flex justify-end gap-2">
-            <Button variant="ghost" size="sm" onClick={() => setEditing(false)}>
+            <Button variant="ghost" size="sm" onClick={edit.cancel}>
               Cancel
             </Button>
             <Button

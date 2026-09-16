@@ -703,6 +703,41 @@ class QuestionAsked(_Body):
     questions: list[QuestionSpec] = Field(default_factory=list)
 
 
+class AnsweredQuestionOut(_Body):
+    """One question and what the operator said to it, as structure rather than as prose.
+
+    The tool's *result* is a rendered paragraph, because that is what the model reads. A
+    client asked to draw a card from it would have to parse that paragraph back apart —
+    and a renderer that parses prose is a renderer that breaks the day the wording is
+    improved. So the same answer rides here already taken apart, built from the parked
+    call's own arguments and the operator's replies.
+
+    ``selections`` is empty when they wrote instead of choosing, and ``text`` is null when
+    they only chose; both are filled when they did both."""
+
+    question: str
+    selections: list[str] = Field(default_factory=list)
+    text: str | None = None
+
+
+class QuestionAnswered(_Body):
+    """The operator answered a parked ``ask_user`` call.
+
+    The counterpart to :class:`QuestionAsked`, and it exists for the same reason that one
+    does: the question arrives as structure, so the answer has to as well, or the card the
+    client drew from the question has nothing but the tool result's prose to complete
+    itself with. Emitted per answered call, never per question.
+
+    What it carries is derived from the **parked call's arguments** plus the replies the
+    server validated against them — never from labels the client sent — so the answer in
+    the transcript cannot say something the question never offered. Additive to v1; no
+    bump."""
+
+    type: Literal["question.answered"] = "question.answered"
+    tool_call_id: str
+    answers: list[AnsweredQuestionOut] = Field(default_factory=list)
+
+
 class ReviewStarted(_Body):
     """An action at the Auto level is being ruled on in the operator's place.
 
@@ -813,6 +848,25 @@ class MessageWithdrawn(_Body):
     message_id: str
 
 
+class MessageHeld(_Body):
+    """A queued message was held back from the drain, or released again.
+
+    Held is not withdrawn: the message stays in the queue, in its place, and goes to the
+    model the moment it is released. What it buys is the interval while the operator has
+    the message open in an editor — the run would otherwise inject the draft they are
+    still rewriting, and an edit landing a moment later would have nowhere to go.
+
+    The state is the backend's, not the editor's, which is why it is a frame rather than a
+    client-side flag: a second tab, a reload, or a client attaching mid-run all have to see
+    the same queue the run does. Additive to v1; no bump."""
+
+    type: Literal["message.held"] = "message.held"
+    message_id: str
+    #: True when the hold went on, False when it came off. Both directions ride one event
+    #: rather than two, because a client renders the message's state, not the transition.
+    held: bool
+
+
 class MessageInjected(_Body):
     """A queued message was handed to the model (emitted in drain order). From
     here on the message is part of the turn and will persist as a normal user
@@ -920,11 +974,13 @@ EventBody = Annotated[
     | ContextInjected
     | ApprovalRequired
     | QuestionAsked
+    | QuestionAnswered
     | ReviewStarted
     | ReviewCompleted
     | MessageQueued
     | MessageEdited
     | MessageWithdrawn
+    | MessageHeld
     | MessageInjected
     | TasksUpdated
     | PlanUpdated

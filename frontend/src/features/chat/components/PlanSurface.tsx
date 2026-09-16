@@ -14,6 +14,12 @@ const STATUS: Record<
   denied: { label: "Rejected", tone: "alert" },
 };
 
+/** The status as this build can word it. A backend that adds a fifth reads as a plain
+ *  state name rather than throwing on the lookup — the document beneath it is the point
+ *  of the panel, and losing all of it to an unrecognised flag would be the wrong trade. */
+const statusOf = (status: PlanStatus): (typeof STATUS)[PlanStatus] =>
+  STATUS[status] ?? { label: String(status).toUpperCase(), tone: "idle" };
+
 /**
  * **The plan the agent wants to carry out** — the document, read at a panel's width.
  *
@@ -52,8 +58,8 @@ export function PlanSurface(props: {
         <div class="flex h-full flex-col overflow-y-auto">
           <Stack gap={3} class="p-4">
             <Stack gap={2}>
-              <StatusFlag status={STATUS[plan.status].tone} dot>
-                {STATUS[plan.status].label}
+              <StatusFlag status={statusOf(plan.status).tone} dot>
+                {statusOf(plan.status).label}
               </StatusFlag>
               <Text variant="readout" tone="bright">
                 {plan.title}

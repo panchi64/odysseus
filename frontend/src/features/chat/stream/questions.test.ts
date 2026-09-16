@@ -53,6 +53,9 @@ const approval = (stale = false): AssistantBlock => ({
   },
 });
 
+/** A turn whose park is the live run's. Every fixture below carries a `runId`, because
+ *  that is what the rule now turns on — a fixture relying on `streaming` alone would pass
+ *  under the derivation this replaced. */
 function ops(messages: ChatMessage[], sending = true) {
   return createRoot((dispose) => {
     const [store] = createStore<ChatMessage[]>(messages);
@@ -61,6 +64,7 @@ function ops(messages: ChatMessage[], sending = true) {
       messages: store,
       patchById: () => {},
       sending: live,
+      activeRunId: () => "run-1",
       reconcileStaleDecision: async () => {},
     });
     const answer = { park: built.park(), waiting: built.awaitingInput() };
@@ -71,7 +75,9 @@ function ops(messages: ChatMessage[], sending = true) {
 
 describe("what the dock is handed", () => {
   test("an unanswered question is a park, and the run is waiting", () => {
-    const { park, waiting } = ops([ask({ streaming: true }, question())]);
+    const { park, waiting } = ops([
+      ask({ streaming: true, runId: "run-1" }, question()),
+    ]);
     expect(waiting).toBe(true);
     expect(park?.questions).toHaveLength(1);
     expect(park?.questions[0].questions[0].question).toBe("Which database?");
@@ -80,7 +86,9 @@ describe("what the dock is handed", () => {
   test("a park holding both kinds hands over both, under one message", () => {
     // The run resumes on one body covering everything, so the dock has to be able to
     // collect both halves before it submits either.
-    const { park } = ops([ask({ streaming: true }, question(), approval())]);
+    const { park } = ops([
+      ask({ streaming: true, runId: "run-1" }, question(), approval()),
+    ]);
     expect(park?.questions).toHaveLength(1);
     expect(park?.approvals).toHaveLength(1);
     expect(park?.messageId).toBe("a1");
@@ -89,7 +97,9 @@ describe("what the dock is handed", () => {
   test("a stale park stays up to explain itself, but stops asking for attention", () => {
     // Putting the composer back on a 409 would claim the run had moved on — which is
     // exactly what is not yet known until the refetch lands.
-    const { park, waiting } = ops([ask({ streaming: true }, question(true))]);
+    const { park, waiting } = ops([
+      ask({ streaming: true, runId: "run-1" }, question(true)),
+    ]);
     expect(park).not.toBeNull();
     expect(park?.stale).toBe(true);
     expect(waiting).toBe(false);
@@ -97,26 +107,103 @@ describe("what the dock is handed", () => {
 
   test("one stale half stales the whole park — it settles as one submission", () => {
     const { park } = ops([
-      ask({ streaming: true }, question(), approval(true)),
+      ask({ streaming: true, runId: "run-1" }, question(), approval(true)),
     ]);
     expect(park?.stale).toBe(true);
   });
 
   test("nothing is parked once the run is no longer in flight", () => {
-    expect(ops([ask({ streaming: true }, question())], false).park).toBeNull();
+    expect(
+      ops([ask({ streaming: true, runId: "run-1" }, question())], false).park,
+    ).toBeNull();
   });
 
-  test("a question on an earlier turn does not answer for the live one", () => {
+  test("a question from an earlier run does not answer for the live one", () => {
     const { park } = ops([
-      ask({ id: "a0" }, question()),
-      ask({ id: "a1", streaming: true }),
+      ask({ id: "a0", runId: "run-0" }, question()),
+      ask({ id: "a1", streaming: true, runId: "run-1" }),
     ]);
     expect(park).toBeNull();
+  });
+
+  test("a steering message splitting the turn does not take the park with it", () => {
+    // The reported bug. `message.injected` closes the streaming bubble and opens a
+    // fresh one, so the question ends up on a message that is no longer streaming —
+    // and the dock, derived from "the last streaming message", vanished mid-answer
+    // and handed the composer back over a run that was still parked. The run is the
+    // discriminator precisely because the flow can split under it.
+    const { park, waiting } = ops([
+      ask({ id: "a0", runId: "run-1", streaming: false }, question()),
+      {
+        id: "u1",
+        role: "user",
+        content: "steered",
+        createdAt: "",
+      } as ChatMessage,
+      ask({ id: "a1", runId: "run-1", streaming: true }),
+    ]);
+    expect(park?.messageId).toBe("a0");
+    expect(waiting).toBe(true);
+  });
+
+  test("a call that parsed to no questions is not answered by an empty list", () => {
+    // `answers` is an array, and an empty one is truthy — so a malformed `ask_user`
+    // would have retired a park nobody answered, and rendered a card with a heading
+    // and nothing under it.
+    const empty: AssistantBlock = {
+      kind: "question",
+      id: "q1",
+      question: { toolCallId: "t1", questions: [], answers: [] },
+    };
+    const { park } = ops([ask({ streaming: true, runId: "run-1" }, empty)]);
+    expect(park?.questions).toHaveLength(1);
+    expect(groupBlocks([empty])).toEqual([]);
+  });
+
+  test("the park follows the run even when the controller's id is stale", () => {
+    // `activeRunId` is a field on a plain object, so a memo reading it alone would not
+    // re-run when it moved. The live run is read off the messages, which are a store —
+    // here the controller still reports the *previous* run and the park must not.
+    const park = createRoot((dispose) => {
+      const [store] = createStore<ChatMessage[]>([
+        ask({ id: "a1", runId: "run-2", streaming: true }, question()),
+      ]);
+      const built = createApprovalOps({
+        messages: store,
+        patchById: () => {},
+        sending: () => true,
+        activeRunId: () => "run-1",
+        reconcileStaleDecision: async () => {},
+      });
+      const answer = built.park();
+      dispose();
+      return answer;
+    });
+    expect(park?.messageId).toBe("a1");
+  });
+
+  test("an answered question is a transcript row, not a park", () => {
+    // It stays in `blocks` so the exchange can be rendered; what it stops being is
+    // something the dock has to collect.
+    const answered: AssistantBlock = {
+      kind: "question",
+      id: "q1",
+      question: {
+        toolCallId: "t1",
+        questions: [],
+        answers: [{ question: "Which database?", selections: ["Postgres"] }],
+      },
+    };
+    const { park, waiting } = ops([
+      ask({ streaming: true, runId: "run-1" }, answered),
+    ]);
+    expect(park).toBeNull();
+    expect(waiting).toBe(false);
   });
 });
 
 describe("the transcript's side of the seam", () => {
-  test("parks are folded but never grouped for rendering", () => {
+  test("a waiting park is folded but never grouped for rendering", () => {
     // Both halves matter: dropping them from the fold would lose the dock on a
     // reconnect's replay, and grouping them would draw the park twice.
     const groups = groupBlocks([
@@ -125,6 +212,28 @@ describe("the transcript's side of the seam", () => {
       approval(),
     ]);
     expect(groups.map((g) => g.kind)).toEqual(["text"]);
+  });
+
+  test("an answered question is rendered, and its approval neighbour still is not", () => {
+    // Docking is a phase, not a kind. Once answered, the question is the one thing the
+    // transcript most owes the operator — what they were asked and what they said —
+    // and it was previously reachable only as prose inside a collapsed work log. An
+    // approval has no such second life: the call that ran is its outcome.
+    const answered: AssistantBlock = {
+      kind: "question",
+      id: "q1",
+      question: {
+        toolCallId: "t1",
+        questions: [],
+        answers: [{ question: "Which database?", selections: ["Postgres"] }],
+      },
+    };
+    const groups = groupBlocks([
+      { kind: "text", id: "t", text: "hello" },
+      answered,
+      approval(),
+    ]);
+    expect(groups.map((g) => g.kind)).toEqual(["text", "question"]);
   });
 });
 

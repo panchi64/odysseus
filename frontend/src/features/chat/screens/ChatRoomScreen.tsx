@@ -342,6 +342,8 @@ export function ChatRoomScreen(): JSX.Element {
               {(park) => (
                 <ParkDock
                   park={park()}
+                  draft={stream.parkDraft()}
+                  onDraft={stream.patchParkDraft}
                   // This room has a Plan panel, so a plan the dock is asking about
                   // can be read at a panel's width one click away. A compare pane
                   // passes nothing and the button is not offered there.
@@ -350,6 +352,19 @@ export function ChatRoomScreen(): JSX.Element {
                   onSubmit={(settlement) =>
                     stream.resolvePark(park().messageId, settlement)
                   }
+                  // A park and a queued message can be outstanding together, and both
+                  // reach the model on the same resume — so the dock that has taken the
+                  // composer's slot also has to be where the queue is answerable.
+                  // Operator messages only. A sub-agent's report queues on the same
+                  // road and can be pending at the same moment, and it is neither theirs
+                  // to rewrite nor theirs to take back — the same rule
+                  // `restoreUndelivered` keeps.
+                  queued={stream.messages.filter(
+                    (m) => m.queuedPending && m.role === "user",
+                  )}
+                  onEditQueued={(id, text) => void stream.editQueued(id, text)}
+                  onWithdrawQueued={(id) => void stream.withdrawQueued(id)}
+                  onHoldQueued={(id, held) => void stream.holdQueued(id, held)}
                 />
               )}
             </Show>

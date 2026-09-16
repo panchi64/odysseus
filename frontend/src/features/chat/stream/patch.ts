@@ -12,6 +12,7 @@
  */
 
 import { produce, type SetStoreFunction } from "solid-js/store";
+import { isAnswered } from "../model";
 import type {
   ChatMessage,
   HostCommand,
@@ -107,7 +108,14 @@ export function clearPark(m: ChatMessage, toolCallId: string): void {
     (b) =>
       !(
         (b.kind === "approval" && b.approval.toolCallId === toolCallId) ||
-        (b.kind === "question" && b.question.toolCallId === toolCallId)
+        // A question that carries its answers is no longer a park but is still a row in
+        // the transcript — what was asked and what was said, rendered as an exchange.
+        // Only one that has none is dropped, which is also the degrade path: an answer
+        // that never arrived leaves the block retired exactly as it always was, rather
+        // than stranding an unanswerable question on a settled turn.
+        (b.kind === "question" &&
+          b.question.toolCallId === toolCallId &&
+          !isAnswered(b.question))
       ),
   );
 }

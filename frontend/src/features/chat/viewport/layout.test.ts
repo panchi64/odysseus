@@ -17,6 +17,7 @@ import {
   openSurface,
   panelSurfacesOf,
   pruneLayout,
+  retainAvailable,
   surfacesOf,
   toggleSurface,
 } from "./layout";
@@ -129,5 +130,44 @@ describe("a layout that outlived the code that wrote it", () => {
     const pruned = pruneLayout(sound);
     expect(pruned.strips).toEqual(["tasks"]);
     expect(panelSurfacesOf(pruned)).toEqual(["plan"]);
+  });
+});
+
+describe("a layout naming a surface that has nothing in it", () => {
+  /** A box wide and tall enough for any two of the shipped panels. */
+  const tiling = { box: { width: 1200, height: 900 }, cap: 2 };
+  /** Only the named surfaces have anything right now. */
+  const only =
+    (...ids: string[]) =>
+    (id: string) =>
+      ids.includes(id);
+
+  test("the empty one is taken out and the rest is left standing", () => {
+    // The reported bug, in one assertion: a plan-mode thread that has produced no
+    // versions opened onto a View pane with nothing in it, while the plan it was
+    // waiting on an answer about sat behind a header button.
+    const stored = openSurface(
+      openSurface(emptyLayout(), "view", tiling),
+      "plan",
+      tiling,
+    );
+    const live = retainAvailable(stored, only("plan"));
+    expect(surfacesOf(live)).toEqual(["plan"]);
+    // ...and the record is untouched, so the View comes back when it has a version.
+    expect(surfacesOf(stored)).toContain("view");
+  });
+
+  test("a layout with nothing left in it reads as closed, not as an empty frame", () => {
+    const stored = openSurface(emptyLayout(), "view", tiling);
+    expect(isEmpty(retainAvailable(stored, only("plan")))).toBe(true);
+  });
+
+  test("a layout whose surfaces all have something is returned as it was", () => {
+    const stored = openSurface(
+      openSurface(emptyLayout(), "view", tiling),
+      "tasks",
+      tiling,
+    );
+    expect(retainAvailable(stored, only("view", "tasks"))).toEqual(stored);
   });
 });
