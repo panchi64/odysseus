@@ -140,13 +140,31 @@ let generation = 0;
  *  place; a `created` that dupes an id already backfilled is a no-op replace,
  *  covering replay/backfill overlap). Adjusts `unreadCount` only on an actual
  *  read-state transition so re-applying the same notification twice can't
- *  double-count. */
-function upsert(notification: Notification): void {
+ *  double-count.
+ *
+ *  **An `updated` for an id we do not hold is an old notification, never a new one.**
+ *  `items` is only the `BACKFILL_LIMIT` newest, so a notification outside that window
+ *  first reaches us when something changes it (an approval resolving, a read landing from
+ *  another tab) — and the backfill's `unreadCount` already counted it. Counting it again
+ *  on arrival inflates the badge past anything the operator can see or clear. It is still
+ *  filed, in its own chronological place rather than at the head, since a list that
+ *  claims to be newest-first must not open with an hour-old row. */
+function upsert(
+  notification: Notification,
+  kind: "created" | "updated" = "created",
+): void {
   const prev = items();
   const idx = prev.findIndex((n) => n.id === notification.id);
   if (idx === -1) {
-    setItems([notification, ...prev]);
-    if (!notification.readAt) setUnreadCount((c) => c + 1);
+    const at = prev.findIndex(
+      (n) => new Date(n.createdAt) <= new Date(notification.createdAt),
+    );
+    const next = prev.slice();
+    next.splice(at === -1 ? next.length : at, 0, notification);
+    setItems(next);
+    if (kind === "created" && !notification.readAt) {
+      setUnreadCount((c) => c + 1);
+    }
     return;
   }
   const was = prev[idx];
@@ -161,7 +179,10 @@ function upsert(notification: Notification): void {
 }
 
 function applyStreamEvent(event: NotificationStreamEvent): void {
-  upsert(event.notification);
+  upsert(
+    event.notification,
+    event.type === "notification.created" ? "created" : "updated",
+  );
 }
 
 function handleStreamEvent(event: NotificationStreamEvent): void {
@@ -277,11 +298,21 @@ export async function markRead(ids: string[]): Promise<void> {
   }
 }
 
-/** Mark every currently-known unread notification read. */
+/** Mark every one of the operator's unread notifications read — the badge's own control.
+ *
+ *  **It relays and zeroes unconditionally, because the badge is not a count of this
+ *  list.** `unreadCount` is the backend's figure over *every* notification the operator
+ *  owns, while `items` holds only the `BACKFILL_LIMIT` newest — so an unread one older
+ *  than that window lights the badge without putting a single unread row in hand. Gating
+ *  the whole call on finding an unread row locally made the button a no-op in exactly the
+ *  state it is offered in: pressed, it marked nothing and the red count stayed up.
+ *
+ *  Rolling back restores the count that was on screen, not a count re-derived from the
+ *  rows that happened to be loaded — the two are the same number only in the case that
+ *  was never broken. */
 export async function markAllRead(): Promise<void> {
   const prev = items();
-  const unreadIds = prev.filter((n) => !n.readAt).map((n) => n.id);
-  if (unreadIds.length === 0) return;
+  const prevUnread = unreadCount();
   const now = new Date().toISOString();
   setItems(prev.map((n) => (n.readAt ? n : { ...n, readAt: now })));
   setUnreadCount(0);
@@ -289,7 +320,7 @@ export async function markAllRead(): Promise<void> {
     await api.post("/notifications/read_all");
   } catch {
     setItems(prev);
-    setUnreadCount(unreadIds.length);
+    setUnreadCount(prevUnread);
   }
 }
 
