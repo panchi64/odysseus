@@ -5,17 +5,13 @@ import {
   EmptyState,
   Icon,
   Popover,
-  Select,
   StatusDot,
   Text,
   cx,
   type IconName,
 } from "~/ui";
 import { relativeTime } from "~/lib/format";
-import {
-  AUTO_CLEAR_OPTIONS,
-  useNotifications,
-} from "~/lib/stores/notifications";
+import { useNotifications } from "~/lib/stores/notifications";
 import type {
   Notification,
   NotificationKind,
@@ -165,27 +161,13 @@ export function NotificationBell(): JSX.Element {
                 </Button>
               </Show>
             </div>
-            {/* Auto-clear: a display preference (mark read + drop from the list
-                after a timeout). `approval_needed` is exempt. Off disables it. */}
-            <div class="flex items-center gap-2 px-3 py-1.5">
-              <Text variant="micro" tone="dim">
-                Auto-clear
-              </Text>
-              <div class="ml-auto w-24">
-                <Select
-                  options={AUTO_CLEAR_OPTIONS}
-                  value={String(notifications.autoClearSeconds)}
-                  onChange={(v) => notifications.setAutoClearSeconds(Number(v))}
-                />
-              </div>
-            </div>
           </div>
           <div class="min-h-0 flex-1 overflow-y-auto">
             <Show
-              when={notifications.visibleItems.length > 0}
+              when={notifications.items.length > 0}
               fallback={<EmptyState icon="bell" message="No notifications" />}
             >
-              <For each={notifications.visibleItems}>
+              <For each={notifications.items}>
                 {(n) => (
                   <NotificationRow
                     notification={n}
@@ -196,6 +178,22 @@ export function NotificationBell(): JSX.Element {
                   />
                 )}
               </For>
+              {/* The way to whatever the badge is counting beyond this page. It
+                  sits at the end of the list rather than in the header, because
+                  it is the list continuing — the same gesture as scrolling. */}
+              <Show when={notifications.hasOlder}>
+                <div class="px-3 py-2">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    class="w-full"
+                    disabled={notifications.loadingOlder}
+                    onClick={() => void notifications.loadOlder()}
+                  >
+                    {notifications.loadingOlder ? "Loading…" : "Load older"}
+                  </Button>
+                </div>
+              </Show>
             </Show>
           </div>
         </div>

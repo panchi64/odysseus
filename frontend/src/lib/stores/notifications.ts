@@ -15,9 +15,8 @@
  * singleton, like `chatActivity`/`connectivity` — there is exactly one
  * operator, so exactly one notification feed.
  */
-import { createMemo, createSignal } from "solid-js";
+import { createSignal } from "solid-js";
 import { api } from "~/lib/api";
-import { getToken } from "~/lib/api/token";
 import {
   streamNotifications,
   type NotificationStreamState,
@@ -28,96 +27,45 @@ import type {
   NotificationStreamEvent,
 } from "~/lib/stream/notificationEvents";
 
-/** How many most-recent notifications to backfill on connect. The bell/panel
- *  UI (next batch) can page further back via `before`; this store only ever
- *  holds the live head. */
-const BACKFILL_LIMIT = 50;
+/** How many notifications to backfill on connect, and how many each LOAD OLDER
+ *  adds. The panel pages further back through the endpoint's own `before`
+ *  cursor — see `loadOlder`. */
+const PAGE_SIZE = 50;
 
 const [items, setItems] = createSignal<Notification[]>([]);
 const [unreadCount, setUnreadCount] = createSignal(0);
 const [connectionState, setConnectionState] = createSignal<
   NotificationStreamState | "idle"
 >("idle");
+// Whether the backend has notifications older than the oldest one held. A full page
+// means "probably more"; the first short page is the end of the history.
+const [hasOlder, setHasOlder] = createSignal(false);
+const [loadingOlder, setLoadingOlder] = createSignal(false);
 
 let controller: AbortController | null = null;
 let running = false;
-let tickTimer: ReturnType<typeof setInterval> | null = null;
 
-// --- Auto-clear (a presentation display policy, not backend policy) ----------
-// Aged non-approval notifications are cleared after a configurable timeout: they're
-// marked read (badge + backend state) AND dropped from the visible list. It's an
-// operator display preference, so it lives in localStorage (like the theme), not on
-// the backend. `approval_needed` is exempt — a pending approval stays until it's
-// resolved or read, never auto-cleared. Off (0) disables both halves entirely.
-const AUTO_CLEAR_KEY = "odysseus:notif-autoclear";
-/** How often the age filter re-evaluates while the feed is live. */
-const TICK_MS = 15000;
-
-/** The bell's AUTO-CLEAR control options (seconds, as strings for the Select). */
-export const AUTO_CLEAR_OPTIONS: { value: string; label: string }[] = [
-  { value: "0", label: "OFF" },
-  { value: "300", label: "5M" },
-  { value: "600", label: "10M" },
-  { value: "1800", label: "30M" },
-  { value: "3600", label: "1H" },
-];
-
-function readAutoClear(): number {
-  if (typeof localStorage === "undefined") return 0; // Off by default
-  const raw = Number(localStorage.getItem(AUTO_CLEAR_KEY));
-  return Number.isFinite(raw) && raw >= 0 ? Math.round(raw) : 0;
-}
-
-const [autoClearSeconds, setAutoClearSignal] =
-  createSignal<number>(readAutoClear());
-
-// A ticking clock that drives the age filter. An already-read item crossing the
-// threshold has no other state change to recompute `visibleItems`, so time itself
-// must be a dependency. Bumped on start and by the interval in startNotifications().
-const [now, setNow] = createSignal<number>(Date.now());
-
-/** The list the bell renders: everything except aged non-approval notifications.
- *  `approval_needed` is never age-filtered; with auto-clear Off (0) nothing is. */
-const visibleItems = createMemo(() => {
-  const limit = autoClearSeconds();
-  if (limit === 0) return items();
-  const t = now();
-  return items().filter(
-    (n) =>
-      n.kind === "approval_needed" ||
-      t - new Date(n.createdAt).getTime() <= limit * 1000,
-  );
-});
-
-/** The "mark read" half of a clear (the `visibleItems` filter is the "remove from
- *  list" half). Marks aged unread non-approval notifications read, reusing `markRead`
- *  so the optimistic update + backend relay + rollback match a manual read exactly. */
-function sweepAged(): void {
-  const limit = autoClearSeconds();
-  if (limit === 0) return;
-  const t = now();
-  const ids = items()
-    .filter(
-      (n) =>
-        !n.readAt &&
-        n.kind !== "approval_needed" &&
-        t - new Date(n.createdAt).getTime() > limit * 1000,
-    )
-    .map((n) => n.id);
-  if (ids.length > 0) void markRead(ids);
-}
-
-/** Set the timeout (seconds; 0 = Off). Persists to localStorage and re-evaluates
- *  immediately so the change applies without waiting for the next tick. */
-export function setAutoClearSeconds(seconds: number): void {
-  const v = Math.max(0, Math.round(seconds));
-  setAutoClearSignal(v);
-  if (typeof localStorage !== "undefined") {
-    localStorage.setItem(AUTO_CLEAR_KEY, String(v));
-  }
-  setNow(Date.now());
-  sweepAged();
-}
+/* --- Why there is no auto-clear here any more --------------------------------
+ *
+ * The bell used to carry an AUTO-CLEAR timeout (Off/5M/…/1H): a localStorage
+ * preference that hid notifications older than the window *and*, on a 15s tick,
+ * marked them read. It was wrong on three counts and every one of them was visible
+ * to the operator.
+ *
+ * It **lied about what exists** — with 5M selected the panel read "No notifications"
+ * over a backend holding five unread. It **destroyed the attention queue by the
+ * clock**: picking a shorter window marked a swath of never-seen notifications read,
+ * with no confirmation and no undo, and widening the window back brought the rows
+ * back but not their unread state — so the same two settings disagreed depending on
+ * which order they were touched. And it was a **policy in the wrong layer**: read
+ * state is the backend's (this file's own header says so), and nothing here should be
+ * mutating it on a timer.
+ *
+ * A notification is now read when the operator reads it — clicking a row, MARK ALL
+ * READ, or the read-on-view policy when they open the conversation it is about. If
+ * time-based dismissal is wanted again, it belongs in the backend as a stored policy
+ * that fans out `notification.updated`, not in a display preference here.
+ * --------------------------------------------------------------------------- */
 
 // Backfill (REST) and the live stream connect concurrently so there's no gap
 // between "as of the backfill query" and "first live event" — but that means
@@ -143,7 +91,8 @@ let generation = 0;
  *  double-count.
  *
  *  **An `updated` for an id we do not hold is an old notification, never a new one.**
- *  `items` is only the `BACKFILL_LIMIT` newest, so a notification outside that window
+ *  `items` holds the newest page, plus whatever `loadOlder` has paged in behind it, so a
+ *  notification outside that window
  *  first reaches us when something changes it (an approval resolving, a read landing from
  *  another tab) — and the backfill's `unreadCount` already counted it. Counting it again
  *  on arrival inflates the badge past anything the operator can see or clear. It is still
@@ -202,16 +151,13 @@ async function hydrate(gen: number, signal: AbortSignal): Promise<void> {
   hydrating = true;
   try {
     const page = await api.get<NotificationsPage>(
-      `/notifications?limit=${BACKFILL_LIMIT}`,
+      `/notifications?limit=${PAGE_SIZE}`,
       { signal },
     );
     if (gen !== generation) return; // superseded — a newer session owns the store now
     setItems(page.items);
     setUnreadCount(page.unreadCount);
-    // Clear anything already past the timeout so a reload doesn't resurrect aged
-    // items for a tick before the interval catches them.
-    setNow(Date.now());
-    sweepAged();
+    setHasOlder(page.items.length === PAGE_SIZE);
   } catch {
     /* best effort — the live stream still delivers new notifications; the
      * next reconnect (or an explicit re-hydrate) retries the backfill. */
@@ -225,24 +171,22 @@ async function hydrate(gen: number, signal: AbortSignal): Promise<void> {
 }
 
 /** Start the live feed. Idempotent — safe to call from an effect that may
- *  re-fire while already running. No-op without a token (nothing to
- *  authenticate the stream with; `startNotifications` is meant to be called
- *  only once authenticated anyway). */
+ *  re-fire while already running.
+ *
+ *  **The caller decides whether the session is authenticated; this does not.** It
+ *  used to no-op without a bearer token, which is a *different* question — on a
+ *  workspace with the auth gate disabled the session is legitimately unlocked and
+ *  holds no token, so the entire notification surface silently never started: no
+ *  backfill, no stream, a bell that read "No notifications" forever. `AppShell`
+ *  starts this off `session.isAuthenticated`, which already accounts for the gate. */
 export function startNotifications(): void {
-  if (running || !getToken()) return;
+  if (running) return;
   running = true;
   generation += 1;
   const gen = generation;
   const ac = new AbortController();
   controller = ac;
   setConnectionState("connecting");
-  // Drive the auto-clear age filter: a fresh clock for this session, then a tick
-  // that re-evaluates the filter and sweeps newly-aged unread items to read.
-  setNow(Date.now());
-  tickTimer = setInterval(() => {
-    setNow(Date.now());
-    sweepAged();
-  }, TICK_MS);
   void streamNotifications({
     signal: ac.signal,
     onEvent: handleStreamEvent,
@@ -261,15 +205,64 @@ export function stopNotifications(): void {
   generation += 1;
   controller?.abort();
   controller = null;
-  if (tickTimer !== null) {
-    clearInterval(tickTimer);
-    tickTimer = null;
-  }
   hydrating = false;
   buffered = [];
   setItems([]);
   setUnreadCount(0);
+  setHasOlder(false);
+  setLoadingOlder(false);
   setConnectionState("idle");
+}
+
+/** Page one more window of history in, oldest-first from the oldest item held.
+ *
+ *  **The badge counts more than the list holds** — `unreadCount` is the backend's
+ *  figure over every notification the operator owns, while the backfill is one page
+ *  of the newest — so a red 9+ could sit over a panel with no unread row in it and
+ *  no way to reach one. This is that way. It appends rather than replaces, and
+ *  dedupes by id, because a live `created` may have landed on the head meanwhile.
+ *
+ *  `unreadCount` is deliberately *not* re-read from the page: an older page's count
+ *  is the same global figure, and writing it back would clobber the optimistic
+ *  decrement of a `markRead` still in flight. */
+export async function loadOlder(): Promise<void> {
+  if (loadingOlder() || !hasOlder()) return;
+  const oldest = items()[items().length - 1];
+  if (!oldest) return;
+  const gen = generation;
+  setLoadingOlder(true);
+  try {
+    const page = await api.get<NotificationsPage>(
+      `/notifications?limit=${PAGE_SIZE}&before=${encodeURIComponent(oldest.createdAt)}`,
+      { signal: controller?.signal },
+    );
+    if (gen !== generation) return; // superseded — a newer session owns the store now
+    const held = new Set(items().map((n) => n.id));
+    setItems([...items(), ...page.items.filter((n) => !held.has(n.id))]);
+    setHasOlder(page.items.length === PAGE_SIZE);
+  } catch {
+    /* best effort — the control stays offered, so a failed page is a retry away. */
+  } finally {
+    if (gen === generation) setLoadingOlder(false);
+  }
+}
+
+/** Undo an optimistic read of exactly the rows this caller flipped, leaving every
+ *  other row as it now stands.
+ *
+ *  **A rollback restores rows, not the array.** Both writers used to keep a snapshot
+ *  of the whole list and put it back on failure, which silently reverted anything that
+ *  had landed in the meantime: a live `notification.created`, or — now that the panel
+ *  can page — the fifty older rows LOAD OLDER had just fetched. Pressing a row while
+ *  the backend was briefly unreachable made them vanish, with `hasOlder` still true,
+ *  so the only symptom was a list that got shorter. Undoing by id cannot reach
+ *  anything the caller did not touch. */
+function restoreUnread(flipped: ReadonlySet<string>): void {
+  if (flipped.size === 0) return;
+  setItems(
+    items().map((n) => (flipped.has(n.id) ? { ...n, readAt: null } : n)),
+  );
+  setUnreadCount((c) => c + flipped.size);
 }
 
 /** Mark specific notifications read — optimistic, reconciled by the
@@ -279,22 +272,21 @@ export function stopNotifications(): void {
 export async function markRead(ids: string[]): Promise<void> {
   if (ids.length === 0) return;
   const idSet = new Set(ids);
-  const prev = items();
   const now = new Date().toISOString();
-  let delta = 0;
+  // The rows this call actually flipped — its undo list, and its share of the badge.
+  const flipped = new Set<string>();
   setItems(
-    prev.map((n) => {
+    items().map((n) => {
       if (!idSet.has(n.id) || n.readAt) return n;
-      delta += 1;
+      flipped.add(n.id);
       return { ...n, readAt: now };
     }),
   );
-  if (delta > 0) setUnreadCount((c) => Math.max(0, c - delta));
+  if (flipped.size > 0) setUnreadCount((c) => Math.max(0, c - flipped.size));
   try {
     await api.post("/notifications/read", { ids });
   } catch {
-    setItems(prev);
-    if (delta > 0) setUnreadCount((c) => c + delta);
+    restoreUnread(flipped);
   }
 }
 
@@ -302,24 +294,33 @@ export async function markRead(ids: string[]): Promise<void> {
  *
  *  **It relays and zeroes unconditionally, because the badge is not a count of this
  *  list.** `unreadCount` is the backend's figure over *every* notification the operator
- *  owns, while `items` holds only the `BACKFILL_LIMIT` newest — so an unread one older
- *  than that window lights the badge without putting a single unread row in hand. Gating
+ *  owns, while `items` holds only as far back as the operator has paged — so an unread
+ *  one beyond that lights the badge without putting a single unread row in hand. Gating
  *  the whole call on finding an unread row locally made the button a no-op in exactly the
  *  state it is offered in: pressed, it marked nothing and the red count stayed up.
  *
  *  Rolling back restores the count that was on screen, not a count re-derived from the
  *  rows that happened to be loaded — the two are the same number only in the case that
- *  was never broken. */
+ *  was never broken. The *rows* it puts back are only the ones it flipped, for the
+ *  reason `restoreUnread` gives. */
 export async function markAllRead(): Promise<void> {
-  const prev = items();
   const prevUnread = unreadCount();
   const now = new Date().toISOString();
-  setItems(prev.map((n) => (n.readAt ? n : { ...n, readAt: now })));
+  const flipped = new Set<string>();
+  setItems(
+    items().map((n) => {
+      if (n.readAt) return n;
+      flipped.add(n.id);
+      return { ...n, readAt: now };
+    }),
+  );
   setUnreadCount(0);
   try {
     await api.post("/notifications/read_all");
   } catch {
-    setItems(prev);
+    // The count is restored wholesale rather than by `flipped.size`, since the badge
+    // counts notifications this list never held.
+    restoreUnread(flipped);
     setUnreadCount(prevUnread);
   }
 }
@@ -336,12 +337,10 @@ export function markConversationRead(conversationId: string): void {
 
 export function useNotifications() {
   return {
+    /** Newest-first, exactly what the backend has handed over — the bell renders
+     *  this list whole. Nothing here filters it; see the note above the store. */
     get items(): Notification[] {
       return items();
-    },
-    /** The auto-clear-filtered list the bell renders (see `visibleItems`). */
-    get visibleItems(): Notification[] {
-      return visibleItems();
     },
     get unreadCount(): number {
       return unreadCount();
@@ -349,11 +348,14 @@ export function useNotifications() {
     get connectionState(): NotificationStreamState | "idle" {
       return connectionState();
     },
-    /** Current auto-clear timeout in seconds (0 = Off). */
-    get autoClearSeconds(): number {
-      return autoClearSeconds();
+    /** Whether there is history beyond what is held — the panel's LOAD OLDER. */
+    get hasOlder(): boolean {
+      return hasOlder();
     },
-    setAutoClearSeconds,
+    get loadingOlder(): boolean {
+      return loadingOlder();
+    },
+    loadOlder,
     markRead,
     markAllRead,
     markConversationRead,

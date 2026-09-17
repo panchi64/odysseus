@@ -40,10 +40,6 @@ import {
   wallClockMinutes,
 } from "~/features/settings/model";
 import type { ChatSettings } from "~/features/settings/model";
-import {
-  AUTO_CLEAR_OPTIONS,
-  useNotifications,
-} from "~/lib/stores/notifications";
 import { preference, setTheme, THEME_CYCLE } from "~/ui";
 import type { ThemePreference } from "~/ui";
 import type { SettingChoice, SettingEntry } from "./types";
@@ -56,7 +52,6 @@ const OFFLINE = "OFFLINE";
 const AGENT_TOOLS = "AGENT TOOLS";
 const ENDPOINTS = "ENDPOINTS";
 const APPEARANCE = "APPEARANCE";
-const NOTIFICATIONS = "NOTIFICATIONS";
 
 /** The theme preference spoken as options. Built from `THEME_CYCLE` so the
  *  palette can never offer a mode the toggle doesn't cycle through. */
@@ -99,9 +94,6 @@ export function useSettingsIndex(): Accessor<SettingEntry[]> {
   /* ── The two catalogs (backend-enumerated) ───────────────────────────────── */
   const tools = useAgentTools();
   const endpoints = useEndpoints();
-
-  /* ── Client-side preferences ─────────────────────────────────────────────── */
-  const notifications = useNotifications();
 
   const staticEntries = (): SettingEntry[] => [
     {
@@ -296,16 +288,6 @@ export function useSettingsIndex(): Accessor<SettingEntry[]> {
       options: THEME_OPTIONS,
       read: () => preference(),
       write: (next) => setTheme(next as ThemePreference),
-    },
-    {
-      id: "ui.notification-auto-clear",
-      label: "Notification auto-clear",
-      keywords: ["bell", "dismiss", "timeout", "badge"],
-      group: NOTIFICATIONS,
-      kind: "choice",
-      options: AUTO_CLEAR_OPTIONS,
-      read: () => String(notifications.autoClearSeconds),
-      write: (next) => notifications.setAutoClearSeconds(Number(next)),
     },
   ];
 

@@ -86,9 +86,13 @@ function parseFrame(frame: string): NotificationStreamEvent | null {
   }
 }
 
-/** Stream notifications until aborted or the token disappears (logout/lock —
- *  nothing left to authenticate the stream with). Retries forever otherwise;
- *  there is no reconnect budget and no "detached" terminal state. */
+/** Stream notifications until aborted, or until the backend rejects the session
+ *  (a 401/423 — logout, lock, an expired token). Retries forever otherwise; there
+ *  is no reconnect budget and no "detached" terminal state.
+ *
+ *  Those are the two exits, and neither is "we hold no token": the store's caller
+ *  decides whether the session is authenticated, and a workspace with the auth gate
+ *  disabled is unlocked without one. */
 export async function streamNotifications(
   options: NotificationStreamOptions,
 ): Promise<void> {
@@ -103,13 +107,20 @@ export async function streamNotifications(
   let hasConnectedOnce = false;
 
   while (!signal?.aborted) {
-    if (!getToken()) return; // no session to authenticate the stream with
-
     onStateChange?.(hasConnectedOnce ? "reconnecting" : "connecting");
     try {
+      // The token rides along **when there is one**, the same way `authHeaders`
+      // builds a REST request — a missing one is not the same fact as a rejected
+      // one. This used to `return` outright without a token, which is true of a
+      // logout but also true of a workspace running with the auth gate off, where
+      // the session is legitimately unlocked and never holds a token: the whole
+      // live feed then silently never connected, and the bell only ever showed
+      // what the last page load had backfilled. A token that is genuinely stale is
+      // still caught below, by the 401/423 the request comes back with.
+      const token = getToken();
       const headers: Record<string, string> = {
         Accept: "text/event-stream",
-        Authorization: `Bearer ${getToken()}`,
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
       };
       if (lastSeq != null) headers["Last-Event-ID"] = String(lastSeq);
 
