@@ -52,6 +52,19 @@ import { createChatStream } from "./stream/chatStream";
 export interface MainChat {
   currentId: Accessor<string | null>;
   setCurrentId: (id: string | null) => void;
+  /** The thread **on screen**, which is `currentId` except during the first turn of a
+   *  thread the operator has just started: the backend gives that one an id the moment
+   *  it accepts the turn, but the room does not seat itself on it until the run ends
+   *  (seating re-reads history, re-keys the composer's draft, and re-seeds the panel —
+   *  none of which is safe to do underneath a live turn).
+   *
+   *  Everything that merely *names or marks* that thread should read this instead:
+   *  keyed on `currentId`, the header had no id to look a title up against, so an
+   *  auto-generated name — which the backend emits within a second or two of the turn
+   *  starting — could not render until the stream was over. Anything that *acts on*
+   *  the thread still uses `currentId`; this is a read-side answer to "which thread am
+   *  I looking at", not a second seat. */
+  openId: Accessor<string | null>;
   stream: ReturnType<typeof createChatStream>;
   /** Whether the one-time warm-resume entry intent has run this app session. The
    *  flag is part of the singleton so it survives navigation — see the screen. */
@@ -222,6 +235,7 @@ export function mainChat(): MainChat {
     return {
       currentId,
       setCurrentId,
+      openId: () => currentId() ?? stream.conversationId(),
       stream,
       warmResolved,
       markWarmResolved: () => setWarmResolved(true),

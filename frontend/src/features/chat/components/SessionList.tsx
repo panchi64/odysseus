@@ -25,6 +25,7 @@ import {
   type MenuItem,
 } from "~/ui";
 import { createListView } from "~/lib/list";
+import { isRetitling } from "../conversationActions";
 import type { ChatSummary } from "../model";
 import {
   isPinned,
@@ -252,6 +253,7 @@ function SessionRows(props: {
           selected={s.id === props.currentId}
           pinned={isPinned(s.id)}
           reveal={titleReveals[s.id]}
+          retitling={isRetitling(s.id)}
           activity={s.activity}
           onOpen={() => props.onSelect(s.id)}
           // The thread's id is the menu's key, which is what lets one panel serve the

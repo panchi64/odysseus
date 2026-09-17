@@ -105,6 +105,10 @@ export interface FoldDeps {
   setUsage: (context: ContextWindow | null) => void;
   setStats: (stats: ConversationStats | null) => void;
   setErrored: (errored: boolean) => void;
+  /** Clear the "the backend is naming this thread" throbber, on the event that makes
+   *  it false. The drive's teardown still clears it for a turn that ended without a
+   *  name — this is the other exit. */
+  setTitlePending: (pending: boolean) => void;
 }
 
 export function createFolder(
@@ -665,11 +669,21 @@ export function createFolder(
       }
       case "conversation.titled":
         // Conversation-level, not message-level: hand it to the typewriter reveal
-        // rather than folding onto the assistant message. The throbber clears in the
-        // run's `finally` (when the new conversation's id is adopted and the reveal
-        // can actually render), not here — clearing now would flash the bare title
-        // for the beat before that.
+        // rather than folding onto the assistant message.
         revealTitle(ev.conversation_id, ev.title);
+        // And pull the list now rather than at the end of the turn, as
+        // `conversation.linked` does below and for the same reason: the thread
+        // exists, it has a name, and the rail claiming otherwise for the length of a
+        // long run is a lie about state the backend has already settled. It is also
+        // what the header's static title falls back to once the reveal finishes.
+        refreshSessions();
+        // The throbber answers "is the backend naming this thread", and it has just
+        // stopped being true. It used to be left to the run's `finally`, because the
+        // reveal could not render until the room adopted the new id — so clearing it
+        // here would have shown a bare "New conversation" for the rest of the turn.
+        // The surfaces resolve against the live id now, so the name arrives in the
+        // same beat the throbber goes.
+        deps.setTitlePending(false);
         break;
       case "conversation.linked":
         // The turn spawned a thread of its own. Pull the list now rather than at

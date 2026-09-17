@@ -76,7 +76,7 @@ const ACTIVITY_POLL_MS = 3000;
 export function RecentsRail(): JSX.Element {
   const sessions = useChatSessions();
   const projects = useProjects();
-  const { currentId, setCurrentId, stream } = mainChat();
+  const { currentId, openId, setCurrentId, stream } = mainChat();
   const mode = activeSessionMode;
   const setMode = setActiveSessionMode;
   const location = useLocation();
@@ -385,7 +385,10 @@ export function RecentsRail(): JSX.Element {
         <SessionList
           sessions={inMode}
           mode={mode()}
-          currentId={currentId()}
+          // Which row is *marked* open — `openId`, so a thread created by the turn
+          // still running is highlighted the moment it is listed, rather than sitting
+          // unselected under a transcript that is plainly its own.
+          currentId={openId()}
           menu={threadMenu}
           onSelect={select}
           directories={rooted() ? directories() : undefined}
@@ -393,8 +396,12 @@ export function RecentsRail(): JSX.Element {
           actions={rooted() ? actions : undefined}
           onNewThread={rooted() ? newThreadIn : undefined}
           onAddDirectory={rooted() ? () => void addDirectory.add() : undefined}
+          // `openId` for the same reason the selection above uses it: a thread the
+          // running turn has already created is not staged anywhere, and marking its
+          // directory as staging while highlighting its row is the rail naming two
+          // places for the next turn to land.
           stagedProjectId={
-            rooted() && currentId() === null ? (codeProjectId() ?? null) : null
+            rooted() && openId() === null ? (codeProjectId() ?? null) : null
           }
         />
       </div>

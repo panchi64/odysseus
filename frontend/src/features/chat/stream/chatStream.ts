@@ -158,7 +158,26 @@ export function createChatStream(
   let cancelled = false;
   // The conversation this stream is currently bound to (tracked separately from
   // the screen's `key`, which only updates once a new thread is persisted).
+  //
+  // **Held twice on purpose: a plain `let` and a signal, written together.** Almost
+  // everything here reads it synchronously, mid-callback, where a signal read would
+  // register a dependency in whatever effect happens to be running — so the `let`
+  // stays. But the room has to be able to *render* against it: a thread created
+  // during its first turn has a real id from the moment `POST /chat` answers, and
+  // anything the screen keys on `key()` alone (the header's name, the rail's
+  // selection) sits blank until the turn ends. `boundConversationId` is that same
+  // fact, reactive.
   let activeConversationId: string | null = key();
+  const [boundConversationId, setBoundConversationId] = createSignal<
+    string | null
+  >(activeConversationId);
+  /** Write both halves. Every assignment to `activeConversationId` goes through
+   *  here — a bare write would leave the reactive copy behind, which is exactly the
+   *  class of bug this pairing exists to fix. */
+  const bindConversation = (id: string | null): void => {
+    activeConversationId = id;
+    setBoundConversationId(id);
+  };
 
   const store: TranscriptStore = { setMessages, setUsage, setSnapshots };
   const reseat = (detail: ConversationDetailDTO) =>
@@ -180,6 +199,7 @@ export function createChatStream(
     setUsage,
     setStats,
     setErrored,
+    setTitlePending,
   });
 
   // Steering: a message sent into a run that is already going, and the text handed
@@ -192,9 +212,7 @@ export function createChatStream(
     setMessages,
     patchById,
     conversationId: () => activeConversationId,
-    adoptConversationId: (id) => {
-      activeConversationId = id;
-    },
+    adoptConversationId: bindConversation,
     activeRunId: () => foldState.activeRunId,
     setSending,
     selection: () => options.selection?.() ?? effectiveSelection(),
@@ -257,7 +275,12 @@ export function createChatStream(
       // fire again for the same run id, rather than permanently ignoring a run it
       // saw once, in some earlier visit, before this stream instance existed.
       reattachedRunId = null;
-      activeConversationId = id;
+      bindConversation(id);
+      // The auto-title throbber belongs to the thread being named, and a switch
+      // supersedes the drive that would otherwise clear it (`drive.ts` skips teardown
+      // for a superseded run, deliberately) — so without this the first turn's
+      // throbber follows the operator onto every thread they open next.
+      setTitlePending(false);
     },
     supersede: drive.supersede,
     setSending,
@@ -374,7 +397,7 @@ export function createChatStream(
       setTitlePending(false);
       return;
     }
-    activeConversationId = created.conversation_id;
+    bindConversation(created.conversation_id);
     // Accepted — so the backend has retired the stop marker this turn resumes.
     // Echo that now rather than waiting for the run to finish: the warning is about
     // a turn the operator has visibly just resumed, and leaving it up for the length
@@ -506,6 +529,13 @@ export function createChatStream(
 
   return {
     messages,
+    /** The thread this stream is writing into — the screen's `key` once it is caught
+     *  up, and the backend's brand-new id from the moment `POST /chat` answers, which
+     *  is well before the room adopts it. Anything that *names the thread on screen*
+     *  has to read this: keyed on `key()` alone, a first turn's header and rail row
+     *  have no id to resolve against and stay blank for the length of the run, which
+     *  is why an auto-generated title used to land only once the stream ended. */
+    conversationId: boundConversationId,
     /** The conversation's workspace snapshots (git-style history), newest last. */
     snapshots,
     toggleSnapshotKeeper: branching.toggleSnapshotKeeper,

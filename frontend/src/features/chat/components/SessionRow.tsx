@@ -1,6 +1,7 @@
 import { Show, type JSX } from "solid-js";
 import {
   Button,
+  Frames,
   Icon,
   LedEdge,
   REVEAL_ON_GROUP_HOVER,
@@ -20,6 +21,10 @@ export interface SessionRowProps {
   /** A freshly auto-generated title to type out in place of the static one. The
    *  header owns clearing the reveal; the row just mirrors it while it lasts. */
   reveal?: string;
+  /** True while the backend is naming *this* thread — the same throbber the room's
+   *  header shows, on the row the retitle was started from. Without it, REGENERATE
+   *  TITLE from the rail's menu reports nothing at all until the new name lands. */
+  retitling?: boolean;
   /** The backend's status for this thread's live run, when it has one. Lights the
    *  accent edge; absent leaves the row at rest. */
   activity?: ChatActivity;
@@ -130,6 +135,10 @@ export function SessionRow(props: SessionRowProps): JSX.Element {
               class="truncate"
             />
           )}
+        </Show>
+        <Show when={props.retitling}>
+          <Frames class="shrink-0 text-info" />
+          <span class="sr-only">naming this thread</span>
         </Show>
         <Show when={props.activity}>
           {(activity) => (

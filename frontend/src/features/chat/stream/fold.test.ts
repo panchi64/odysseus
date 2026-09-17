@@ -41,6 +41,7 @@ function harness(seed: ChatMessage[] = []) {
     setUsage: () => {},
     setStats: () => {},
     setErrored: () => {},
+    setTitlePending: () => {},
   });
   return {
     fold: (ev: RunEvent) => fold("a1", ev),

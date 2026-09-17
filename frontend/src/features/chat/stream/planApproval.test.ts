@@ -52,6 +52,7 @@ function harness() {
     setUsage: () => {},
     setStats: () => {},
     setErrored: () => {},
+    setTitlePending: () => {},
   });
   return {
     fold: (ev: Record<string, unknown>, seq = 1) =>

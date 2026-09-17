@@ -69,6 +69,7 @@ export function ChatRoomScreen(): JSX.Element {
   // — so navigating away mid-turn and back doesn't tear down the in-flight run.
   const {
     currentId,
+    openId,
     setCurrentId,
     stream,
     warmResolved,
@@ -87,9 +88,15 @@ export function ChatRoomScreen(): JSX.Element {
   /** The project a **staged** worktree thread would work in — undefined once the thread
    *  is saved, and for every sandbox mode. Read by both the send gate (which needs to
    *  know the directory can host a worktree) and the header's subtitle (which names it),
-   *  so the two can't disagree about which directory is in play. */
+   *  so the two can't disagree about which directory is in play.
+   *
+   *  Staged means *no backend id anywhere*, which is `openId` and not `currentId`: the
+   *  room keeps its seat empty for the length of a new thread's first turn, and reading
+   *  that as "still staged" put the hint about the name this thread does not have yet
+   *  directly under the name the backend had just given it — and kept the
+   *  not-a-git-repository send gate up against a worktree that had already been cut. */
   const stagedProject = createMemo(() => {
-    if (!rooted() || currentId() !== null) return undefined;
+    if (!rooted() || openId() !== null) return undefined;
     const id = codeProjectId();
     return id ? projects.latest?.projects.find((p) => p.id === id) : undefined;
   });
@@ -125,15 +132,20 @@ export function ChatRoomScreen(): JSX.Element {
     conversationId: currentId,
   });
 
-  // Header reflects the selected thread (messages resolve through the seam).
+  // Header reflects the thread on screen (messages resolve through the seam).
+  //
+  // `openId`, not `currentId`: during a new thread's first turn the room has not
+  // seated itself on the backend's id yet, and a header keyed on the seat has
+  // nothing to resolve — which is why an auto-generated name, emitted seconds into
+  // the run, used to appear only once the stream ended.
   const currentSummary = createMemo(() => {
-    const id = currentId();
+    const id = openId();
     return id ? sessions()?.find((s) => s.id === id) : undefined;
   });
   const headerTitle = () => currentSummary()?.title ?? "New conversation";
   // A just-generated title for the open thread, if the backend named it this turn.
   const headerReveal = () => {
-    const id = currentId();
+    const id = openId();
     return id ? titleReveals[id] : undefined;
   };
 

@@ -113,16 +113,48 @@ async function resolveDeleteChoice(
  * genuinely about *the room*: the retitle throbber, stopping a live run, restaging
  * an empty composer. Nothing of that belongs to a row in a list. */
 
-/** Regenerate a thread's title. Resolves once the backend has answered; the caller
- *  owns any in-flight indicator, since only it knows where to put one. */
+/** The threads whose titles the backend is naming right now, keyed by id.
+ *
+ *  **A throbber belongs to the thread, not to the surface showing it.** It used to be a
+ *  boolean the room held, so regenerating a title and then opening some other thread
+ *  moved the spinner onto *that* thread's name — the room only knew "a retitle is in
+ *  flight", never which conversation it was for. Retitling is also startable from a rail
+ *  row for a thread that isn't open, which a room-scoped flag cannot represent at all.
+ *
+ *  Module-level, like the other app-lifetime stores: there is one operator, and a
+ *  retitle outlives the menu that started it. */
+const [retitlingIds, setRetitlingIds] = createSignal<ReadonlySet<string>>(
+  new Set(),
+);
+
+function markRetitling(conversationId: string, active: boolean): void {
+  setRetitlingIds((prev) => {
+    const next = new Set(prev);
+    if (active) next.add(conversationId);
+    else next.delete(conversationId);
+    return next;
+  });
+}
+
+/** True while *this* thread is being named. Null (a staged thread) is never naming. */
+export function isRetitling(conversationId: string | null): boolean {
+  return conversationId !== null && retitlingIds().has(conversationId);
+}
+
+/** Regenerate a thread's title. Resolves once the backend has answered; any surface
+ *  showing that thread reads `isRetitling(id)` for the in-flight indicator. */
 export async function retitleConversation(
   conversationId: string,
 ): Promise<void> {
+  if (isRetitling(conversationId)) return;
+  markRetitling(conversationId, true);
   try {
     await regenerateTitle(conversationId);
     toast.success("Title regenerated");
   } catch {
     toast.error("Unable to regenerate the title.");
+  } finally {
+    markRetitling(conversationId, false);
   }
 }
 
@@ -171,7 +203,9 @@ export interface ConversationActionDeps {
 }
 
 export interface ConversationActions {
-  /** True while a manual title regeneration is in flight — the header's throbber. */
+  /** True while *the open thread's* title is being regenerated — the header's
+   *  throbber. Scoped to the conversation, so leaving mid-retitle takes the throbber
+   *  with it rather than stamping it on whatever thread is opened next. */
   retitling: Accessor<boolean>;
   retitle: () => Promise<void>;
   fork: (messageId: string) => Promise<void>;
@@ -185,17 +219,15 @@ export interface ConversationActions {
 export function createConversationActions(
   deps: ConversationActionDeps,
 ): ConversationActions {
-  const [retitling, setRetitling] = createSignal(false);
+  const retitling = () => isRetitling(deps.conversationId());
 
   async function retitle(): Promise<void> {
     const id = deps.conversationId();
-    if (!id || retitling()) return;
-    setRetitling(true);
-    try {
-      await retitleConversation(id);
-    } finally {
-      setRetitling(false);
-    }
+    if (!id) return;
+    // The registry owns the in-flight guard as well as the indicator — a second press
+    // from the rail's menu, on the same thread, must be the same no-op as a second
+    // press from this menu.
+    await retitleConversation(id);
   }
 
   /** Open a new conversation carrying history up to this turn.

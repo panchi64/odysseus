@@ -257,6 +257,7 @@ describe("folding question.asked", () => {
       setUsage: () => {},
       setStats: () => {},
       setErrored: () => {},
+      setTitlePending: () => {},
     });
     events.forEach((event, i) =>
       foldEvent("a1", { seq: i + 1, ...event } as never),
