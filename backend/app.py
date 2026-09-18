@@ -67,6 +67,7 @@ from tools import (
 from tools.describe import category_names
 from tools.repo import repo_instructions
 from tools.tasks import tasks_context
+from tools.workspace_context import workspace_context
 
 logger = logging.getLogger(__name__)
 
@@ -445,9 +446,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # reminder below is: the categories it belongs to ship with the harness core ones. It
     # returns "" outside a worktree mode, so a sandbox thread pays nothing for it.
     instruction_providers: list[InstructionProvider] = [repo_instructions]
-    # The task-list reminder is core, not a manifest's: the `tasks` category ships with the
-    # harness core categories, so its tail context has to be seeded here alongside them.
-    prompt_context_providers: list[PromptContextProvider] = [tasks_context]
+    # The task-list reminder and the workspace listing are core, not a manifest's: the
+    # `tasks` and `files` categories ship with the harness core categories, so their tail
+    # context has to be seeded here alongside them.
+    prompt_context_providers: list[PromptContextProvider] = [tasks_context, workspace_context]
     for manifest in enabled_manifests:
         for category, factory in manifest.toolsets:
             if category in tool_categories:

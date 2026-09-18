@@ -108,14 +108,37 @@ class RunDeps:
 # and the feature layer must name the shape without a cycle.
 type InstructionProvider = Callable[[RunContext[RunDeps]], Awaitable[str]]
 
+@dataclass(frozen=True, slots=True)
+class PromptContextRequest:
+    """What a per-turn context block is resolved against.
+
+    A struct rather than a widening argument list because these providers are
+    contributed by manifests and by both sub-agent paths, so every field added here
+    would otherwise be a signature break across all of them. It carries the same
+    handles a tool would reach the same facts through — the capability bag, and the
+    three things that decide *which* workspace this turn is working in — but not a
+    `RunContext`, because these resolve before the agent starts and there is no run to
+    read them off.
+    """
+
+    caps: ServiceContainer
+    owner_id: str
+    conversation_id: str | None
+    #: The thread's mode, which decides whether its workspace is a container or a
+    #: checkout (`mode_spec(...).workspace`).
+    mode: str
+    project_id: str | None
+    #: This run's workspace key — a delegation's own, where it has one, so a sub-agent
+    #: is described its fork rather than its parent's files.
+    workspace_key: str
+
+
 # A feature-contributed per-turn context block (a manifest's `prompt_context` export):
 # like an InstructionProvider it re-resolves fresh each turn and is never persisted, but
 # the engine delivers it at the *tail* of the current turn's user prompt instead of the
 # instructions block at the head of the request — volatile content at the head would
 # invalidate the inference engine's prompt-prefix cache from byte 0 on every change,
 # while a tail part leaves the whole history byte-stable. Called outside a live run
-# (before the agent starts), so it takes the raw handles rather than a RunContext:
-# (caps, owner_id, conversation_id) → text, "" to no-op.
-type PromptContextProvider = Callable[
-    [ServiceContainer, str, str | None], Awaitable[str]
-]
+# (before the agent starts), so it takes a `PromptContextRequest` rather than a
+# RunContext, and returns "" to no-op.
+type PromptContextProvider = Callable[[PromptContextRequest], Awaitable[str]]

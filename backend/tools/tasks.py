@@ -41,7 +41,6 @@ from typing import Any
 from pydantic_ai import AbstractToolset, RunContext, ToolsetTool
 from pydantic_ai_harness.planning import InMemoryPlanStore, Planning
 
-from core.container import ServiceContainer
 from services.task_list import (
     ConversationTasks,
     ConversationTaskStore,
@@ -49,7 +48,7 @@ from services.task_list import (
     render_tasks,
 )
 
-from .deps import RunDeps
+from .deps import PromptContextRequest, RunDeps
 from .harness_events import attributable
 
 # Rendered above the list at the tail of the turn. Short and fixed: the block's *content*
@@ -215,19 +214,17 @@ def tasks_toolset() -> AbstractToolset[RunDeps]:
     return _ConversationTaskToolset(_planning(InMemoryPlanStore()).get_toolset())
 
 
-async def tasks_context(
-    caps: ServiceContainer, owner_id: str, conversation_id: str | None
-) -> str:
+async def tasks_context(req: PromptContextRequest) -> str:
     """The current task list, for the tail of this turn's prompt.
 
     Delivered per turn rather than written into history: the list changes on nearly every
     step, and a changing block at the head of the request would invalidate the inference
     engine's prompt-prefix cache for the whole conversation behind it.
     """
-    tasks = caps.get_optional(ConversationTasks)
-    if tasks is None or conversation_id is None:
+    tasks = req.caps.get_optional(ConversationTasks)
+    if tasks is None or req.conversation_id is None:
         return ""
-    items = await tasks.items(owner_id, conversation_id)
+    items = await tasks.items(req.owner_id, req.conversation_id)
     # No tasks, no block. This is also what keeps an operator who disabled the `tasks`
     # category from being told to "keep it accurate" with no tools registered to do so:
     # with the tools gone nothing can create a task, so there is nothing to render. A list

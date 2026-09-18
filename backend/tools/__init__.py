@@ -11,7 +11,13 @@ See docs/architecture/README.md (Pillar III, §2.2).
 from __future__ import annotations
 
 from .builtin import builtin_toolset
-from .deps import InstructionProvider, PromptContextProvider, RunDeps, default_workspace_key
+from .deps import (
+    InstructionProvider,
+    PromptContextProvider,
+    PromptContextRequest,
+    RunDeps,
+    default_workspace_key,
+)
 from .harness_events import harness_events_capability
 from .tool_search import dormant_index_instructions, tool_search_capability
 from .toolsets import CORE_GATED_TOOLS, build_agent_toolsets, core_categories
@@ -19,6 +25,7 @@ from .toolsets import CORE_GATED_TOOLS, build_agent_toolsets, core_categories
 __all__ = [
     "InstructionProvider",
     "PromptContextProvider",
+    "PromptContextRequest",
     "RunDeps",
     "builtin_toolset",
     "build_agent_toolsets",

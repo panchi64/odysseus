@@ -149,6 +149,20 @@ class SandboxSessionManager:
         so a turn that never touched the sandbox triggers no workspace/history work."""
         return self._sessions.get(safe_key(key))
 
+    def settled_workspace(self, key: str) -> Path | None:
+        """This key's workspace directory if it is already on disk, else ``None`` —
+        **creating nothing**, neither a session nor a directory.
+
+        A live session is not the question. A conversation reaped an hour ago has no
+        session and all of its files, which is exactly the case the caller here cares
+        about: the per-turn block that tells the model what it already built. Going
+        through `acquire`/`ensure_workspace` to answer it would mint a session and an
+        empty directory for every turn that never touches a file — the cost the whole
+        lazy-container design exists to avoid.
+        """
+        workspace = self._work_root / safe_key(key)
+        return workspace if workspace.is_dir() else None
+
     async def acquire(self, key: str, *, holder: LiveWork | None = None) -> SandboxSession:
         """The session for a conversation, created (object only) on first use. If this
         key is mid-teardown from a concurrent sweep/purge, waits for THAT teardown

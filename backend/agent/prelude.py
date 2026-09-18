@@ -40,7 +40,7 @@ from services.projects import ProjectStore, WorktreeManager
 from services.sandbox import SandboxSessionManager
 from services.uploads import UploadStore
 from services.workspace import resolve_workspace
-from tools import PromptContextProvider, default_workspace_key
+from tools import PromptContextProvider, PromptContextRequest, default_workspace_key
 
 from .attachments import resolve_attachments
 from .compaction_context import CompactionContext, resolve_max_input_tokens
@@ -219,9 +219,19 @@ async def prepare_turn(
     # from: these resolve before the agent starts, so there is no request to read
     # them back off. One event type either way — the operator's question is what
     # they were not shown, not which seam delivered it.
+    context_request = PromptContextRequest(
+        caps=caps,
+        owner_id=run.owner_id,
+        conversation_id=conversation_id,
+        mode=binding.mode,
+        project_id=binding.project_id,
+        # The same derivation the file tools use, for the reason `default_workspace_key`
+        # exists: a delegated run must be described its own fork, not its parent's files.
+        workspace_key=workspace_key or default_workspace_key(conversation_id, run),
+    )
     context_texts: list[str] = []
     for provider in prompt_context_providers:
-        text = await provider(caps, run.owner_id, conversation_id)
+        text = await provider(context_request)
         if not text:
             continue
         context_texts.append(text)
