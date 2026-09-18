@@ -58,9 +58,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from core.config import Settings
-
-from .host import HostConfinement, resolve_confinement, scratch_path
+# Re-exported rather than wrapped: the permission layer and the shell tool both ask this
+# module whether the host can fence a process, and the answer is the same process-global
+# singleton the escape hatch resolves (`host.resolve_confinement` — one sandbox per
+# interpreter, configured once and cached). A second name in front of it said nothing the
+# first did not. The `as` spelling is what marks them as this module's surface rather
+# than as imports it forgot to use.
+from .host import HostConfinement as HostConfinement
+from .host import resolve_confinement as resolve_confinement
+from .host import scratch_path
 
 if TYPE_CHECKING:  # pragma: no cover - import-time cost, not behaviour
     from sandbox_runtime import SandboxRuntimeConfig
@@ -172,17 +178,6 @@ class GitDirs:
         if private.parent.parent.resolve() != common.resolve():
             return None
         return cls(private=private, common=common)
-
-
-async def fence_available(settings: Settings) -> HostConfinement:
-    """Whether this host can confine a process, resolving the primitive if it has not been.
-
-    The same process-global singleton the host escape hatch uses (:func:`resolve_confinement`
-    — one sandbox per interpreter, configured once and cached), asked here under the name
-    the permission layer thinks in. A ``False`` answer carries the reason, which is what
-    the tool tells the model when a command runs unfenced.
-    """
-    return await resolve_confinement(settings)
 
 
 def workspace_profile(

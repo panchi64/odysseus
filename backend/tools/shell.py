@@ -149,7 +149,7 @@ async def _fence_gap(confiner: Confiner | None) -> str:
     """
     if confiner is not None:
         return ""
-    resolved = await fence.fence_available(get_settings())
+    resolved = await fence.resolve_confinement(get_settings())
     return "" if resolved.active else resolved.reason
 
 
