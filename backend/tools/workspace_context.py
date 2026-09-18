@@ -51,6 +51,16 @@ _PREAMBLE = (
 # what the agent may keep.
 _MAX_ENTRIES = 200
 
+# Directories the walk prunes but the model still needs to know it *has*, named without
+# being listed. They are pruned because listing them is thousands of lines of files the
+# agent did not write — and they are named because each one is minutes of work it would
+# otherwise do twice: reinstalling a virtualenv it already has, rebuilding a `dist/` it
+# already built, re-cloning a repository whose history is right there. This is the same
+# mistake the seal used to make by dropping them silently, and naming them is the cheap
+# half of not making it. Caches are deliberately absent: nothing the agent decides turns
+# on whether `__pycache__` exists.
+_WORTH_NAMING = (".venv", "venv", "node_modules", ".git", "dist", "build")
+
 
 def _human(size: int) -> str:
     """A file's size in the shortest honest form. Bytes up to a kilobyte, then one
@@ -99,6 +109,17 @@ def _listing(root: Path, excludes: tuple[str, ...]) -> str:
     return "\n".join(lines)
 
 
+def _also_present(root: Path) -> str:
+    """The pruned directories worth naming, if any are there. See `_WORTH_NAMING`."""
+    found = [name for name in _WORTH_NAMING if (root / name).is_dir()]
+    if not found:
+        return ""
+    return (
+        f"Also present, not listed: {', '.join(f'{n}/' for n in found)}. "
+        "Already installed or already built — don't redo them."
+    )
+
+
 async def workspace_context(req: PromptContextRequest) -> str:
     """This conversation's files, for the tail of this turn's prompt.
 
@@ -120,4 +141,8 @@ async def workspace_context(req: PromptContextRequest) -> str:
     if root is None:
         return ""
     listing = _listing(root, get_settings().sandbox_walk_excludes)
-    return f"{_PREAMBLE}\n\n{listing}" if listing else ""
+    also = _also_present(root)
+    if not listing and not also:
+        return ""
+    body = "\n\n".join(part for part in (listing, also) if part)
+    return f"{_PREAMBLE}\n\n{body}"

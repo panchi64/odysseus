@@ -118,8 +118,55 @@ async def test_it_prunes_the_bloat_the_rest_of_the_walk_prunes(tmp_path):
     block = await workspace_context(_request(caps))
 
     assert "/work/keep.py" in block
-    assert ".venv" not in block
-    assert "node_modules" not in block
+    assert "big.so" not in block
+    assert "left-pad" not in block
+
+
+async def test_it_names_the_expensive_directories_it_does_not_list(tmp_path):
+    """Pruning `.venv` and `dist` keeps thousands of files out of the block; saying
+    nothing about them is the seal's mistake in a new place. Each is minutes of work the
+    agent would otherwise do twice."""
+    caps, manager = await _caps(tmp_path)
+    _populate(
+        manager,
+        "conv-a",
+        {
+            "src/analysis.py": "x",
+            ".venv/lib/big.so": "y",
+            "dist/bundle.js": "z",
+            ".git/HEAD": "ref",
+            "__pycache__/m.pyc": "junk",
+        },
+    )
+
+    block = await workspace_context(_request(caps))
+
+    assert "Also present, not listed: .venv/, .git/, dist/." in block
+    assert "don't redo them" in block
+    assert "__pycache__" not in block  # nothing the agent decides turns on a cache
+
+
+async def test_a_workspace_that_is_only_pruned_directories_still_says_so(tmp_path):
+    # `uv sync` and nothing else yet: no file to list, and the single most useful thing
+    # to say is that the virtualenv is already there.
+    caps, manager = await _caps(tmp_path)
+    _populate(manager, "conv-a", {".venv/lib/big.so": "y"})
+
+    block = await workspace_context(_request(caps))
+
+    assert "Also present, not listed: .venv/." in block
+
+
+async def test_scratch_directories_are_named_nowhere(tmp_path):
+    # `.home` and `.tmp` back HOME and TMPDIR inside the box. They are ours, not the
+    # agent's, and every turn that mentioned them would be a turn spent on our plumbing.
+    caps, manager = await _caps(tmp_path)
+    _populate(manager, "conv-a", {"keep.py": "x", ".home/.cache/f": "y", ".tmp/scratch": "z"})
+
+    block = await workspace_context(_request(caps))
+
+    assert ".home" not in block
+    assert ".tmp" not in block
 
 
 async def test_it_reads_disk_rather_than_anything_remembered(tmp_path):
