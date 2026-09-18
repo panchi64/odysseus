@@ -196,6 +196,12 @@ export interface ApprovalGrantDTO {
    *  string, because this is also what identifies the grant to the revoke endpoint and it
    *  has to round-trip exactly — joining is for the label, which is this layer's job. */
   command_prefix: string[];
+  /** Whether the operator picked the wider width — the whole tool, everything it runs.
+   *  Sent because the empty prefix above cannot say so on its own. */
+  decisive: boolean;
+  /** Whether this tool's grants are scoped to a command at all. Only there is "any
+   *  command" a real contrast worth putting on the chip. */
+  command_scoped: boolean;
   // The backend also returns `expires_at`; the strip shows only the scope, so it's
   // intentionally not mapped into the seam type.
 }

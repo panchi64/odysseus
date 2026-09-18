@@ -291,8 +291,11 @@ export function createApprovalOps(deps: ApprovalDeps): ApprovalOps {
       );
       deps.patchById(messageId, optimistic);
       // A recorded conversation grant must show on the strip now, not on the next
-      // stream toggle — nudge the grants resource to refetch.
-      if (decisions.some((d) => d.scope === "conversation")) {
+      // stream toggle — nudge the grants resource to refetch. Tested as "anything but
+      // once", not against the standing scopes by name: a third width was added and a
+      // check listing them one by one is a check that silently stops covering the newest
+      // one, which is the width most worth seeing a chip for.
+      if (decisions.some((d) => d.scope && d.scope !== "once")) {
         bumpGrantsRevision();
         // ...and say so when the backend recorded nothing. It refuses a standing yes to a
         // command no scope could stand for — one it cannot read, or one reaching outside

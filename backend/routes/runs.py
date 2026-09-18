@@ -227,9 +227,13 @@ class ApprovalDecision(BaseModel):
     approved: bool
     message: str | None = None  # shown to the model on denial
     override_args: dict[str, Any] | None = None  # replace args on approval
-    # "conversation" records an auto-approval grant for this tool so the same call
-    # isn't re-prompted for the rest of the conversation; "once" is this call only.
-    scope: Literal["once", "conversation"] = "once"
+    # How long this yes lasts. "once" is this call only. "conversation" records an
+    # auto-approval grant so the same *act* isn't re-prompted for the rest of the thread —
+    # which on a tool that runs a command is that command, derived here from the parked
+    # call. "conversation_tool" is the operator's wider pick: the whole tool, everything it
+    # runs, offered on the card in its own words because it is a materially larger thing to
+    # say and the narrow one must stay the easy path.
+    scope: Literal["once", "conversation", "conversation_tool"] = "once"
     # Which kind of no this is. Read only when `approved` is False, and it changes nothing
     # about what runs — both stop the call — only what the model is told happened. "deny"
     # is the operator refusing the act; "revise" is them asking for a different version of
@@ -400,8 +404,9 @@ async def approve_run(
             )
 
     # New "allow for this conversation" grants the operator chose this batch, as
-    # (tool, command scope) pairs. The scope is derived **here, from the call as it will
-    # actually run** rather than sent by the client: what the operator is saying yes to is
+    # (tool, command scope, decisive) rows. At the narrow width the scope is derived
+    # **here, from the call as it will actually run** rather than sent by the client: what
+    # the operator is saying yes to is
     # the act about to be taken, and a scope the client could name is a scope it could
     # widen. That is the call's own arguments, or the ones the operator replaced them with
     # — an override *is* the act they approved, and scoping the standing yes to the command
@@ -409,8 +414,9 @@ async def approve_run(
     # command-running tool contributes one grant per stage of its command line, and none at
     # all when the command could not be read (`services/approval_grants.py`); the ids of
     # those ride back on the response, since the operator asked for something they did not
-    # get.
-    to_grant: list[tuple[str, tuple[str, ...]]] = []
+    # get. The wider width derives nothing — it names the tool, which the parked call
+    # already says — so it cannot fail that way and never appears in `unscoped`.
+    to_grant: list[tuple[str, tuple[str, ...], bool]] = []
     unscoped: list[str] = []
     for decision in body.decisions:
         if decision.approved:
@@ -422,21 +428,31 @@ async def approve_run(
             # checkbox is not wrong to have offered it, and the operator's decision on this
             # call still stands.
             if (
-                decision.scope == "conversation"
+                decision.scope != "once"
                 and parked.conversation_id is not None
                 and granted_call.tool_name not in ONCE_ONLY_TOOLS
             ):
-                effective = (
-                    decision.override_args
-                    if decision.override_args is not None
-                    else granted_call.args_as_dict()
-                )
-                scopes = grant_scopes(granted_call.tool_name, effective)
-                if scopes is None:
-                    unscoped.append(decision.tool_call_id)
+                if decision.scope == "conversation_tool":
+                    # The wider pick names the tool, so there is nothing to derive and
+                    # nothing that can fail to derive: a command this walk cannot read is
+                    # still grantable at this width, because the operator is not saying
+                    # anything about the command. It is never reported as unscoped for the
+                    # same reason — they got exactly what they asked for.
+                    scopes: list[tuple[str, ...]] | None = [()]
+                else:
+                    effective = (
+                        decision.override_args
+                        if decision.override_args is not None
+                        else granted_call.args_as_dict()
+                    )
+                    scopes = grant_scopes(granted_call.tool_name, effective)
+                    if scopes is None:
+                        unscoped.append(decision.tool_call_id)
+                decisive = decision.scope == "conversation_tool"
                 for scope in scopes or ():
-                    if (granted_call.tool_name, scope) not in to_grant:
-                        to_grant.append((granted_call.tool_name, scope))
+                    row = (granted_call.tool_name, scope, decisive)
+                    if row not in to_grant:
+                        to_grant.append(row)
         else:
             decisions[decision.tool_call_id] = ToolDenied(
                 message=refusal_message(decision.intent, decision.message)
@@ -493,12 +509,24 @@ async def approve_run(
     # it), and the resumed turn's inline grant check must see them, or a tool re-called
     # within that same turn would re-prompt despite the operator's "allow for this
     # conversation". If the resume can't be accepted, roll the new grants back so a dead
-    # run leaves no standing auto-approval behind (these tools had no active grant before,
-    # else their calls wouldn't have been pending).
+    # run leaves no standing auto-approval behind.
+    #
+    # **Only the ones that are new**, which is why the scopes already there are read first.
+    # The rollback used to assume a pending call meant no grant covered it — true where a
+    # level asks outright, and false at the level that reviews: there a command-scoped
+    # grant does not settle a call, so a thread can hold a live standing yes and still park
+    # on the very act it names. Approving that refreshes the row rather than creating one,
+    # and a blanket rollback would then delete a grant the operator had before they ever
+    # opened this card, because a run they were not told about failed to resume.
     conv_id = parked.conversation_id
+    already: set[tuple[str, tuple[str, ...]]] = set()
     if to_grant and conv_id is not None:
-        for tool_name, scope in to_grant:
-            await grants.grant(deps.OPERATOR_ID, conv_id, tool_name, scope)
+        already = {
+            (g.tool_name, g.command_prefix)
+            for g in await grants.list(deps.OPERATOR_ID, conv_id)
+        }
+        for tool_name, scope, decisive in to_grant:
+            await grants.grant(deps.OPERATOR_ID, conv_id, tool_name, scope, decisive)
     # A resumed turn runs under the *operator's* bounds, not the registry defaults. Both
     # are settings now, and a continuation that quietly ran unbounded (or under a config
     # default the operator had overridden) would make the setting a half-truth — approval
@@ -514,7 +542,8 @@ async def approve_run(
         is None
     ):
         if to_grant and conv_id is not None:
-            for tool_name, scope in to_grant:
-                await grants.revoke(deps.OPERATOR_ID, conv_id, tool_name, scope)
+            for tool_name, scope, _ in to_grant:
+                if (tool_name, scope) not in already:
+                    await grants.revoke(deps.OPERATOR_ID, conv_id, tool_name, scope)
         raise HTTPException(status_code=409, detail="run could not be resumed")
-    return ApprovalOutcome(granted=[list(scope) for _, scope in to_grant], unscoped=unscoped)
+    return ApprovalOutcome(granted=[list(scope) for _, scope, _ in to_grant], unscoped=unscoped)

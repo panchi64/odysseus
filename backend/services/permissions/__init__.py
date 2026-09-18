@@ -41,6 +41,8 @@ from services.permissions.levels import (
     tools_beyond_scope,
 )
 from services.permissions.reviewer import (
+    Authorization,
+    GrantWidth,
     Reviewer,
     ReviewRequest,
     ReviewVerdict,
@@ -61,8 +63,10 @@ __all__ = [
     "STRICTEST_PERMISSION",
     "ActionKind",
     "ApprovalPolicy",
+    "Authorization",
     "Capability",
     "Decision",
+    "GrantWidth",
     "Judgement",
     "PermissionLevel",
     "PermissionSpec",

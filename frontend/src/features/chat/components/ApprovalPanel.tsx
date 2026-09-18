@@ -261,7 +261,8 @@ export function ApprovalPanel(props: {
               <Show when={!isPlan(approval)}>
                 <ConversationGrantToggle
                   command={commandOf(approval)}
-                  checked={grant.isAllowed(keyOf(approval))}
+                  toolName={approval.name}
+                  width={grant.widthOf(keyOf(approval))}
                   onChange={(v) => {
                     grant.set(keyOf(approval), v);
                     emit();

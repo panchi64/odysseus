@@ -1,6 +1,6 @@
 import { For, Show, createSignal, type JSX } from "solid-js";
 import { Button, Panel, Row, Stack, StatusFlag, Text, type Status } from "~/ui";
-import { grantKey } from "../commandScope";
+import { grantKey, type GrantWidth } from "../commandScope";
 import type { ApprovalDecision, HostCommand, HostCommandPhase } from "../model";
 import {
   ConversationGrantToggle,
@@ -101,7 +101,7 @@ export function HostCommandCard(props: {
             held={command.toolCallId in decisions() && !allDecided()}
             submitting={submitting()}
             open={props.open}
-            sessionAllowed={grant.isAllowed(keyOf(command))}
+            sessionWidth={grant.widthOf(keyOf(command))}
             onToggleSession={(v) => grant.set(keyOf(command), v)}
             onDecide={decide}
           />
@@ -121,9 +121,10 @@ function Terminal(props: {
   submitting?: boolean;
   /** When defined, controls the runtime-output collapse; defaults to expanded. */
   open?: boolean;
-  /** Whether approving this command also grants it for the rest of the conversation. */
-  sessionAllowed?: boolean;
-  onToggleSession?: (allow: boolean) => void;
+  /** How far approving this command also grants it for the rest of the conversation —
+   *  nothing, this command, or everything the tool runs. */
+  sessionWidth?: GrantWidth;
+  onToggleSession?: (width: GrantWidth) => void;
   onDecide: (toolCallId: string, approved: boolean) => void;
 }): JSX.Element {
   const c = () => props.command;
@@ -202,7 +203,8 @@ function Terminal(props: {
                   clicked (see `decide`), so set it before approving. */}
               <ConversationGrantToggle
                 command={c().command}
-                checked={props.sessionAllowed}
+                toolName={c().name}
+                width={props.sessionWidth}
                 disabled={props.submitting}
                 onChange={(v) => props.onToggleSession?.(v)}
               />

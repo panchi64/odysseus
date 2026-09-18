@@ -45,6 +45,7 @@ from services.permissions.judge import Tier, judge
 from services.permissions.levels import ApprovalPolicy, beyond_scope, permission_spec
 from services.permissions.reviewer import (
     Authorization,
+    GrantWidth,
     Reviewer,
     ReviewRequest,
     ReviewVerdict,
@@ -179,7 +180,7 @@ async def review(
     *,
     reviewer: Reviewer | None,
     transcript: Sequence[TranscriptEntry] = (),
-    granted: bool = False,
+    granted: GrantWidth = "none",
     fenced: bool = False,
     budget: ReviewBudget | None = None,
     nonce: str | None = None,
@@ -197,21 +198,32 @@ async def review(
     because a caller that could not say is a caller with nothing to hold a command to, and
     the cost of being wrong that way is a model call rather than an act nobody cleared.
 
-    ``granted`` says the operator has a standing conversation grant on this tool
-    (``services/approval_grants.py``). At every other level that grant *is* the answer and
-    settles the call; here it is an **input to the review** instead. A grant is the
-    operator saying yes to a tool, and at Auto the question is what one particular call to
-    it would do — so the grant supplies the authorization and the rest of the review still
-    runs, which is what keeps one "allow for this conversation" on a shell tool from
+    ``granted`` is how far the operator's standing conversation grant reaches over this
+    call (``services/approval_grants.py``). At every other level a grant of either width
+    *is* the answer and settles the call; here the two widths part, because here the
+    question is what one particular call would do.
+
+    A ``"command"`` grant is an **input to the review**. It names one act, so it is not an
+    answer about every call the tool could make — the grant supplies the authorization and
+    the rest of the review still runs, which is what keeps one tick under a test run from
     switching the review off for every command in the thread. It supplies that
     authorization only where the reviewer had **nothing** to say: a reviewer that read the
     operator as having refused this act in this very turn is reading their most recent
-    word, and a grant left earlier in the thread does not get to outrank it. And it is an
-    input to a review that *ran*: where there is no reviewer to run at all there is nothing
-    for it to authorize, so the call parks like every other unreviewable one. A grant that
-    settled the call outright in that case would switch the level off on any installation
-    with no utility model bound — one "allow for this conversation" on ``shell_run_command``
-    and no command in the thread is ever looked at again.
+    word, and a grant left earlier in the thread does not get to outrank it.
+
+    A ``"tool"`` grant *is* that answer, and is read as one. The operator was offered the
+    wider width in its own words — this tool, everything it runs, for this thread — and
+    picked it, so the review takes it as their authorization outright rather than only
+    where it found a gap. What it still cannot do is make an act nobody can undo into one
+    somebody can: a ``too_destructive`` verdict parks at both widths, because that is not a
+    question about authorization (:func:`_verdict_decision`).
+
+    **Both widths are inputs to a review that *ran*.** Where there is no reviewer at all
+    there is nothing for a grant to authorize, so the call parks like every other
+    unreviewable one — and that is the case the wider width most needs to keep, since a
+    grant that settled the call outright here would switch the level off on any
+    installation with no utility model bound, where nothing would ever have looked at the
+    act to say whether it was recoverable.
 
     The combination, stated once here and written down nowhere the reviewer can read it
     (``reviewer.py``):
@@ -269,7 +281,10 @@ async def review(
     return ReviewOutcome(
         decision,
         "reviewer",
-        _verdict_reason(verdict, filled_by_grant=authorization != verdict.authorization),
+        _verdict_reason(
+            verdict,
+            grant=granted if authorization != verdict.authorization else "none",
+        ),
         verdict,
         # Marked as the grant's only where the grant is what *changed* the answer — the
         # same verdict read without it parks. A low-risk act the review would have cleared
@@ -305,30 +320,49 @@ def _verdict_decision(verdict: ReviewVerdict, *, authorization: Authorization) -
             return Decision.ASK
 
 
-def _authorization(verdict: ReviewVerdict, *, granted: bool) -> Authorization:
+def _authorization(verdict: ReviewVerdict, *, granted: GrantWidth) -> Authorization:
     """The authorization the arithmetic runs on: the reviewer's, with a standing grant
-    filling in for it where the reviewer found nothing either way.
+    standing in for it as far as the operator said it should.
 
-    **A grant fills a gap; it does not overrule a refusal.** ``explicitly_no`` is the
-    reviewer's reading of what the operator said in *this* turn, and a grant recorded
-    earlier in the thread is older than that by construction — treating it as the answer
-    produced a row that reported the operator had said no and allowed the call in the same
-    sentence. ``neutral`` is the case the grant was recorded for: the thread contains no
-    word about this act, and the operator has already said yes to the tool.
+    **A command-scoped grant fills a gap; it does not overrule a refusal.**
+    ``explicitly_no`` is the reviewer's reading of what the operator said in *this* turn,
+    and a grant naming one act, recorded earlier in the thread, is older than that by
+    construction — treating it as the answer produced a row that reported the operator had
+    said no and allowed the call in the same sentence. ``neutral`` is the case that grant
+    was recorded for: the thread contains no word about this act, and the operator has
+    already said yes to it once.
+
+    **A whole-tool grant is the answer, and replaces the reviewer's reading of it.** That
+    width is only ever written because the operator picked it under copy that says what it
+    does — everything this tool runs, for this thread, without being asked — so a reviewer
+    inferring a refusal from the prose of the turn is not a more recent word than the one
+    they typed into the card. The risk axis is untouched either way, which is where the act
+    nobody can undo still stops (:func:`_verdict_decision`).
     """
-    if granted and verdict.authorization == "neutral":
+    if granted == "tool":
+        return "explicitly_yes"
+    if granted == "command" and verdict.authorization == "neutral":
         return "explicitly_yes"
     return verdict.authorization
 
 
-def _verdict_reason(verdict: ReviewVerdict, *, filled_by_grant: bool) -> str:
+def _verdict_reason(verdict: ReviewVerdict, *, grant: GrantWidth) -> str:
     """The row's account of the ruling — the reviewer's two axes as it read them, and the
     grant named separately where one supplied the authorization. Stated apart rather than
     folded together because "the model found you had asked for this" and "you had already
-    said yes to this tool" are different grounds, and only one of them is revocable. Named
-    only where it actually did the work, so a row can never both report a refusal and
-    credit a grant for overriding it (:func:`_authorization`)."""
+    said yes to this" are different grounds, and only one of them is revocable. Named only
+    where it actually did the work (``"none"`` otherwise), so a row never credits a grant
+    for an answer the review reached on its own.
+
+    **The two widths are named differently, because they are different sentences.** One
+    says the operator had already approved this act; the other says they handed the whole
+    tool over for the thread. A row that read the same for both would hide, from the one
+    surface that explains a decision, which of the two the operator is actually holding —
+    and the wider one is the one they are most likely to want to go and revoke.
+    """
     reason = f"{verdict.risk} risk, authorization {verdict.authorization}"
-    if filled_by_grant:
-        reason += "; your standing grant for this tool is the authorization"
+    if grant == "command":
+        reason += "; your standing grant for this command is the authorization"
+    elif grant == "tool":
+        reason += "; your standing grant for this whole tool is the authorization"
     return f"{reason}; {verdict.correctness}" if verdict.correctness else reason

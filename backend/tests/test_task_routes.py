@@ -193,6 +193,10 @@ async def test_run_now_creates_conversation_run_and_seeds_grants(monkeypatch):
 
         granted = await app.state.approval_grants.list("operator", row["conversationId"])
         assert {g.tool_name for g in granted} == {"conversations_search", "corpus_retrieve"}
+        # Whole-tool by shape, but never the operator's wider pick: nobody was in front of
+        # this run to make it, and the thread it opened is one they can reopen later. A
+        # seed promoted by its shape would go on answering past this single execution.
+        assert not any(g.decisive for g in granted)
 
         # The task's own bookkeeping reflects the fire too.
         refreshed = (await client.get("/tasks")).json()["items"][0]

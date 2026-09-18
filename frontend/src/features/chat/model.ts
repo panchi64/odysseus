@@ -720,10 +720,13 @@ export interface ApprovalDecision {
   approved: boolean;
   message?: string;
   override_args?: Record<string, unknown>;
-  /** "conversation" also records an auto-approval grant so this tool isn't
-   *  re-prompted for the rest of the conversation; "once" (default) is this
-   *  call only. Only acted on by the backend when `approved` is true. */
-  scope?: "once" | "conversation";
+  /** How long this yes lasts. "once" (default) is this call only. "conversation" also
+   *  records an auto-approval grant so the same *act* isn't re-prompted for the rest of
+   *  the thread — on a tool that runs a command that is the command, derived server-side
+   *  from the parked call. "conversation_tool" is the wider pick: the whole tool, offered
+   *  in its own words because it is a materially larger thing to say. Only acted on by the
+   *  backend when `approved` is true. */
+  scope?: "once" | "conversation" | "conversation_tool";
   /** Which kind of no. Read only when `approved` is false, and it changes nothing about
    *  what runs — both stop the call — only what the model is told happened: "deny" is a
    *  refusal, "revise" (default "deny") is a request for a different version of the same
@@ -760,6 +763,15 @@ export interface ApprovalGrant {
    *  the chip and in the revoke. Kept as words rather than a sentence because the revoke
    *  sends it straight back: joining is for the chip's label. */
   commandPrefix: string[];
+  /** Whether this is the operator's wider pick — their answer for the whole tool, which
+   *  the reviewing level takes as the authorization rather than merely weighing. The chip
+   *  needs it because an empty `commandPrefix` alone cannot say which of the two this is:
+   *  a non-command tool's ordinary grant and a scheduled task's seed take the same shape. */
+  decisive: boolean;
+  /** Whether this tool's grants are scoped to a command at all. A tool that runs none has
+   *  only one width, so "any command" is not a contrast there — it names commands that do
+   *  not exist. */
+  commandScoped: boolean;
 }
 
 /** A conversation's compaction state — the same shape for both reductions. `override` is
