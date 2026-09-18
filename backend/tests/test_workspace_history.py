@@ -19,7 +19,7 @@ from services.workspace_history import WorkspaceHistoryStore
 from ._helpers import client_app, collect_sse_events, patch_model_resolution
 from .conftest import egress_policy
 
-_EXCLUDES = Settings().sandbox_session_seal_excludes
+_EXCLUDES = Settings().sandbox_walk_excludes
 
 
 async def _store(tmp_path) -> WorkspaceHistoryStore:

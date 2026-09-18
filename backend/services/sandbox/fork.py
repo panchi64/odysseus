@@ -38,18 +38,18 @@ from pathlib import Path
 from core.fork import MergeReport, clone_tree
 
 from .base import SandboxError, contained_path
-from .seal import walk_files
+from .walk import walk_files
 
 logger = logging.getLogger(__name__)
 
 
 def fork_marker(workspace: Path) -> Path:
-    """The flag that says: this workspace is a fork, so discard it, never seal it.
+    """The flag that says: this workspace is a fork, so delete it rather than keep it.
 
-    A sibling of the directory rather than a file inside it — like
-    :func:`~services.sandbox.seal.partial_marker`, and for the same reason: a file
-    inside would be copied into the child's own forks and would land in the parent on a
-    merge back.
+    It is what makes a fork the one workspace a reap throws away, and what lets the
+    idle sweep recognise one a crashed process stranded. A sibling of the directory
+    rather than a file inside it: a file inside would be copied into the child's own
+    forks and would land in the parent on a merge back.
     """
     return workspace.with_name(workspace.name + ".fork")
 

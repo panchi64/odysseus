@@ -1,10 +1,12 @@
-"""Per-conversation live sandboxes: selective sealing, lazy acquisition, the idle
-reaper, and (with a runtime) file continuity across calls and across a reap."""
+"""Per-conversation live sandboxes: lazy acquisition, the idle reaper, what a reap
+does and does not touch, and (with a runtime) file continuity across calls and across
+a reap."""
 
 from __future__ import annotations
 
 import asyncio
-import shutil
+import io
+import tarfile
 import threading
 import time
 from pathlib import Path
@@ -29,18 +31,14 @@ from services.sandbox import (
 )
 from services.sandbox.base import safe_key
 from services.sandbox.fork import fork_marker
-from services.sandbox.seal import (
-    excluded,
-    partial_marker,
-    restore_workspace,
-    seal_workspace,
-)
+from services.sandbox.legacy_seal import adopt_legacy_archive, partial_marker
+from services.sandbox.walk import excluded
 from services.sandbox.warmup import ImageWarmup
 
 from .conftest import egress_policy
 from .test_sandbox import _runtime_ready
 
-_EXCLUDES = Settings().sandbox_session_seal_excludes
+_EXCLUDES = Settings().sandbox_walk_excludes
 
 
 async def _vault(tmp_path) -> Vault:
@@ -73,6 +71,24 @@ def _manager(tmp_path, vault, **overrides) -> SandboxSessionManager:
     )
     opts.update(overrides)
     return SandboxSessionManager(backend, vault, **opts)
+
+
+def _legacy_archive(tmp_path: Path, vault: Vault, files: dict[str, str]) -> bytes:
+    """An archive in the format the sealing build wrote, so the one-way adoption path
+    can be tested against real bytes. Built here rather than imported because the code
+    that produced these is gone — this is the last spelling of that format, and it is a
+    test fixture rather than a seam."""
+    staging = tmp_path / f"legacy-{len(list(tmp_path.iterdir()))}"
+    staging.mkdir(parents=True)
+    for rel, text in files.items():
+        target = staging / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for item in sorted(staging.iterdir()):
+            tar.add(item, arcname=item.name)
+    return vault.encrypt_bytes(buf.getvalue())
 
 
 def _session(tmp_path, vault, **overrides) -> SandboxSession:
@@ -124,69 +140,77 @@ async def test_write_file_rejects_a_path_escape(tmp_path):
         session.write_file("../escape.txt", b"nope")
 
 
-async def test_written_file_survives_a_seal_and_restore(tmp_path):
-    # A staged file is inside the sealed workspace, so it persists across a reap.
+async def test_written_file_survives_a_reap(tmp_path):
     vault = await _vault(tmp_path)
     session = await _manager(tmp_path, vault).acquire("conv-x")
     session.write_file("attachments/keep.txt", b"hold onto me")
 
-    await session.shutdown()  # seals the workspace and removes the plaintext
-    assert not session.workspace.exists()
+    await session.shutdown()  # takes the container down; the files are not its business
 
-    assert session.read_file("attachments/keep.txt") == b"hold onto me"  # restored from the seal
+    assert session.workspace.exists()
+    assert session.read_file("attachments/keep.txt") == b"hold onto me"
 
 
-# --- sealing keeps the agent's files, drops the bloat ------------------------
-async def test_seal_round_trip_keeps_files_drops_bloat(tmp_path):
+# --- what a reap leaves alone ------------------------------------------------
+async def test_a_reap_keeps_the_dependencies_and_history_a_run_built(tmp_path):
+    """The bug this whole design exists to close: a reap used to archive the workspace
+    minus `.venv`, `node_modules`, `dist` and `.git`, so the next turn found a tree
+    missing exactly what the last one had spent minutes building — and re-did it."""
     vault = await _vault(tmp_path)
-    work = tmp_path / "work"
-    (work / "sub").mkdir(parents=True)
+    session = await _manager(tmp_path, vault).acquire("conv-x")
+    work = session.ensure_workspace()
     (work / "analysis.py").write_text("print('hi')")
-    (work / "sub" / "out.txt").write_text("result")
-    (work / ".venv" / "lib").mkdir(parents=True)
-    (work / ".venv" / "lib" / "big.so").write_bytes(b"x" * 1000)
-    (work / "__pycache__").mkdir()
-    (work / "__pycache__" / "m.pyc").write_bytes(b"junk")
+    for built in (".venv/lib", "node_modules/left-pad", "dist", ".git/refs"):
+        (work / built).mkdir(parents=True)
+        (work / built / "f").write_text("expensive")
 
-    sealed = seal_workspace(work, _EXCLUDES, vault)
-    restored = tmp_path / "restored"
-    restore_workspace(sealed, restored, vault)
+    await session.shutdown()
 
-    assert (restored / "analysis.py").read_text() == "print('hi')"
-    assert (restored / "sub" / "out.txt").read_text() == "result"
-    assert not (restored / ".venv").exists()  # virtual env dropped
-    assert not (restored / "__pycache__").exists()  # cache dropped
+    for built in (".venv/lib", "node_modules/left-pad", "dist", ".git/refs"):
+        assert (work / built / "f").read_text() == "expensive", built
+    assert (work / "analysis.py").read_text() == "print('hi')"
 
 
-async def test_seal_drops_symlinks_so_one_bad_link_cant_brick_restore(tmp_path):
+async def test_a_reap_writes_no_archive(tmp_path):
     vault = await _vault(tmp_path)
-    work = tmp_path / "work"
-    work.mkdir()
-    (work / "real.txt").write_text("keep me")
-    (work / "evil").symlink_to("/etc/passwd")  # an absolute link the agent could plant
+    session = await _manager(tmp_path, vault).acquire("conv-x")
+    session.write_file("keep.txt", b"data")
 
-    sealed = seal_workspace(work, _EXCLUDES, vault)
-    restored = tmp_path / "restored"
-    restore_workspace(sealed, restored, vault)  # must NOT raise on the bad link
+    await session.shutdown()
 
-    assert (restored / "real.txt").read_text() == "keep me"  # the real file survives
-    assert not (restored / "evil").exists()  # the symlink was never archived
+    assert not session.sealed.exists()
 
 
-async def test_reaper_defers_while_the_vault_is_locked(tmp_path):
+async def test_the_reaper_runs_with_the_vault_locked(tmp_path):
+    """Reaping used to need the vault key, because it sealed. It no longer touches a
+    file, so a locked vault — the state a machine sits in for hours — no longer means
+    every idle container is kept alive."""
     vault = Vault(tmp_path / "k.json")
     await vault.setup("pw")
     vault.lock()
     manager = _manager(tmp_path, vault, idle_ttl_s=0.0)
     session = await manager.acquire("conv-a")
-    session.workspace.mkdir(parents=True, exist_ok=True)
-    (session.workspace / "f.txt").write_text("data")
+    session.write_file("f.txt", b"data")
 
-    await manager._sweep()  # cannot seal without the key → must not reap
+    await manager._sweep()
 
-    assert manager._sessions  # session kept, not evicted
-    assert session.workspace.exists()  # not killed-and-stranded as plaintext
-    assert not session.sealed.exists()
+    assert not manager._sessions  # reaped, key or no key
+    assert session.read_file("f.txt") == b"data"  # and the files are untouched
+
+
+async def test_the_cap_is_enforced_with_the_vault_locked(tmp_path):
+    vault = Vault(tmp_path / "k.json")
+    await vault.setup("pw")
+    vault.lock()
+    manager = _manager(tmp_path, vault, max_sessions=1)
+    first = await manager.acquire("conv-a")
+    first.write_file("f.txt", b"data")
+
+    second = await manager.acquire("conv-b")
+
+    assert set(manager._sessions) == {safe_key("conv-b")}
+    assert second is not first
+    assert first.read_file("f.txt") == b"data"
 
 
 # --- errors surface legibly, never as a crash --------------------------------
@@ -202,10 +226,74 @@ async def test_run_wraps_an_unexpected_error_as_sandbox_error(tmp_path, monkeypa
         await session.run(SandboxSpec(command=["echo", "hi"]))
 
 
-async def test_restoring_a_damaged_seal_raises_sandbox_error(tmp_path):
+async def test_adopting_a_damaged_archive_raises_sandbox_error(tmp_path):
     vault = await _vault(tmp_path)
+    archive = tmp_path / "old.tar.enc.gz"
+    archive.write_bytes(b"not a valid sealed archive")
     with pytest.raises(SandboxError):
-        restore_workspace(b"not a valid sealed archive", tmp_path / "out", vault)
+        adopt_legacy_archive(archive, tmp_path / "out", vault)
+
+
+# --- archives written by the sealing build are read back once, then retired ---
+async def test_a_sealing_era_archive_is_adopted_and_deleted(tmp_path):
+    vault = await _vault(tmp_path)
+    archive = tmp_path / "old.tar.enc.gz"
+    archive.write_bytes(_legacy_archive(tmp_path, vault, {"report.md": "the work"}))
+    work = tmp_path / "adopted"
+
+    assert adopt_legacy_archive(archive, work, vault) is True
+
+    assert (work / "report.md").read_text() == "the work"
+    # Left in place it would be a second copy nothing updates, which the next cold open
+    # would silently prefer over everything done since.
+    assert not archive.exists()
+
+
+async def test_adopting_nothing_is_the_ordinary_case(tmp_path):
+    vault = await _vault(tmp_path)
+    assert adopt_legacy_archive(tmp_path / "absent.tar.enc.gz", tmp_path / "w", vault) is False
+
+
+async def test_a_conversation_opens_its_sealing_era_archive_on_first_use(tmp_path):
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault)
+    session = await manager.acquire("conv-old")
+    session.sealed.parent.mkdir(parents=True, exist_ok=True)
+    session.sealed.write_bytes(_legacy_archive(tmp_path, vault, {"notes.txt": "from before"}))
+
+    assert session.read_file("notes.txt") == b"from before"
+    assert not session.sealed.exists()
+
+
+async def test_adopting_an_archive_needs_the_key(tmp_path):
+    vault = Vault(tmp_path / "k.json")
+    await vault.setup("pw")
+    archive = tmp_path / "old.tar.enc.gz"
+    archive.write_bytes(_legacy_archive(tmp_path, vault, {"a.txt": "x"}))
+    vault.lock()
+
+    with pytest.raises(SandboxError):
+        adopt_legacy_archive(archive, tmp_path / "w", vault)
+    assert archive.exists()  # refused, never destroyed
+
+
+async def test_a_fragment_beside_an_archive_is_thrown_away_not_kept(tmp_path):
+    """A sealing-era restore that died mid-extract left a directory holding *less* than
+    the archive beside it. The archive is the whole copy, so it is what wins."""
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault)
+    session = await manager.acquire("conv-old")
+    session.workspace.mkdir(parents=True, exist_ok=True)
+    (session.workspace / "half.txt").write_text("torn")
+    partial_marker(session.workspace).touch()
+    session.sealed.parent.mkdir(parents=True, exist_ok=True)
+    session.sealed.write_bytes(_legacy_archive(tmp_path, vault, {"whole.txt": "all of it"}))
+
+    session.ensure_workspace()
+
+    assert (session.workspace / "whole.txt").read_text() == "all of it"
+    assert not (session.workspace / "half.txt").exists()
+    assert not partial_marker(session.workspace).exists()
 
 
 # --- lazy acquisition --------------------------------------------------------
@@ -373,23 +461,20 @@ async def test_kill_removes_container_sidecar_and_network(tmp_path, monkeypatch)
 
 
 # --- the idle reaper ---------------------------------------------------------
-async def test_reaper_seals_then_drops_an_idle_session(tmp_path):
+async def test_reaper_drops_an_idle_session_and_keeps_its_files(tmp_path):
     vault = await _vault(tmp_path)
     manager = _manager(tmp_path, vault, idle_ttl_s=0.0)
     session = await manager.acquire("conv-a")
-    session.workspace.mkdir(parents=True, exist_ok=True)
-    (session.workspace / "notes.txt").write_text("keep me")
+    session.write_file("notes.txt", b"keep me")
 
     await manager._sweep()
 
     assert not manager._sessions  # reaped from the registry
-    assert session.sealed.exists()  # files preserved, encrypted
-    assert not session.workspace.exists()  # plaintext cleared
+    assert session.workspace.exists()  # the container went; the files did not
 
-    # Resuming the conversation restores the kept files into a fresh session.
+    # Resuming the conversation finds them exactly where it left them.
     revived = await manager.acquire("conv-a")
-    revived._ensure_workspace()
-    assert (revived.workspace / "notes.txt").read_text() == "keep me"
+    assert (revived.ensure_workspace() / "notes.txt").read_text() == "keep me"
 
 
 async def test_start_stop_manages_the_reaper_task(tmp_path):
@@ -426,8 +511,7 @@ async def test_a_new_session_displaces_the_least_recently_used_one_at_the_cap(tm
     manager = _manager(tmp_path, vault, max_sessions=2)
     first = await manager.acquire("conv-a")
     second = await manager.acquire("conv-b")
-    second.workspace.mkdir(parents=True, exist_ok=True)
-    (second.workspace / "notes.txt").write_text("keep me")
+    second.write_file("notes.txt", b"keep me")
     await asyncio.sleep(0.01)
     first.touch()  # conv-b is now the least recently used
 
@@ -435,13 +519,11 @@ async def test_a_new_session_displaces_the_least_recently_used_one_at_the_cap(tm
 
     assert set(manager._sessions) == {safe_key("conv-a"), safe_key("conv-c")}
     assert third is manager._sessions[safe_key("conv-c")]
-    # Displaced, not discarded: sealed exactly as an idle reap seals, and the files come
-    # back the next time that conversation runs code.
-    assert second.sealed.exists()
-    assert not second.workspace.exists()
+    # Displaced, not discarded: torn down exactly as an idle reap tears down, and the
+    # files are still there the next time that conversation runs code.
+    assert second.workspace.exists()
     revived = await manager.acquire("conv-b")
-    revived._ensure_workspace()
-    assert (revived.workspace / "notes.txt").read_text() == "keep me"
+    assert (revived.ensure_workspace() / "notes.txt").read_text() == "keep me"
 
 
 async def test_the_cap_never_displaces_a_session_with_a_call_in_flight(tmp_path):
@@ -456,24 +538,6 @@ async def test_the_cap_never_displaces_a_session_with_a_call_in_flight(tmp_path)
         assert set(manager._sessions) == {safe_key("conv-a"), safe_key("conv-b")}
     finally:
         busy._lock.release()
-
-
-async def test_the_cap_defers_while_the_vault_is_locked(tmp_path):
-    vault = Vault(tmp_path / "k.json")
-    await vault.setup("pw")
-    manager = _manager(tmp_path, vault, max_sessions=1)
-    first = await manager.acquire("conv-a")
-    first.workspace.mkdir(parents=True, exist_ok=True)
-    (first.workspace / "f.txt").write_text("data")
-    vault.lock()
-
-    await manager.acquire("conv-b")
-
-    # Reaping seals, sealing needs the key — a container too many beats stranding the
-    # agent's plaintext files on disk.
-    assert set(manager._sessions) == {safe_key("conv-a"), safe_key("conv-b")}
-    assert first.workspace.exists()
-    assert not first.sealed.exists()
 
 
 class _Work:
@@ -509,8 +573,7 @@ async def test_the_claim_lasts_exactly_as_long_as_the_run_does(tmp_path):
     manager = _manager(tmp_path, vault, max_sessions=1)
     turn = _Work()
     working = await manager.acquire("conv-a", holder=turn)
-    working.workspace.mkdir(parents=True, exist_ok=True)
-    (working.workspace / "notes.txt").write_text("keep me")
+    working.write_file("notes.txt", b"keep me")
     await manager.acquire("conv-b")
 
     turn.is_terminal = True  # stopped, failed or answered — the sandbox cannot tell
@@ -518,7 +581,7 @@ async def test_the_claim_lasts_exactly_as_long_as_the_run_does(tmp_path):
     assert working.is_displaceable
     await manager.acquire("conv-c")
     assert safe_key("conv-a") not in manager._sessions
-    assert working.sealed.exists()
+    assert working.read_file("notes.txt") == b"keep me"
 
 
 async def test_the_cap_never_displaces_a_conversation_serving_a_live_preview(tmp_path):
@@ -538,30 +601,28 @@ async def test_the_cap_never_displaces_a_conversation_serving_a_live_preview(tmp
     assert manager.preview_status("tok-live") == "running"
 
 
-# --- an evicted session's seal belongs to the manager, not to whoever triggered it ---
-async def test_a_cancelled_acquire_does_not_abort_another_conversations_seal(tmp_path):
+# --- an evicted session's teardown belongs to the manager, not to whoever triggered it ---
+async def test_a_cancelled_acquire_does_not_abort_another_conversations_teardown(tmp_path):
     """Stop is the operator's most-used control, and at the cap the acquiring run is
-    sealing somebody *else's* conversation. Cancelled mid-seal, the archive is never
-    written, the plaintext workspace stays on disk, and the container is left out of
-    every map — no sweep can find it and no purge names it."""
+    tearing down somebody *else's* conversation. Cancelled partway, its containers would
+    be left out of every map — no sweep can find them and no purge names them."""
     vault = await _vault(tmp_path)
     manager = _manager(tmp_path, vault, max_sessions=1)
     displaced = await manager.acquire("conv-a")
-    displaced.workspace.mkdir(parents=True, exist_ok=True)
-    (displaced.workspace / "notes.txt").write_text("keep me")
+    displaced.write_file("notes.txt", b"keep me")
 
-    sealing, resume = asyncio.Event(), asyncio.Event()
+    tearing, resume = asyncio.Event(), asyncio.Event()
     real_shutdown = displaced.shutdown
 
     async def slow_shutdown() -> None:
-        sealing.set()
+        tearing.set()
         await resume.wait()
         await real_shutdown()
 
     displaced.shutdown = slow_shutdown  # type: ignore[method-assign]
 
     acquiring = asyncio.create_task(manager.acquire("conv-b"))
-    await asyncio.wait_for(sealing.wait(), timeout=2.0)
+    await asyncio.wait_for(tearing.wait(), timeout=2.0)
     in_flight = list(manager._teardowns)
     acquiring.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -570,8 +631,10 @@ async def test_a_cancelled_acquire_does_not_abort_another_conversations_seal(tmp
     resume.set()
     await asyncio.gather(*in_flight)
 
-    assert displaced.sealed.exists()  # the seal finished on the manager's own task
-    assert not displaced.workspace.exists()  # no plaintext left behind
+    # The teardown finished on the manager's own task, and the conversation's files
+    # were never what it was reclaiming.
+    assert not displaced._running
+    assert displaced.read_file("notes.txt") == b"keep me"
     assert set(manager._sessions) == {safe_key("conv-b")}
 
 
@@ -1226,102 +1289,106 @@ async def test_reconcile_survives_a_runtime_that_cannot_answer(tmp_path, monkeyp
     await manager.reconcile()  # must not raise
 
 
-async def test_sweep_seals_a_plaintext_workspace_with_no_session(tmp_path):
-    # The residue of a process that died before its seal ran: files in the clear that
-    # no session owns. Left alone they quietly break the vault's at-rest promise, so
-    # the sweep adopts and seals them.
-    vault = await _vault(tmp_path)
-    manager = _manager(tmp_path, vault)
-    safe = safe_key("conv-orphan")
-    orphan = manager._work_root / safe
-    orphan.mkdir(parents=True)
-    (orphan / "notes.txt").write_text("plaintext the last process never sealed")
-
-    await manager._sweep()
-
-    sealed = manager._sealed_root / f"{safe}.tar.enc.gz"
-    assert sealed.exists()  # archived under the vault
-    assert not orphan.exists()  # and the plaintext is gone
-    assert not manager._sessions  # sealing an orphan does not revive it as a session
-    assert not manager._tearing_down  # the tombstone it went through is released
+def _strand_fork(manager: SandboxSessionManager, key: str) -> Path:
+    """A delegated fork on disk with nobody left to merge it — what a crash mid-
+    delegation leaves behind."""
+    workspace = manager._work_root / safe_key(key)
+    workspace.mkdir(parents=True)
+    (workspace / "notes.txt").write_text("a sub-agent's copy of its parent's files")
+    fork_marker(workspace).touch()
+    return workspace
 
 
-async def test_sweep_leaves_an_orphan_workspace_alone_while_the_vault_is_locked(tmp_path):
-    # Without the key there is nothing to seal *into*, and deleting the plaintext
-    # would destroy the agent's files. Waiting is the only honest answer.
+async def test_sweep_leaves_a_stranded_conversation_workspace_alone(tmp_path):
+    """A workspace no session owns is not residue — it is that conversation's files,
+    waiting for its next turn. Collecting it would be deleting the agent's work."""
     vault = await _vault(tmp_path)
     manager = _manager(tmp_path, vault)
     orphan = manager._work_root / safe_key("conv-orphan")
     orphan.mkdir(parents=True)
-    (orphan / "notes.txt").write_text("data")
-    vault.lock()
+    (orphan / "notes.txt").write_text("the last process died before it could finish")
 
     await manager._sweep()
 
-    assert (orphan / "notes.txt").exists()
+    assert (orphan / "notes.txt").read_text() == "the last process died before it could finish"
+    assert not manager._sessions  # and nothing was revived as a session either
 
 
-async def test_sweep_adopts_stranded_workspaces_a_slice_at_a_time(tmp_path):
-    # Every key in a batch is tombstoned for the whole batch, and an `acquire()` that
-    # lands on a tombstone waits with nothing to show the operator. A crash with a
-    # hundred live conversations must not turn into a hundred-seal wait for whoever
-    # opens the last one, so a sweep takes a slice and the next sweep takes the rest.
+async def test_sweep_collects_a_stranded_delegated_fork(tmp_path):
+    # The one directory a crash strands that nobody will ever ask for again: a copy of
+    # a parent workspace that still exists under its own key, for a delegation that
+    # ended when the process died.
     vault = await _vault(tmp_path)
     manager = _manager(tmp_path, vault)
-    keys = [safe_key(f"conv-{i}") for i in range(manager_mod._ORPHAN_SEALS_PER_SWEEP + 2)]
-    for safe in keys:
-        (manager._work_root / safe).mkdir(parents=True)
-        (manager._work_root / safe / "notes.txt").write_text("plaintext")
+    orphan = _strand_fork(manager, "conv-a/deleg-1")
 
     await manager._sweep()
-    sealed_first = [k for k in keys if (manager._sealed_root / f"{k}.tar.enc.gz").exists()]
-    assert len(sealed_first) == manager_mod._ORPHAN_SEALS_PER_SWEEP
+
+    assert not orphan.exists()
+    assert not fork_marker(orphan).exists()
+    assert not manager._sessions  # collecting one does not revive it as a session
+    assert not manager._tearing_down  # the tombstone it went through is released
+
+
+async def test_sweep_collects_stranded_forks_a_slice_at_a_time(tmp_path):
+    # Every key in a batch is tombstoned for the whole batch, and an `acquire()` that
+    # lands on a tombstone waits with nothing to show the operator. A crash mid-fan-out
+    # must not turn into a hundred-teardown wait for whoever opens the last one, so a
+    # sweep takes a slice and the next sweep takes the rest.
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault)
+    forks = [
+        _strand_fork(manager, f"conv-a/deleg-{i}")
+        for i in range(manager_mod._ORPHAN_FORKS_PER_SWEEP + 2)
+    ]
+
+    await manager._sweep()
+    assert sum(not f.exists() for f in forks) == manager_mod._ORPHAN_FORKS_PER_SWEEP
     assert not manager._tearing_down  # and every tombstone in the slice is released
 
     await manager._sweep()
 
-    assert all((manager._sealed_root / f"{k}.tar.enc.gz").exists() for k in keys)
-    assert not any((manager._work_root / k).exists() for k in keys)
+    assert not any(f.exists() for f in forks)
 
 
-async def test_sealing_a_stranded_workspace_first_drops_the_containers_holding_it(
+async def test_collecting_a_stranded_fork_first_drops_the_containers_holding_it(
     tmp_path, monkeypatch
 ):
     # The dead process's containers can still be alive with this very directory mounted
     # at /work — boot reconciliation is skipped whenever the runtime was not up yet.
-    # Sealing under a live mount archives a torn state and sends its later writes to a
-    # deleted inode, so every mount comes off before the archive goes on — the egress
-    # box included, which is the one a cancelled network call leaves behind.
+    # Deleting under a live mount sends their later writes to a deleted inode, so every
+    # mount comes off first — the egress box included, which is the one a cancelled
+    # network call leaves behind.
     removed: list[tuple[str, bool]] = []
-    safe = safe_key("conv-orphan")
+    safe = safe_key("conv-a/deleg-1")
 
     async def fake_force_remove(_runtime, name: str, **_kwargs) -> None:
-        removed.append((name, sealed.exists()))
+        removed.append((name, orphan.exists()))
 
     _fake_runtime_calls(monkeypatch)
     monkeypatch.setattr(session_mod, "force_remove_container", fake_force_remove)
     vault = await _vault(tmp_path)
     manager = _manager(tmp_path, vault, backend=_pinned_backend())
-    sealed = manager._sealed_root / f"{safe}.tar.enc.gz"
-    orphan = manager._work_root / safe
-    orphan.mkdir(parents=True)
-    (orphan / "notes.txt").write_text("plaintext the last process never sealed")
+    orphan = _strand_fork(manager, "conv-a/deleg-1")
 
     await manager._sweep()
 
+    # Still on disk at every removal — the directory goes only once nothing holds it.
     assert removed == [
-        (f"odysseus-sbx-{safe}", False),
-        (f"odysseus-pre-{safe}", False),
-        (f"odysseus-egress-{safe}", False),
+        (f"odysseus-sbx-{safe}", True),
+        (f"odysseus-pre-{safe}", True),
+        (f"odysseus-egress-{safe}", True),
     ]
-    assert sealed.exists()
+    assert not orphan.exists()
 
 
-async def test_dropping_the_mounts_is_bounded_so_the_seal_still_happens(tmp_path, monkeypatch):
+async def test_dropping_the_mounts_is_bounded_so_the_collection_still_happens(
+    tmp_path, monkeypatch
+):
     # A whole batch of orphans is tombstoned while their mounts come off, and every
-    # `acquire()` for those conversations waits behind it with nothing to show the
-    # operator. So a daemon that has stopped answering costs a bounded pause and then
-    # the seal goes ahead — the removals it did not manage are the next boot's problem.
+    # `acquire()` for those keys waits behind it with nothing to show the operator. So a
+    # daemon that has stopped answering costs a bounded pause and then the collection
+    # goes ahead — the removals it did not manage are the next boot's problem.
     removed: list[str] = []
 
     async def fake_force_remove(_runtime, name: str, **_kwargs) -> None:
@@ -1332,15 +1399,12 @@ async def test_dropping_the_mounts_is_bounded_so_the_seal_still_happens(tmp_path
     monkeypatch.setattr(session_mod, "_MOUNT_RELEASE_BUDGET_S", 0.0)
     vault = await _vault(tmp_path)
     manager = _manager(tmp_path, vault, backend=_pinned_backend())
-    safe = safe_key("conv-orphan")
-    orphan = manager._work_root / safe
-    orphan.mkdir(parents=True)
-    (orphan / "notes.txt").write_text("plaintext the last process never sealed")
+    orphan = _strand_fork(manager, "conv-a/deleg-1")
 
     await manager._sweep()
 
     assert removed == []  # not even one call is worth making with no budget left
-    assert (manager._sealed_root / f"{safe}.tar.enc.gz").exists()
+    assert not orphan.exists()
     assert not manager._tearing_down
 
 
@@ -1393,139 +1457,39 @@ async def test_reconcile_stops_when_its_boot_budget_is_spent(tmp_path, monkeypat
     assert removed == []
 
 
-def _archive_of(manager, vault, safe: str, files: dict[str, str]):
-    """Seal ``files`` as ``safe``'s archive and return its path — the complete copy a
-    half-finished workspace must never be allowed to overwrite."""
-    source = manager._work_root / f"_source-{safe}"
-    source.mkdir(parents=True)
-    for name, text in files.items():
-        (source / name).write_text(text)
-    sealed = manager._sealed_root / f"{safe}.tar.enc.gz"
-    sealed.parent.mkdir(parents=True, exist_ok=True)
-    sealed.write_bytes(seal_workspace(source, _EXCLUDES, vault))
-    shutil.rmtree(source)
-    return sealed
-
-
-def _restored(sealed, vault, dest) -> set[str]:
-    restore_workspace(sealed.read_bytes(), dest, vault)
-    return {p.name for p in dest.iterdir()}
-
-
-async def test_a_fragment_of_a_restore_never_overwrites_the_archive_it_came_from(tmp_path):
-    # Killed mid-extract, the workspace holds part of what the archive holds. To the
-    # sweep it looks exactly like an unsealed orphan, and sealing it back would drop
-    # every file the extract had not reached yet — irrecoverably. The marker is what
-    # tells the two apart.
-    vault = await _vault(tmp_path)
-    manager = _manager(tmp_path, vault)
-    safe = safe_key("conv-frag")
-    sealed = _archive_of(manager, vault, safe, {"a.txt": "first", "b.txt": "second"})
-    workspace = manager._work_root / safe
-    workspace.mkdir(parents=True)
-    (workspace / "a.txt").write_text("first")
-    partial_marker(workspace).touch()
-
-    await manager._sweep()
-
-    assert _restored(sealed, vault, tmp_path / "check") == {"a.txt", "b.txt"}
-    assert not workspace.exists()  # the fragment is still cleared from disk
-    assert not partial_marker(workspace).exists()
-
-
-async def test_a_workspace_the_agent_emptied_seals_as_empty(tmp_path):
-    # The mirror of the case above, and the reason "looks empty" can never be the test
-    # for a fragment: the operator asked for the file to go, so all that is left is the
-    # scratch dirs the seal drops anyway. Keeping the old archive here would hand the
-    # deleted file straight back on the next restore.
-    vault = await _vault(tmp_path)
-    manager = _manager(tmp_path, vault)
-    safe = safe_key("conv-emptied")
-    sealed = _archive_of(manager, vault, safe, {"report.md": "delete me"})
-    workspace = manager._work_root / safe
-    (workspace / ".home").mkdir(parents=True)
-    (workspace / ".tmp").mkdir()
-
-    await manager._sweep()
-
-    assert _restored(sealed, vault, tmp_path / "check") == set()  # the deletion stuck
-    assert not workspace.exists()
-
-
-async def test_a_marked_fragment_is_thrown_away_and_restored_from_the_archive(tmp_path):
-    # The same fragment reached from the other direction: the conversation comes back
-    # before the sweep does. It must get its whole workspace, not the half on disk.
-    vault = await _vault(tmp_path)
-    manager = _manager(tmp_path, vault)
-    safe = safe_key("conv-frag")
-    _archive_of(manager, vault, safe, {"a.txt": "first", "b.txt": "second"})
-    workspace = manager._work_root / safe
-    workspace.mkdir(parents=True)
-    (workspace / "a.txt").write_text("half-written")
-    partial_marker(workspace).touch()
-
-    session = await manager.acquire("conv-frag")
-
-    assert session.read_file("a.txt") == b"first"
-    assert session.read_file("b.txt") == b"second"
-    assert not partial_marker(workspace).exists()
-
-
-async def test_a_restore_marks_the_fragment_before_it_creates_anything(tmp_path, monkeypatch):
-    # Restoring is several steps and the process can die between any two of them. Dying
-    # with the directory created and the marker not yet written leaves an empty, unmarked
-    # workspace beside a complete archive — the one shape the orphan sweep adopts and
-    # seals straight back over that archive. So the marker goes down first.
-    vault = await _vault(tmp_path)
-    manager = _manager(tmp_path, vault)
-    safe = safe_key("conv-crash")
-    sealed = _archive_of(manager, vault, safe, {"a.txt": "first"})
-    workspace = manager._work_root / safe
-    real_mkdir = Path.mkdir
-
-    def die_creating_the_workspace(self, *args, **kwargs):
-        if self == workspace:
-            raise OSError("the process died right here")
-        return real_mkdir(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "mkdir", die_creating_the_workspace)
-
-    with pytest.raises(SandboxError):
-        restore_workspace(sealed.read_bytes(), workspace, vault)
-
-    assert partial_marker(workspace).exists()
-
-
-async def test_a_file_write_racing_a_seal_waits_it_out_instead_of_tearing_the_workspace(
+async def test_a_file_write_racing_a_fork_waits_it_out_instead_of_tearing_the_copy(
     tmp_path, monkeypatch
 ):
     # The file tools take no session lock — that is what keeps browsing and editing off
-    # the container's critical path — so a run parked on an approval can be reaped and
-    # sealed while it still holds this very session object, and its next write arrives
-    # mid-archive. Interleaved, the two leave a torn directory with no marker on it,
-    # which the orphan sweep then seals over the good archive.
+    # the container's critical path — so a run that has just delegated can have its next
+    # write arrive mid-clone. Interleaved, the copy is torn and its manifest records the
+    # tear as the fork point, so the merge back reads surviving files as never having
+    # existed. `_disk` is what serialises them.
     vault = await _vault(tmp_path)
     manager = _manager(tmp_path, vault)
     session = await manager.acquire("conv-race")
-    session.ensure_workspace()
-    (session.workspace / "notes.txt").write_text("what the seal captures")
-    real_seal = session_mod.seal_workspace
+    session.write_file("notes.txt", b"what the clone captures")
+    real_clone = session_mod.clone_workspace
 
-    def slow_seal(workspace, excludes, vault):
-        time.sleep(0.2)  # a real tar+gzip+AEAD is seconds; this is the same window
-        return real_seal(workspace, excludes, vault)
+    def slow_clone(source, child):
+        time.sleep(0.2)  # a real tree copy of a `.venv` is seconds; same window
+        return real_clone(source, child)
 
-    monkeypatch.setattr(session_mod, "seal_workspace", slow_seal)
+    monkeypatch.setattr(session_mod, "clone_workspace", slow_clone)
 
-    sealing = asyncio.create_task(session.shutdown())
-    await asyncio.sleep(0.05)  # let the seal thread get well inside the archive
-    await asyncio.gather(sealing, asyncio.to_thread(session.write_file, "late.txt", b"x"))
+    child = tmp_path / "fork"
+    cloning = asyncio.to_thread(session.clone_into, child)
+    await asyncio.sleep(0.05)  # let the clone thread get well inside the copy
+    manifest, _ = await asyncio.gather(
+        cloning, asyncio.to_thread(session.write_file, "late.txt", b"x")
+    )
 
-    # The write landed on a workspace restored from the finished archive, so both files
-    # are there and nothing is half-removed.
-    assert (session.workspace / "notes.txt").read_text() == "what the seal captures"
-    assert (session.workspace / "late.txt").read_bytes() == b"x"
-    assert not partial_marker(session.workspace).exists()
+    # The write landed either side of the clone, never through it: the manifest is a
+    # coherent snapshot, and both files are on the parent.
+    assert set(manifest) <= {"notes.txt", "late.txt"}
+    assert "notes.txt" in manifest
+    assert session.read_file("notes.txt") == b"what the clone captures"
+    assert session.read_file("late.txt") == b"x"
 
 
 async def test_sweep_does_not_touch_a_workspace_its_own_session_still_holds(tmp_path):

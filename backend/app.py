@@ -265,7 +265,7 @@ async def _wire(app: FastAPI, settings: Settings, lifecycle: LifecycleRegistry) 
             data_dir=settings.data_dir,
             idle_ttl_s=settings.sandbox_session_idle_ttl_s,
             reap_interval_s=settings.sandbox_session_reap_interval_s,
-            excludes=settings.sandbox_session_seal_excludes,
+            excludes=settings.sandbox_walk_excludes,
             # The same stock python image the web fetcher's SSRF proxy runs in: both
             # sidecars are one stdlib script over a read-only mount, and a second image
             # to keep current would be a second thing to pull for no gain.

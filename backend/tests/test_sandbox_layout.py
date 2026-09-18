@@ -1,5 +1,5 @@
-"""The shape of the sandbox package itself: three modules with one reason to change
-each, and one public surface everything outside the package binds to.
+"""The shape of the sandbox package itself: modules with one reason to change each,
+and one public surface everything outside the package binds to.
 
 Both halves are regressions that only ever creep back. ``session.py`` grew past a
 thousand lines by accumulating the archive format and the whole live-session policy
@@ -18,7 +18,7 @@ import services.sandbox as sandbox_pkg
 # a second job, not a style rule about the length any of them happens to be today.
 _MAX_LINES = 700
 
-_MODULES = ("seal.py", "session.py", "manager.py")
+_MODULES = ("walk.py", "legacy_seal.py", "session.py", "manager.py")
 
 
 def test_each_sandbox_module_stays_one_reason_to_change():

@@ -151,9 +151,9 @@ class Settings(BaseSettings):
     # Per-conversation live sandbox: a container lazily spun up on the first code
     # execution and kept warm so the agent can iterate (fix an error, reuse an
     # installed dependency) without rebuilding. Idle sessions are reaped to free
-    # resources; the workspace (the agent's files) is preserved across reaps,
-    # sealed with the vault while dormant. `idle_ttl` is how long a session may sit
-    # unused before it is killed; `reap_interval` is how often the reaper sweeps.
+    # resources; a reap takes the container down and leaves the workspace (the agent's
+    # files) untouched on disk. `idle_ttl` is how long a session may sit unused before
+    # it is killed; `reap_interval` is how often the reaper sweeps.
     sandbox_session_idle_ttl_s: float = 1800.0
     sandbox_session_reap_interval_s: float = 60.0
     # And how many conversations may hold one at once. The TTL bounds a session in time;
@@ -166,10 +166,15 @@ class Settings(BaseSettings):
     # reverse-proxies it to the frontend. How long to wait for that server to start
     # listening before reporting the start as failed (back to the agent).
     sandbox_preview_startup_timeout_s: float = 20.0
-    # What a reap preserves: the agent's own files and any output it produced.
-    # These names/globs are dropped from the sealed copy — virtual environments
-    # and language caches are bloat that is cheaper to rebuild than to store.
-    sandbox_session_seal_excludes: tuple[str, ...] = (
+    # What a walk of a workspace leaves out, and **only** that — nothing here is ever
+    # deleted. These names/globs are skipped when the workspace is reported (the model's
+    # per-turn file block, a history snapshot) and when a delegated fork is compared and
+    # merged back: a virtualenv is thousands of files the agent did not write, and
+    # three-way merging a `.git` directory's internals is corruption rather than
+    # continuity. Every one of them stays on disk regardless.
+    #
+    # Matched against every *part* of a path, so `build` covers `packages/x/build/` too.
+    sandbox_walk_excludes: tuple[str, ...] = (
         ".venv", "venv", "env", ".local", ".tmp", ".home", "__pycache__",
         "node_modules", ".git", ".mypy_cache", ".pytest_cache", ".ruff_cache",
         ".cache", "dist", "build", "*.pyc", "*.pyo", "*.egg-info",
