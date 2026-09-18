@@ -108,6 +108,7 @@ class RunDeps:
 # and the feature layer must name the shape without a cycle.
 type InstructionProvider = Callable[[RunContext[RunDeps]], Awaitable[str]]
 
+
 @dataclass(frozen=True, slots=True)
 class PromptContextRequest:
     """What a per-turn context block is resolved against.

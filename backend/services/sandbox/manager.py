@@ -45,6 +45,7 @@ from .legacy_seal import partial_marker
 from .names import DEFAULT_NAMES, ContainerNames
 from .preview import PreviewHandle
 from .preview_tokens import PreviewTokens
+from .reconcile import orphan_fork_keys
 from .reconcile import reconcile as reconcile_leftovers
 from .session import LiveWork, SandboxSession
 from .warmup import ImageWarmup
@@ -148,6 +149,17 @@ class SandboxSessionManager:
         """The live session for a conversation if one exists, **without creating** it,
         so a turn that never touched the sandbox triggers no workspace/history work."""
         return self._sessions.get(safe_key(key))
+
+    @property
+    def walk_excludes(self) -> tuple[str, ...]:
+        """What a walk of any workspace here skips — reporting and merge safety only.
+
+        Exposed because :mod:`services.sandbox.walk` is one answer four readers have to
+        agree on, and the per-turn block is the one reader that has no session to ask.
+        Re-reading the setting instead would make it a second source that only happens
+        to match.
+        """
+        return self._excludes
 
     def settled_workspace(self, key: str) -> Path | None:
         """This key's workspace directory if it is already on disk, else ``None`` —
@@ -642,21 +654,15 @@ class SandboxSessionManager:
     async def _collect_orphan_forks(self) -> None:
         """Delete the delegated-agent forks an unclean shutdown stranded.
 
-        A workspace directory with no live session and no teardown in flight is, for an
-        ordinary conversation, simply that conversation's files waiting for its next
-        turn — there is nothing to collect and nothing at risk, which is what leaving
-        them on disk bought. A **fork** is the exception
-        (:func:`~services.sandbox.fork.fork_marker`): its files copy a parent workspace
-        that still exists under its own key, its delegation ended when the process died,
-        and no conversation will ever open it again. Left alone it is pure residue.
-
-        The deletion goes through a throwaway session and the ordinary detach path
-        rather than a bare ``rmtree``, so it inherits every protection that path
-        carries: the tombstone protocol, so an ``acquire()`` for that key arriving
-        mid-delete waits instead of minting a session onto the directory being removed;
-        that same tombstone's release in a ``finally``, however the leg ends; and the
-        dead process's containers coming off the mount first
-        (:meth:`SandboxSession._release_mounts`).
+        *Which* directories those are belongs to
+        :func:`~services.sandbox.reconcile.orphan_fork_keys`, with the rest of what a
+        dead process leaves behind. What is here is the deleting, and it goes through a
+        throwaway session and the ordinary detach path rather than a bare ``rmtree`` so
+        it inherits every protection that path carries: the tombstone protocol, so an
+        ``acquire()`` for that key arriving mid-delete waits instead of minting a
+        session onto the directory being removed; that same tombstone's release in a
+        ``finally``, however the leg ends; and the dead process's containers coming off
+        the mount first (:meth:`SandboxSession._release_mounts`).
 
         A directory name is all this path has, and the conversation key it was derived
         from cannot be recovered from it — so these sessions get the allowlist directory
@@ -665,7 +671,11 @@ class SandboxSessionManager:
         and this path starts none."""
         orphans: list[_Detached] = []
         async with self._lock:
-            for safe in self._orphan_fork_keys()[:_ORPHAN_FORKS_PER_SWEEP]:
+            # Listed under the lock, so the two maps it reads cannot shift underneath
+            # the answer — which is the whole reason the key discovery takes them as an
+            # argument rather than reaching for them itself.
+            taken = self._sessions.keys() | self._tearing_down.keys()
+            for safe in orphan_fork_keys(self._work_root, taken)[:_ORPHAN_FORKS_PER_SWEEP]:
                 event = asyncio.Event()
                 self._tearing_down[safe] = event
                 session = self._new_session(safe, self._egress.dir_for(safe), ephemeral=True)
@@ -677,19 +687,3 @@ class SandboxSessionManager:
             len(orphans),
         )
         await self._tear_down(orphans)
-
-    def _orphan_fork_keys(self) -> list[str]:
-        """Fork dirs under ``_work_root`` that no session and no teardown owns.
-        Called under the manager lock — one directory listing, so the two maps it
-        reads cannot shift underneath the answer."""
-        if not self._work_root.exists():
-            return []
-        return [
-            path.name
-            for path in sorted(self._work_root.iterdir())
-            if path.is_dir()
-            and path.name.startswith("s")  # `safe_key`'s prefix — never a scratch dir
-            and path.name not in self._sessions
-            and path.name not in self._tearing_down
-            and fork_marker(path).exists()
-        ]

@@ -249,6 +249,25 @@ async def test_a_sealing_era_archive_is_adopted_and_deleted(tmp_path):
     assert not archive.exists()
 
 
+async def test_an_archive_a_materialised_workspace_outlived_is_retired(tmp_path):
+    """Adoption unlinks the archive as its last step, so a process dying in the window
+    between the extract finishing and that unlink leaves both on disk — and the
+    workspace being complete means adoption is never reached again. This is the only
+    other place that can notice."""
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault)
+    session = await manager.acquire("conv-old")
+    session.write_file("live.txt", b"the work since")
+    session.sealed.parent.mkdir(parents=True, exist_ok=True)
+    session.sealed.write_bytes(_legacy_archive(tmp_path, vault, {"stale.txt": "superseded"}))
+
+    session.ensure_workspace()
+
+    assert not session.sealed.exists()
+    assert session.read_file("live.txt") == b"the work since"  # the live copy wins
+    assert not (session.workspace / "stale.txt").exists()
+
+
 async def test_adopting_nothing_is_the_ordinary_case(tmp_path):
     vault = await _vault(tmp_path)
     assert adopt_legacy_archive(tmp_path / "absent.tar.enc.gz", tmp_path / "w", vault) is False

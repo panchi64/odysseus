@@ -54,7 +54,7 @@ from .container import (
     with_in_container_timeout,
 )
 from .fork import clone_workspace, fork_marker, manifest_of, merge_workspace
-from .legacy_seal import adopt_legacy_archive, partial_marker
+from .legacy_seal import adopt_legacy_archive, partial_marker, retire_superseded_archive
 from .names import DEFAULT_NAMES, ContainerNames
 from .preview import PreviewHandle, launch_preview, stop_preview_container
 from .sidecar import (
@@ -567,6 +567,10 @@ class SandboxSession:
                 # read back and retired. See :mod:`services.sandbox.legacy_seal`.
                 if not adopt_legacy_archive(self.sealed, self.workspace, self._vault):
                     self.workspace.mkdir(parents=True, exist_ok=True)
+            else:
+                # Both on disk means an adoption died between its last two steps. The
+                # directory is the live copy, so the archive is residue.
+                retire_superseded_archive(self.sealed, self.workspace)
             # The build-temp dir is not something a walk reports, and an adopted archive
             # never carried it, so recreate it every time — a missing TMPDIR breaks
             # mktemp and silently shrinks pip's scratch space.

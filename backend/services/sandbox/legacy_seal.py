@@ -37,6 +37,22 @@ def partial_marker(workspace: Path) -> Path:
     return workspace.with_name(workspace.name + ".partial")
 
 
+def retire_superseded_archive(archive: Path, workspace: Path) -> None:
+    """Drop an archive that a materialised workspace has already outlived.
+
+    Adoption unlinks the archive as its last step, so a process dying in the window
+    between the extract finishing and that unlink leaves both on disk — and because the
+    workspace is now complete, :func:`adopt_legacy_archive` is never reached again and
+    the archive is never retired. This is the only other place that can notice, and it
+    is safe precisely because nothing writes an archive any more: where both exist, the
+    directory is the live copy by construction and the archive is the fragment of a
+    migration that finished.
+    """
+    if workspace.is_dir() and archive.exists():
+        archive.unlink(missing_ok=True)
+        logger.info("sandbox: dropped %s's superseded sealed archive", workspace.name)
+
+
 def adopt_legacy_archive(archive: Path, workspace: Path, vault: Vault) -> bool:
     """Unpack a pre-existing sealed archive into ``workspace`` and remove it.
 

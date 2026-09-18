@@ -15,6 +15,7 @@ import os
 
 import pytest
 
+import tools.workspace_context as wc
 from core.container import ServiceContainer
 from services.sandbox import SandboxSessionManager
 from tools.deps import PromptContextRequest
@@ -43,7 +44,10 @@ async def _vault(tmp_path):
     return vault
 
 
-async def _caps(tmp_path) -> tuple[ServiceContainer, SandboxSessionManager]:
+async def _caps(tmp_path, **overrides) -> tuple[ServiceContainer, SandboxSessionManager]:
+    from core.config import Settings  # noqa: PLC0415 — after the suite's patches
+
+    opts = {"excludes": Settings().sandbox_walk_excludes, **overrides}
     manager = SandboxSessionManager(
         _NoRuntime(),  # type: ignore[arg-type]
         await _vault(tmp_path),
@@ -51,7 +55,7 @@ async def _caps(tmp_path) -> tuple[ServiceContainer, SandboxSessionManager]:
         data_dir=tmp_path,
         idle_ttl_s=1800.0,
         reap_interval_s=60.0,
-        excludes=(".venv", "node_modules", "__pycache__", ".git"),
+        **opts,
     )
     caps = ServiceContainer()
     caps.add(manager, as_type=SandboxSessionManager)
@@ -122,6 +126,21 @@ async def test_it_prunes_the_bloat_the_rest_of_the_walk_prunes(tmp_path):
     assert "left-pad" not in block
 
 
+async def test_it_only_claims_not_listed_for_what_is_actually_excluded(tmp_path):
+    """The exclusions are an operator setting, so the trailer cannot be a hardcoded
+    list: a `dist/` they chose to make visible would be listed *and* announced as
+    "not listed" in the same block."""
+    # The operator wants build output visible, and takes `dist` off the list.
+    caps, manager = await _caps(tmp_path, excludes=(".venv",))
+    _populate(manager, "conv-a", {"dist/bundle.js": "z", ".venv/lib/big.so": "y"})
+
+    block = await workspace_context(_request(caps))
+
+    assert "/work/dist/bundle.js" in block
+    assert "dist/" not in block.split("Also present")[1]
+    assert "Also present, not listed: .venv/." in block
+
+
 async def test_it_names_the_expensive_directories_it_does_not_list(tmp_path):
     """Pruning `.venv` and `dist` keeps thousands of files out of the block; saying
     nothing about them is the seal's mistake in a new place. Each is minutes of work the
@@ -142,7 +161,7 @@ async def test_it_names_the_expensive_directories_it_does_not_list(tmp_path):
     block = await workspace_context(_request(caps))
 
     assert "Also present, not listed: .venv/, .git/, dist/." in block
-    assert "don't redo them" in block
+    assert "don't reinstall, rebuild or re-clone them" in block
     assert "__pycache__" not in block  # nothing the agent decides turns on a cache
 
 
@@ -249,6 +268,69 @@ async def test_past_the_cap_it_counts_and_points_instead_of_listing(tmp_path):
 
     assert len([ln for ln in block.splitlines() if ln.startswith("/work/")]) == _MAX_ENTRIES
     assert "… and 25 more (mostly under generated)" in block
+
+
+# --- it never claims to be complete when it is not --------------------------
+async def test_a_whole_workspace_is_described_as_whole(tmp_path):
+    caps, manager = await _caps(tmp_path)
+    _populate(manager, "conv-a", {"analysis.py": "x", "out/chart.csv": "y"})
+
+    block = await workspace_context(_request(caps))
+
+    assert "This is the whole of it" in block
+
+
+async def test_a_capped_listing_is_not_described_as_whole(tmp_path):
+    """The claim of completeness is the block's whole value and its sharpest edge. A
+    model told "this is everything", not finding `report.md` among the 200 shown,
+    concludes it was never written and writes it again — the redo this exists to stop."""
+    caps, manager = await _caps(tmp_path)
+    _populate(
+        manager, "conv-a", {f"generated/f{i:04d}.txt": "x" for i in range(_MAX_ENTRIES + 5)}
+    )
+
+    block = await workspace_context(_request(caps))
+
+    assert "This is the whole of it" not in block
+    assert "This is a sample, not the whole of it" in block
+
+
+async def test_pruned_directories_also_make_it_a_sample(tmp_path):
+    # Two files listed and a `.venv` beside them: the listing is short, but it is still
+    # not everything on disk.
+    caps, manager = await _caps(tmp_path)
+    _populate(manager, "conv-a", {"analysis.py": "x", ".venv/lib/big.so": "y"})
+
+    block = await workspace_context(_request(caps))
+
+    assert "This is the whole of it" not in block
+    assert "This is a sample, not the whole of it" in block
+
+
+# --- the walk is bounded, not just the listing -------------------------------
+async def test_the_walk_stops_counting_rather_than_stat_ing_everything(tmp_path, monkeypatch):
+    """`_MAX_ENTRIES` bounds the tokens; `_MAX_SCAN` bounds the syscalls. Without the
+    second, a workspace holding a downloaded dataset is stat'ed in full, every turn, to
+    render two hundred lines."""
+    monkeypatch.setattr(wc, "_MAX_SCAN", 10)
+    caps, manager = await _caps(tmp_path)
+    _populate(manager, "conv-a", {f"data/f{i:04d}.txt": "x" for i in range(400)})
+
+    visited = 0
+    real_walk = wc.walk_files
+
+    def counting_walk(root, excludes):
+        nonlocal visited
+        for item in real_walk(root, excludes):
+            visited += 1
+            yield item
+
+    monkeypatch.setattr(wc, "walk_files", counting_walk)
+    block = await workspace_context(_request(caps))
+
+    assert visited <= 11  # the scan cap, plus the one that trips it
+    assert "at least" in block  # the count is a floor now, and says so
+    assert "This is the whole of it" not in block
 
 
 async def test_the_cap_keeps_what_was_touched_most_recently(tmp_path):
