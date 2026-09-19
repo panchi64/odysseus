@@ -25,6 +25,7 @@ from services.approval_grants import (
     GrantInfo,
     covered_by_grant,
     grant_scopes,
+    grant_width,
 )
 from services.conversations import ConversationBinding
 from services.permissions import DEFAULT_PERMISSION, PERMISSION_LEVELS
@@ -53,6 +54,41 @@ async def test_grant_then_list():
     assert [(g.tool_name, g.command_prefix) for g in listed] == [("corpus_retrieve", ())]
     # A grant is scoped to its conversation — another thread is unaffected.
     assert await s.list(OWNER, "other-conv") == []
+
+
+async def test_a_grant_records_which_width_the_operator_chose():
+    s = _store(3600)
+    await s.grant(OWNER, CONV, "corpus_retrieve")
+    assert [g.decisive for g in await s.list(OWNER, CONV)] == [False]
+    await s.grant(OWNER, CONV, "mail_send", decisive=True)
+    assert {g.tool_name: g.decisive for g in await s.list(OWNER, CONV)} == {
+        "corpus_retrieve": False,
+        "mail_send": True,
+    }
+
+
+async def test_a_refresh_never_narrows_a_width_the_operator_chose():
+    # A write that does not ask for the wider width is not the operator withdrawing it —
+    # it is a refresh, or the other half of a batch that settled two calls to one tool,
+    # where the row written last would otherwise decide how far the grant reaches.
+    # Narrowing is something they do on purpose, by revoking the chip.
+    s = _store(3600)
+    await s.grant(OWNER, CONV, "mail_send", decisive=True)
+    await s.grant(OWNER, CONV, "mail_send")
+    assert [g.decisive for g in await s.list(OWNER, CONV)] == [True]
+
+
+async def test_choosing_the_wider_width_promotes_the_grant_already_there():
+    # The width rides outside the unique index, so a re-grant moves the row the operator
+    # can already see rather than standing a second one beside it — two grants over one
+    # scope disagreeing about how far it reaches is not a state worth being able to hold.
+    s = _store(3600)
+    await s.grant(OWNER, CONV, "shell_run_command")
+    await s.grant(OWNER, CONV, "shell_run_command", decisive=True)
+    listed = await s.list(OWNER, CONV)
+    assert [(g.tool_name, g.command_prefix, g.decisive) for g in listed] == [
+        ("shell_run_command", (), True)
+    ]
 
 
 async def test_expired_grant_is_not_listed():
@@ -324,12 +360,51 @@ def _grants(*scopes: tuple[str, tuple[str, ...]]) -> list[GrantInfo]:
     ]
 
 
+def _decisive(*scopes: tuple[str, tuple[str, ...]]) -> list[GrantInfo]:
+    """The same, at the width the operator picks deliberately."""
+    later = utcnow() + timedelta(hours=1)
+    return [
+        GrantInfo(tool_name=tool, expires_at=later, command_prefix=prefix, decisive=True)
+        for tool, prefix in scopes
+    ]
+
+
 def test_covered_by_grant_is_the_single_rule():
     held = _grants(("corpus_retrieve", ()))
     assert covered_by_grant("corpus_retrieve", {}, held) is True
     assert covered_by_grant("conversations_search", {}, held) is False
     assert covered_by_grant(None, {}, held) is False
     assert covered_by_grant("corpus_retrieve", {}, []) is False
+
+
+class TestHowFarAGrantReaches:
+    """`grant_width` — the one reading both the park-time split and the review run on.
+
+    Coverage and width are different questions, and the levels that ask outright only want
+    the first. The second separates a yes to one act from the operator's yes to the whole
+    tool, and it is never inferred from an empty scope: that shape is also what a
+    non-command tool's ordinary grant and a scheduled task's seed take.
+    """
+
+    def test_nothing_covering_the_call_is_no_width_at_all(self):
+        assert grant_width("corpus_retrieve", {}, []) == "none"
+        assert grant_width(None, {}, _grants(("corpus_retrieve", ()))) == "none"
+
+    def test_an_undecisive_whole_tool_grant_only_informs(self):
+        held = _grants(("corpus_retrieve", ()))
+        assert grant_width("corpus_retrieve", {}, held) == "command"
+
+    def test_the_operators_wider_pick_answers(self):
+        held = _decisive(("shell_run_command", ()))
+        # Any command, which is the whole of what that width says.
+        assert grant_width("shell_run_command", {"command": "rm -rf build"}, held) == "tool"
+        assert grant_width("shell_run_command", {"command": "uv run pytest"}, held) == "tool"
+
+    def test_a_command_scoped_grant_never_answers_however_it_was_recorded(self):
+        # It names one act, so it is not an answer about every call the tool could make.
+        held = _decisive(("shell_run_command", ("uv", "run", "pytest")))
+        assert grant_width("shell_run_command", {"command": "uv run pytest"}, held) == "command"
+        assert grant_width("shell_run_command", {"command": "uv run ruff"}, held) == "none"
 
 
 class TestACommandScopedGrant:

@@ -1,6 +1,10 @@
-import { createSignal, type JSX } from "solid-js";
-import { Checkbox } from "~/ui";
-import { commandScopeLabel } from "../commandScope";
+import { Show, createSignal, type JSX } from "solid-js";
+import { Checkbox, Segmented, Stack } from "~/ui";
+import {
+  commandScopeLabel,
+  tickedWidth,
+  type GrantWidth,
+} from "../commandScope";
 import type { ApprovalDecision } from "../model";
 
 /** Shared opt-in state for "auto-approve this for the rest of the conversation",
@@ -17,17 +21,30 @@ import type { ApprovalDecision } from "../model";
  *  The grant's real lifetime is backend-owned (operator-configurable
  *  `approval_grant_ttl_s`); this opt-in only requests one and never displays the TTL. */
 export function createGrantToggle() {
-  const [allowed, setAllowed] = createSignal<Record<string, boolean>>({});
-  const set = (key: string, allow: boolean) =>
-    setAllowed((a) => ({ ...a, [key]: allow }));
-  const isAllowed = (key: string) => !!allowed()[key];
-  // Scope is "conversation" only when the call is both approved and opted-in; the
-  // backend ignores scope on a denial, but mapping it here keeps the payload honest.
-  // *What* the conversation grant covers is the backend's to derive from the parked
-  // call — this only asks for one.
-  const scope = (key: string, approved: boolean): ApprovalDecision["scope"] =>
-    approved && isAllowed(key) ? "conversation" : "once";
-  return { isAllowed, set, scope };
+  const [allowed, setAllowed] = createSignal<Record<string, GrantWidth>>({});
+  const set = (key: string, width: GrantWidth) =>
+    setAllowed((a) => ({ ...a, [key]: width }));
+  const widthOf = (key: string): GrantWidth => allowed()[key] ?? "off";
+  const isAllowed = (key: string) => widthOf(key) !== "off";
+  // A standing yes travels only when the call is both approved and opted-in; the backend
+  // ignores scope on a denial, but mapping it here keeps the payload honest.
+  //
+  // The two widths are two wire values, and the narrower one still says nothing about
+  // *what* it covers — that stays the backend's to derive from the parked call, because a
+  // scope the client could name is a scope it could widen. The wider one names no scope
+  // either: it names the tool, which the parked call already says.
+  const scope = (key: string, approved: boolean): ApprovalDecision["scope"] => {
+    if (!approved) return "once";
+    switch (widthOf(key)) {
+      case "tool":
+        return "conversation_tool";
+      case "command":
+        return "conversation";
+      default:
+        return "once";
+    }
+  };
+  return { isAllowed, widthOf, set, scope };
 }
 
 /** The opt-in grant control itself — one canonical label and shape for both the
@@ -51,6 +68,23 @@ export function createGrantToggle() {
  *  standing yes than the one being given. Only a call that runs no command at all is a
  *  whole-tool grant, and only that one says so.
  *
+ *  ── The second width, and why it is a second control ──
+ *  Scoping to the command is right and is not always what the operator means. Someone who
+ *  has decided to stop reading a thread's shell prompts gets a fresh one per command, and
+ *  under the old single tick had no way to say otherwise. So a checked opt-in on a
+ *  command-running call reveals a two-way pick between that command and everything the
+ *  tool runs — and the wider one is **a separate control, not a wider default**, because
+ *  it is a materially larger thing to say and the narrow one has to stay the easy path.
+ *  Its description says what it costs in the only terms that matter at the level that is
+ *  the default: nothing this tool runs is asked about again, and an act nobody can undo
+ *  still comes back.
+ *
+ *  Where no command is involved there is only one width, so no picker appears — a control
+ *  offering the same choice twice invents a decision. **That single width is the wider
+ *  one**, and it has to be: such a call has nothing narrower to be scoped to, the label
+ *  above already says "this tool", and recording the narrower width there would leave the
+ *  checkbox promising a standing yes that the level doing the deciding does not honour.
+ *
  *  **Nothing here promises the grant exists.** The backend refuses to record one for a
  *  command no scope could stand for — one its own walk cannot read, or one reaching
  *  outside the worktree — and a guess made here would be a second, disagreeing answer to a
@@ -60,9 +94,12 @@ export function createGrantToggle() {
 export function ConversationGrantToggle(props: {
   /** The command line this approval would run, when it runs one. */
   command?: string;
-  checked?: boolean;
+  /** The tool being approved — named in the wider option, so the operator reads what they
+   *  are handing over rather than "this tool". */
+  toolName?: string;
+  width?: GrantWidth;
   disabled?: boolean;
-  onChange: (allow: boolean) => void;
+  onChange: (width: GrantWidth) => void;
 }): JSX.Element {
   const label = () => {
     const scope = commandScopeLabel(props.command);
@@ -71,12 +108,45 @@ export function ConversationGrantToggle(props: {
       return "Don't ask again for this command in this conversation";
     return "Don't ask again for this tool in this conversation";
   };
+  // The narrower option is only a *different* thing to say where the call runs a command.
+  // For anything else the tool is the act, the checkbox above already names it, and a
+  // picker offering one choice twice would invent a decision nobody has to make.
+  const hasWidths = () => !!props.command;
+  const width = () => props.width ?? "off";
   return (
-    <Checkbox
-      label={label()}
-      checked={props.checked}
-      disabled={props.disabled}
-      onChange={props.onChange}
-    />
+    <Stack gap={1}>
+      <Checkbox
+        label={label()}
+        checked={width() !== "off"}
+        disabled={props.disabled}
+        onChange={(allow) =>
+          props.onChange(allow ? tickedWidth(props.command) : "off")
+        }
+      />
+      <Show when={hasWidths() && width() !== "off"}>
+        <Segmented
+          class="ml-6"
+          fill={false}
+          aria-label="What this standing approval covers"
+          value={width() === "tool" ? "tool" : "command"}
+          onChange={(next) => props.onChange(next as GrantWidth)}
+          options={[
+            {
+              value: "command",
+              label: "Just this command",
+              description: "Any other command still pauses for approval.",
+            },
+            {
+              value: "tool",
+              label: props.toolName
+                ? `Anything ${props.toolName} runs`
+                : "Anything this tool runs",
+              description:
+                "Every command it runs for the rest of this conversation, without asking. Actions that can't be undone still pause.",
+            },
+          ]}
+        />
+      </Show>
+    </Stack>
   );
 }

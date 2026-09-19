@@ -192,29 +192,47 @@ class TestTheArithmetic:
         # And the reason travels, because the approval card is where it has to be read.
         assert "too_destructive" in outcome.reason
 
-    async def test_a_standing_grant_does_not_make_the_unrecoverable_run_either(self):
+    @pytest.mark.parametrize("width", ["command", "tool"])
+    async def test_a_standing_grant_does_not_make_the_unrecoverable_run_either(self, width):
+        # Neither width, and the wider one is the point: it is the operator's answer to the
+        # authorization question, and whether an act can be undone is not that question.
         outcome = await review(
-            RISKY, reviewer=reviewer_of(verdict("too_destructive")), granted=True
+            RISKY, reviewer=reviewer_of(verdict("too_destructive")), granted=width
         )
         assert outcome.decision is Decision.ASK
 
     @pytest.mark.parametrize("risk", ["low", "high"])
-    async def test_a_grant_fills_a_gap_and_never_overturns_a_refusal(self, risk):
-        # A grant left earlier in the thread is older than what the reviewer just read out
-        # of this turn. Treating it as the answer produced a row that reported the operator
-        # had said no and allowed the call in the same sentence.
+    async def test_a_command_grant_fills_a_gap_and_never_overturns_a_refusal(self, risk):
+        # A grant naming one act, left earlier in the thread, is older than what the
+        # reviewer just read out of this turn. Treating it as the answer produced a row that
+        # reported the operator had said no and allowed the call in the same sentence.
         outcome = await review(
-            RISKY, reviewer=reviewer_of(verdict(risk, "explicitly_no")), granted=True
+            RISKY, reviewer=reviewer_of(verdict(risk, "explicitly_no")), granted="command"
         )
         assert outcome.decision is Decision.ASK
         assert "standing grant" not in outcome.reason
         # ...where the reviewer found nothing either way, the grant is exactly what it was
         # recorded to be: the yes a high-risk act needs.
         filled = await review(
-            RISKY, reviewer=reviewer_of(verdict(risk, "neutral")), granted=True
+            RISKY, reviewer=reviewer_of(verdict(risk, "neutral")), granted="command"
         )
         assert filled.decision is Decision.ALLOW
-        assert "standing grant" in filled.reason
+        assert "standing grant for this command" in filled.reason
+
+    @pytest.mark.parametrize("risk", ["low", "high"])
+    @pytest.mark.parametrize("authorization", ["explicitly_no", "neutral"])
+    async def test_a_whole_tool_grant_is_the_authorization(self, risk, authorization):
+        # The wider width is only ever written because the operator picked it under copy
+        # saying what it does — this tool, everything it runs, without being asked. So a
+        # refusal the reviewer inferred from the prose of the turn is not a more recent word
+        # than the one they typed into the card, and the act runs.
+        outcome = await review(
+            RISKY, reviewer=reviewer_of(verdict(risk, authorization)), granted="tool"
+        )
+        assert outcome.decision is Decision.ALLOW
+        assert "standing grant for this whole tool" in outcome.reason
+        # Revocable, so the resume path has to re-check it before the call actually runs.
+        assert outcome.by_grant is (risk == "high" or authorization == "explicitly_no")
 
     async def test_low_risk_runs_unless_the_operator_said_no(self):
         assert (await review(RISKY, reviewer=reviewer_of(verdict("low")))).decision is (
@@ -269,12 +287,15 @@ class TestItFailsClosed:
         assert outcome.decision is Decision.ASK
         assert "no reviewer" in outcome.reason
 
-    async def test_a_standing_grant_does_not_stand_in_for_a_review_that_cannot_run(self):
-        # A grant is an input to the review, and with no utility role bound the review it
-        # was an input to is the one that could not run. Settling the call on the grant
-        # alone would switch the level off wherever no utility model is bound: one "allow
-        # for this conversation" on a shell tool and `rm -rf /` runs unlooked-at.
-        outcome = await review(RISKY, reviewer=None, granted=True)
+    @pytest.mark.parametrize("width", ["command", "tool"])
+    async def test_a_standing_grant_does_not_stand_in_for_a_review_that_cannot_run(self, width):
+        # A grant of either width is an input to the review, and with no utility role bound
+        # the review it was an input to is the one that could not run. Settling the call on
+        # the grant alone would switch the level off wherever no utility model is bound: one
+        # standing yes on a shell tool and `rm -rf /` runs unlooked-at. The wider width is
+        # the one that most needs this — nothing looked at the act, so nothing can say it is
+        # not the unrecoverable kind that width was never allowed to clear.
+        outcome = await review(RISKY, reviewer=None, granted=width)
         assert outcome.decision is Decision.ASK
         assert "no reviewer is available" in outcome.reason
 

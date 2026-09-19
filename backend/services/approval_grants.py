@@ -34,6 +34,17 @@ there to name — the operator wrote the tool name on the task itself, ahead of 
 so the empty scope is the honest record of what they authorized, and narrowing it would
 leave an unattended task parked forever on the tool it was configured to use.
 
+**And the operator can ask for that wider thing themselves, which is what ``decisive``
+records.** Scoping a grant to the command is the right default and the wrong *only* option:
+a thread doing a morning's work in a shell hits a fresh prompt per command, and the operator
+who has decided to stop reading them has no way to say so. So the approval card offers a
+second, separately-worded width — this tool, any command — and a grant recorded from it is
+marked decisive. The two are different objects to :func:`grant_width`, and the difference
+matters at exactly one level: the one that *reviews* rather than asking outright. There a
+command-scoped grant is an input to the review and a decisive one is the operator's
+authorization, which is the whole of what they were offered. Neither buys an act nobody can
+undo, and neither stands in for a review that could not run.
+
 A grant is operator policy, not secret content, so it is stored in the clear (no vault
 sealing). Expiry is enforced in Python after normalizing to UTC, so the round-trip
 through SQLite (which may drop tzinfo) can't make a naive/aware comparison raise.
@@ -54,7 +65,7 @@ from core.db import in_session, upsert
 from core.serde import as_utc
 from models._fields import new_id, utcnow
 from models.approval_grant import ApprovalGrant
-from services.permissions import command_prefixes, declared_reach
+from services.permissions import GrantWidth, command_prefixes, declared_reach
 
 #: The tools whose grant is scoped to a command rather than to the whole tool — the ones
 #: whose call carries the command line the operator is really answering. Named as literals
@@ -87,6 +98,9 @@ class GrantInfo:
     #: The leading words this grant is scoped to (`("uv", "run", "pytest")`), empty for a
     #: grant over the whole tool.
     command_prefix: tuple[str, ...] = ()
+    #: Whether this grant answers for the operator at the level that reviews, or only
+    #: informs it. See :func:`grant_width`.
+    decisive: bool = False
 
 
 def encode_prefix(words: Sequence[str]) -> str:
@@ -166,13 +180,23 @@ def _scopes_of(tool_name: str, args: Mapping[str, Any]) -> list[tuple[str, ...]]
     return [(*marker, *prefix) for prefix in prefixes]
 
 
-def covered_by_grant(
+def grant_width(
     tool_name: str | None, args: Mapping[str, Any], grants: Sequence[GrantInfo]
-) -> bool:
-    """Whether a deferred call is covered by a conversation's active grants.
+) -> GrantWidth:
+    """How far this conversation's active grants reach over one deferred call.
 
-    The single rule consulted by both the engine's park-time split and the approve route's
-    resume-time re-validation, so the two paths can't diverge about what a grant reaches.
+    The single rule consulted by the engine's park-time split, the review it hands a call
+    to, and the approve route's resume-time re-validation — so no two of them can diverge
+    about what a grant reaches.
+
+    ``"tool"`` where a grant the operator marked as their answer for the whole tool covers
+    the call: a decisive whole-tool grant, and only that. ``"command"`` where the call is
+    covered by a grant that names the act instead — one recorded from an approval, or an
+    undecisive whole-tool row (a scheduled task's seed, or a thread granted before the
+    wider option existed). ``"none"`` where nothing covers it.
+
+    **The decisive reading is never inferred from an empty scope alone.** Emptiness is a
+    shape several writers produce; being answered for is a thing only the operator says.
 
     A whole-tool grant covers any call to that tool. A command-scoped one covers a command
     **every** stage of which leads with exactly some granted scope's words — every stage,
@@ -193,16 +217,36 @@ def covered_by_grant(
     the fence, which is most of what the operator was agreeing to.
     """
     if tool_name is None:
-        return False
-    scopes = [grant.command_prefix for grant in grants if grant.tool_name == tool_name]
-    if not scopes:
-        return False
-    if any(not scope for scope in scopes):
-        return True
+        return "none"
+    on_tool = [grant for grant in grants if grant.tool_name == tool_name]
+    if not on_tool:
+        return "none"
+    whole_tool = [grant for grant in on_tool if not grant.command_prefix]
+    if whole_tool:
+        return "tool" if any(grant.decisive for grant in whole_tool) else "command"
     called = _scopes_of(tool_name, args)
     if not called:
-        return False
-    return all(scope in scopes for scope in called)
+        return "none"
+    scopes = [grant.command_prefix for grant in on_tool]
+    if not all(scope in scopes for scope in called):
+        return "none"
+    # A command-scoped grant names one act, so it is never the answer to every call a tool
+    # could make — whatever width it was recorded at, it informs rather than settles.
+    return "command"
+
+
+def covered_by_grant(
+    tool_name: str | None, args: Mapping[str, Any], grants: Sequence[GrantInfo]
+) -> bool:
+    """Whether a deferred call is covered by a conversation's active grants at all.
+
+    What the levels that ask outright want to know — there a grant of either width settles
+    the call, because the question those levels are asking is the one the operator already
+    answered. The width only separates them where a *review* is doing the deciding
+    (:func:`grant_width`), and this is deliberately a reading of that same answer rather
+    than a second walk over the grants.
+    """
+    return grant_width(tool_name, args, grants) != "none"
 
 
 def _reach_marker(tool_name: str, args: Mapping[str, Any]) -> tuple[str, ...]:
@@ -240,10 +284,17 @@ class ApprovalGrantStore:
         conversation_id: str,
         tool_name: str,
         command_prefix: Sequence[str] = (),
+        decisive: bool = False,
     ) -> datetime:
         """Record (or refresh) a conversation-scoped auto-approval for ``tool_name``,
         scoped to ``command_prefix`` where the tool runs a command. Returns the new
-        expiry."""
+        expiry.
+
+        ``decisive`` is the operator's wider pick — their answer for the whole tool, taken
+        as the authorization by the level that reviews. It defaults off, so the two writers
+        that never carry it (an approval's command-scoped yes, a scheduled task's seed) go
+        on recording exactly what they always did.
+        """
         expires_at = utcnow() + self._ttl
         scope = encode_prefix(command_prefix)
 
@@ -260,6 +311,7 @@ class ApprovalGrantStore:
                     conversation_id=conversation_id,
                     tool_name=tool_name,
                     command_prefix=scope,
+                    decisive=decisive,
                     created_at=utcnow(),
                     expires_at=expires_at,
                 )
@@ -270,7 +322,23 @@ class ApprovalGrantStore:
                         "tool_name",
                         "command_prefix",
                     ],
-                    set_={"expires_at": expires_at},
+                    # The width moves with the expiry, so ticking the wider option on a
+                    # tool already granted promotes the row the operator can see rather
+                    # than writing a second one beside it. It is outside the unique index
+                    # for exactly that reason: two grants over the same scope disagreeing
+                    # about how far it reaches is not a state worth being able to hold.
+                    #
+                    # **It promotes and never narrows.** A conflicting write that does not
+                    # ask for the wider width is not the operator withdrawing it — it is a
+                    # refresh, or the other half of a batch that settled two calls to one
+                    # tool, and there the row written last would otherwise decide how far
+                    # the grant reaches. Narrowing is something they do on purpose, by
+                    # revoking the chip, which drops the row outright.
+                    set_=(
+                        {"expires_at": expires_at, "decisive": True}
+                        if decisive
+                        else {"expires_at": expires_at}
+                    ),
                 )
             )
             session.execute(stmt)
@@ -304,6 +372,7 @@ class ApprovalGrantStore:
                             tool_name=r.tool_name,
                             expires_at=as_utc(r.expires_at),
                             command_prefix=decode_prefix(r.command_prefix),
+                            decisive=r.decisive,
                         )
                     )
                 else:

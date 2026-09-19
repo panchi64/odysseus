@@ -48,9 +48,15 @@ from core.container import ServiceContainer
 from core.untrusted import new_nonce
 from runs import Run
 from runs.events import ReviewCompleted, ReviewStarted
-from services.approval_grants import ApprovalGrantStore, GrantInfo, covered_by_grant
+from services.approval_grants import (
+    ApprovalGrantStore,
+    GrantInfo,
+    covered_by_grant,
+    grant_width,
+)
 from services.permissions import (
     Decision,
+    GrantWidth,
     ReviewBudget,
     Reviewer,
     ReviewOutcome,
@@ -131,15 +137,18 @@ async def settle_deferred(
     a command is scoped to the command's leading words, so a standing yes to `uv run
     pytest` settles the next test run and nothing else the shell could be asked to do.
 
-    **At Auto the grant is not the answer either — it is an input to the review.** The
-    level's question there is what a particular call would do, and a grant on
-    ``shell_run_command`` is not an answer to that for every command in the thread. So a
-    granted call is reviewed like any other and the grant rides along as the operator's
-    authorization (:func:`services.permissions.review`); what it buys is the yes a
-    high-risk act needs, not a way past the judge — and not a way past a review that could
-    not run at all, which parks whatever the grants say. An allow the grant's authorization
-    is what produced is recorded as the grant's (:class:`GrantApproved`), so the resume
-    path re-checks it if the operator revokes while the rest of the batch waits.
+    **At Auto the grant is not the answer either — it is an input to the review**, and how
+    much of an input depends on which width the operator chose. The level's question there
+    is what a particular call would do, and a grant naming one command is not an answer to
+    that for every command in the thread: it rides along as the authorization for the act
+    it names and the review still runs. The wider grant — the one offered in its own words,
+    this tool and everything it runs — *is* read as that answer, because it is the
+    operator's reply to the same question the review is asking. Neither is a way past the
+    judge, neither clears an act nobody can undo, and neither stands in for a review that
+    could not run at all, which parks whatever the grants say
+    (:func:`services.permissions.review`). An allow the grant's authorization is what
+    produced is recorded as the grant's (:class:`GrantApproved`), so the resume path
+    re-checks it if the operator revokes while the rest of the batch waits.
 
     ``turn_start`` and ``budget`` belong to the *turn* rather than to this batch: the first
     is where the turn's own messages begin, so the reviewer can be given the request that
@@ -260,7 +269,7 @@ async def review_batch(
                 root=root,
                 transcript=transcript,
                 reviewer=reviewer,
-                granted=covered_by_grant(call.tool_name, call.args_as_dict(), grants),
+                granted=grant_width(call.tool_name, call.args_as_dict(), grants),
                 fenced=confinement.active,
                 budget=budget,
                 nonce=nonce,
@@ -340,7 +349,7 @@ async def review_call(
     root: Path | None,
     transcript: Sequence[TranscriptEntry],
     reviewer: Reviewer | None,
-    granted: bool = False,
+    granted: GrantWidth = "none",
     fenced: bool,
     budget: ReviewBudget | None = None,
     nonce: str | None = None,
@@ -352,7 +361,8 @@ async def review_call(
     strictest reading: with nowhere to measure containment against, every absolute or
     upward path in a command reads as leaving the workspace and escalates. ``fenced`` is
     the fact about the host the structural stage needs and cannot look up for itself, and
-    ``granted`` whether the operator's standing grant covers this tool. ``nonce`` is the
+    ``granted`` how far the operator's standing grant reaches over this call — nothing, the
+    one act it was ticked under, or the whole tool. ``nonce`` is the
     fence token the batch shares, so every review's prompt opens on the same bytes.
     """
     capability = capability_of(tool, args, root=root)

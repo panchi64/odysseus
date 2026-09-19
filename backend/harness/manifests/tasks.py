@@ -107,7 +107,15 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
         the agent asked to run; here there is no such call yet, only a tool name the
         operator wrote on the task itself ahead of every turn it will ever take. Scoping
         it to a command nobody has proposed is not possible, and refusing the seed would
-        leave a task parked forever on exactly the tool it was configured to use."""
+        leave a task parked forever on exactly the tool it was configured to use.
+
+        **They are not the operator's wider pick, though they share its shape.** A seed is
+        left undecisive, so at the level that reviews it informs the review exactly as it
+        always has rather than answering for it. The width that answers is one a person
+        chose on a card, in front of the act it would cover; nobody is in front of an
+        unattended run, and the thread one opens is an ordinary conversation the operator
+        can reopen later — so a seed promoted by its shape would go on authorizing past the
+        single execution it was written for."""
         models = await resolve_turn_models(registry, None, None, owner_id=view.owner_id)
         conversation_id = await conversations.create_conversation(
             view.owner_id, title=view.title

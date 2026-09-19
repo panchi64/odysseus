@@ -236,6 +236,72 @@ async def test_a_conversation_grant_on_a_command_names_the_command(monkeypatch):
         assert (await client.get(f"/conversations/{conv_id}/grants")).json() == []
 
 
+async def test_the_wider_width_grants_the_whole_tool_and_says_so(monkeypatch):
+    # The operator's deliberate second option: this tool, everything it runs. It derives
+    # nothing from the command, so there is nothing that could fail to derive — and it is
+    # recorded as decisive, which is what the reviewing level reads as their answer.
+    _install_sensitive_tool(monkeypatch)
+    async with client_app() as (client, app):
+        swap_tool_catalog(app, command_categories())
+        run_id = (await client.post("/chat", json={"prompt": "run it"})).json()["run_id"]
+        run = await _await_parked(app, run_id)
+        approval = run.parked_payload.requests.approvals[0]
+        conv_id = run.conversation_id
+
+        resp = await client.post(
+            f"/runs/{run_id}/approve",
+            json={
+                "decisions": [
+                    {
+                        "tool_call_id": approval.tool_call_id,
+                        "approved": True,
+                        "scope": "conversation_tool",
+                    }
+                ]
+            },
+        )
+        assert resp.status_code == 202
+        # The whole-tool scope is an empty prefix, and it is never reported as unscoped —
+        # the operator got exactly the thing they asked for.
+        assert resp.json() == {"status": "resuming", "granted": [[]], "unscoped": []}
+
+        listed = (await client.get(f"/conversations/{conv_id}/grants")).json()
+        assert [(g["tool_name"], g["command_prefix"], g["decisive"]) for g in listed] == [
+            ("code_run_host_command", [], True)
+        ]
+
+
+async def test_the_wider_width_is_still_refused_for_a_once_only_tool(monkeypatch):
+    # A grant auto-approves a tool name and nothing narrower, so a standing yes to the
+    # egress request would mean every domain the agent goes on to name. Widening the width
+    # the operator may ask for does not widen the set of tools it may be asked about.
+    _install_sensitive_tool(monkeypatch)
+    async with client_app() as (client, app):
+        swap_tool_catalog(app, egress_categories())
+        run_id = (await client.post("/chat", json={"prompt": "reach out"})).json()["run_id"]
+        run = await _await_parked(app, run_id)
+        approval = run.parked_payload.requests.approvals[0]
+        conv_id = run.conversation_id
+
+        resp = await client.post(
+            f"/runs/{run_id}/approve",
+            json={
+                "decisions": [
+                    {
+                        "tool_call_id": approval.tool_call_id,
+                        "approved": True,
+                        "scope": "conversation_tool",
+                    }
+                ]
+            },
+        )
+        # The call itself is approved; only the standing part is dropped, and silently —
+        # the card was not wrong to offer the box.
+        assert resp.status_code == 202
+        assert resp.json()["granted"] == []
+        assert (await client.get(f"/conversations/{conv_id}/grants")).json() == []
+
+
 async def test_a_grant_names_the_command_the_operator_edited_it_to(monkeypatch):
     # An override *replaces* the call's arguments, so the act being approved is the edited
     # one. Deriving the standing yes from the arguments the model wrote would record a
@@ -369,6 +435,44 @@ async def test_failed_resume_rolls_back_the_recorded_grant(monkeypatch):
         assert resp.status_code == 409
         granted = await app.state.approval_grants.list("operator", conv_id)
         assert approval.tool_name not in {g.tool_name for g in granted}
+
+
+async def test_a_failed_resume_leaves_a_grant_that_was_already_there(monkeypatch):
+    # The rollback drops what this request *created*, not everything it wrote. A grant
+    # does not settle a call at the level that reviews, so a thread can hold a live
+    # standing yes and still park on the very act it names; approving that refreshes the
+    # row rather than creating one. Revoking it because a run the operator was never told
+    # about failed to resume would take away something they granted earlier and never
+    # withdrew.
+    _install_sensitive_tool(monkeypatch)
+    async with client_app() as (client, app):
+        swap_tool_catalog(app, danger_categories())
+        run_id = (await client.post("/chat", json={"prompt": "delete it"})).json()["run_id"]
+        run = await _await_parked(app, run_id)
+        approval = run.parked_payload.requests.approvals[0]
+        conv_id = run.conversation_id
+        # Standing before this card was ever opened.
+        await app.state.approval_grants.grant("operator", conv_id, approval.tool_name)
+
+        async def fail_resume(run_id, orchestrator, **kwargs):
+            return None
+
+        monkeypatch.setattr(app.state.runs, "resume", fail_resume)
+        resp = await client.post(
+            f"/runs/{run_id}/approve",
+            json={
+                "decisions": [
+                    {
+                        "tool_call_id": approval.tool_call_id,
+                        "approved": True,
+                        "scope": "conversation",
+                    }
+                ]
+            },
+        )
+        assert resp.status_code == 409
+        granted = await app.state.approval_grants.list("operator", conv_id)
+        assert approval.tool_name in {g.tool_name for g in granted}
 
 
 async def test_approve_rejects_decision_mismatch(monkeypatch):

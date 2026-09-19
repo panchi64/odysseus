@@ -68,6 +68,29 @@ export function commandPrefix(command: string): string[] | null {
   return words.length > 0 ? words : null;
 }
 
+/** How far an opt-in reaches, as the card asks for it.
+ *
+ *  `"off"` is no standing yes at all. `"command"` is the default tick — the act this call
+ *  is, which on a tool that runs a command is that command and on any other tool is simply
+ *  the tool. `"tool"` is the wider pick, offered only where the two differ: everything the
+ *  tool runs, for the rest of the thread.
+ *
+ *  It is the *width* and not the key: which act an opt-in belongs to is `grantKey`'s
+ *  answer, and holding the width in the value keeps one checkbox per act however the
+ *  operator sets it. */
+export type GrantWidth = "off" | "command" | "tool";
+
+/** The width a plain tick asks for, before the operator touches the picker.
+ *
+ *  Two answers, and the second is the load-bearing one. Where the call runs a command the
+ *  narrow width is the default and the picker offers the wider one beside it. Where it
+ *  runs **no** command there is nothing narrower to be scoped to — the tool *is* the act,
+ *  and the checkbox says so — so the tick means the wider width outright. Recording the
+ *  narrower one there would leave the label promising a standing yes that the level doing
+ *  the deciding does not honour, which is the shape of bug the widths were added to fix. */
+export const tickedWidth = (command: string | undefined): GrantWidth =>
+  command ? "command" : "tool";
+
 /** The act a grant would name, as one string — "uv run pytest" — or null. */
 export function commandScopeLabel(command: string | undefined): string | null {
   if (!command) return null;

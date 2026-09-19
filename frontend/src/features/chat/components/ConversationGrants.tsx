@@ -59,10 +59,18 @@ export function ConversationGrants(props: {
   // is presentation and stops here: the revoke sends the words themselves.
   // A scope recorded under a wider reach leads with `@host` / `@network` (the backend's
   // marker), which reads better as a suffix: "brew install wget (host)".
+  // A grant the operator gave the whole of a command-running tool says so, rather than
+  // sitting under a bare tool name: the empty prefix it shares with that tool's other
+  // grants is exactly what a reader cannot see, and this is the chip they are most likely
+  // to want to revoke. Only there, though — on a tool that runs no command there is one
+  // width and nothing to contrast it with, and "any command" would name commands it never
+  // runs.
+  const wholeTool = (g: ApprovalGrant) => g.decisive && g.commandScoped;
   const label = (g: ApprovalGrant) => {
     const [head, ...rest] = g.commandPrefix;
     if (head?.startsWith("@")) return `${rest.join(" ")} (${head.slice(1)})`;
-    return g.commandPrefix.join(" ") || g.toolName;
+    if (g.commandPrefix.length) return g.commandPrefix.join(" ");
+    return wholeTool(g) ? `${g.toolName} · any command` : g.toolName;
   };
 
   // Which grant a row *is*, for the optimistic removal below. Compared word by word rather
@@ -80,7 +88,9 @@ export function ConversationGrants(props: {
       title: `Stop auto-approving ${name}?`,
       detail: grant.commandPrefix.length
         ? "The agent will pause and ask for approval the next time it runs this command in this conversation."
-        : "The agent will pause and ask for approval the next time it calls this tool in this conversation.",
+        : wholeTool(grant)
+          ? "The agent will pause and ask for approval the next time it runs anything with this tool in this conversation."
+          : "The agent will pause and ask for approval the next time it calls this tool in this conversation.",
       confirmLabel: "Revoke",
       cancelLabel: "Cancel",
       tone: "alert",

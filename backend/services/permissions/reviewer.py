@@ -111,6 +111,15 @@ MESSAGE_CHARS = 2_000
 #: — and a second spelling of the three words there would be a second place to change.
 type Authorization = Literal["explicitly_no", "neutral", "explicitly_yes"]
 
+#: How far the operator's standing conversation grant reaches over the call being ruled on.
+#: ``"none"`` is no grant; ``"command"`` is one recorded from an approval, naming the act it
+#: was ticked under; ``"tool"`` is their deliberate wider pick, a yes to everything that
+#: tool does in the thread. Named here, beside the answer it stands in for, because
+#: ``decide.py`` computes with both and the store that records a grant
+#: (``services/approval_grants.py``) is a layer *above* this package — so the vocabulary
+#: has to live at the bottom or be spelled twice.
+type GrantWidth = Literal["none", "command", "tool"]
+
 
 class ReviewVerdict(BaseModel):
     """One reviewer's scores. Typed rather than prose for the reason every structured

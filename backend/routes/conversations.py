@@ -26,6 +26,7 @@ from core.exceptions import DegradedCapabilityError, NotFoundError
 from routes import deps
 from routes.deps import OPERATOR_ID
 from runs import ContextWindow, RunMetrics
+from services.approval_grants import COMMAND_SCOPED_TOOLS
 from services.context_budget import compose
 from services.conversation_view import MessageView
 from services.conversations import (
@@ -891,6 +892,17 @@ class ApprovalGrantOut(BaseModel):
     #: unambiguous while an invariant two layers down holds. Joining it for a label is the
     #: client's job, and a label is all a joined form is good for.
     command_prefix: list[str] = []
+    #: Whether this is the operator's wider pick — their answer for the whole tool, which
+    #: the reviewing level takes as the authorization rather than merely weighing. Sent
+    #: because the chip has to be able to say which of the two it is: an empty
+    #: `command_prefix` alone cannot, since it is also the shape a non-command tool's
+    #: ordinary grant and a scheduled task's seed both take.
+    decisive: bool = False
+    #: Whether this tool is one whose grants are scoped to a command at all. Sent so the
+    #: chip can say "any command" where that is a real contrast and stay silent where it
+    #: is not: a tool that runs no command has only one width, and labelling its grant
+    #: against commands it never runs would describe something that does not exist.
+    command_scoped: bool = False
     expires_at: datetime
 
 
@@ -903,6 +915,8 @@ async def list_grants(conversation_id: str, request: Request) -> list[ApprovalGr
         ApprovalGrantOut(
             tool_name=g.tool_name,
             command_prefix=list(g.command_prefix),
+            decisive=g.decisive,
+            command_scoped=g.tool_name in COMMAND_SCOPED_TOOLS,
             expires_at=g.expires_at,
         )
         for g in grants
