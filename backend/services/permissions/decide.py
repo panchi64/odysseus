@@ -8,7 +8,8 @@ things put a call in that list, and telling them apart is the whole job of this 
   ceiling as needing approval (``tools/toolsets.py``), so the model's request for one
   comes back undone. This is the level's own question, and the level's approval policy
   answers it: withheld under Plan (so the call is refused outright rather than asked
-  about), parked under Manual and Edit, reviewed under Auto.
+  about), parked under Manual and Edit, reviewed under Auto. Yolo never asks it — its
+  ceiling is above every class, so nothing of its is deferred by the level at all.
 - **the tool put itself there.** A global recall, a skill edit, an untrusted external
   tool — tools that gate their own calls for reasons this axis knows nothing about. Those
   are the operator's to answer, which is why they come back ``ASK`` even under a level
@@ -16,16 +17,26 @@ things put a call in that list, and telling them apart is the whole job of this 
   (``levels.py``). Auto is not an exception to that: it answers them by review because
   answering on the operator's behalf is the whole of what choosing Auto means.
 
-**Why the vocabulary has four members when the knobs produce three.** ``ALLOW`` is what a
-standing conversation grant produces — the operator's explicit "stop asking me about this
-one" — and it is also the verdict Auto's review returns for a call it clears. Expressing
-both in the same vocabulary is what keeps the engine to one dispatch. Note where the grant
-sits in that dispatch (``agent/gating.py``): it answers a question this module *asked*,
-and never overturns a refusal. A grant is consent to skip a prompt, not consent to act in
-a thread the operator set to act in nothing. **At Auto it does not answer the question at
-all** — it is carried into the review as the operator's authorization (:func:`review`),
-because at that level the question was never "may this tool run" but "what would this call
-do", and a grant on `shell_run_command` is not an answer to that for every command.
+  **Yolo is the exception, and the only one.** It answers these with ``ALLOW`` — the
+  operator asked not to be asked, and a level that still parked on a corpus recall would
+  not be the thing its name promises. That is one branch in :func:`decide`, it says so
+  where it is taken, and ``levels.py`` holds the argument for why exactly one level may
+  do it.
+
+**Why the vocabulary has four members.** ``ALLOW`` has three producers and they are not
+interchangeable. A standing conversation grant produces it — the operator's explicit "stop
+asking me about this one". Auto's review returns it for a call it clears. And a **level**
+returns it at Yolo, where nothing is asked. Expressing all three in the same vocabulary is
+what keeps the engine to one dispatch; telling them apart afterwards is
+``agent/gating.py``'s job, because only the grant is revocable while a run sits parked and
+so only the grant's allow is re-checked on resume (``routes/runs.py``). Note where the
+grant sits in that dispatch: it answers a question this module *asked*, and never overturns
+a refusal. A grant is consent to skip a prompt, not consent to act in a thread the operator
+set to act in nothing. **At Auto it does not answer the question at all** — it is carried
+into the review as the operator's authorization (:func:`review`), because at that level the
+question was never "may this tool run" but "what would this call do", and a grant on
+`shell_run_command` is not an answer to that for every command. At Yolo it is not consulted
+either, there being no prompt left for it to skip.
 
 **The second half of this module is that review** (:func:`review`), which is what
 ``REVIEW`` resolves to: the deterministic stage first (``judge.py``), the model second
@@ -71,11 +82,18 @@ class Decision(StrEnum):
     BLOCK = "block"
 
 
-#: The three answers a level gives to a call that reached past its ceiling.
+#: The answers a level gives to a call that reached past its ceiling. Total over
+#: :class:`ApprovalPolicy` rather than over the policies that can actually arrive here:
+#: ``ALLOW``'s row is unreachable today, because the only level carrying that policy has a
+#: ceiling nothing is above, so no call of its is ever *past* the ceiling and none of them
+#: reach this lookup. The row is written anyway — a partial mapping keyed on an enum fails
+#: as a ``KeyError``, and inside a permission decision is the worst place in this codebase
+#: to discover a missing case.
 _BY_POLICY = {
     ApprovalPolicy.WITHHOLD: Decision.BLOCK,
     ApprovalPolicy.ASK: Decision.ASK,
     ApprovalPolicy.REVIEW: Decision.REVIEW,
+    ApprovalPolicy.ALLOW: Decision.ALLOW,
 }
 
 
@@ -84,17 +102,36 @@ def decide(level: str, tool: str) -> Decision:
 
     Pure and total: an unknown level resolves to the strictest one and an unclassified
     tool to the class that reaches furthest, so neither a corrupt stored value nor an
-    operator's own MCP tool can arrive here and be waved through. Never returns ``ALLOW``
-    — a level permits by *not deferring in the first place*, so anything that reaches this
-    is something someone still has to answer.
+    operator's own MCP tool can arrive here and be waved through.
+
+    **``ALLOW`` comes back from exactly one level**, and it is the one whose name says so.
+    Every other level permits by *not deferring in the first place*, so anything of theirs
+    that reaches here is something someone still has to answer; Yolo is the operator
+    saying that nobody has to. Note what that costs and where the cost is bounded: a
+    standing grant is still the thing that produces an ``ALLOW`` at Manual and Edit, and a
+    review still produces one at Auto, so no level below this one changed meaning.
     """
     policy = permission_spec(level).approval_policy
     if not beyond_scope(level, tool):
         # Within the level's scope, so the level is not what deferred it: the tool gated
-        # its own call, and no level may wave that through. The operator answers it —
-        # unless they have chosen a level that delegates their answer to the review, which
-        # is the whole of what Auto is. Delegating the answer is not deleting the gate.
-        return Decision.REVIEW if policy is ApprovalPolicy.REVIEW else Decision.ASK
+        # its own call. Below the top level no level may wave that through — the operator
+        # answers it, unless they have chosen the level that delegates their answer to the
+        # review, which is the whole of what Auto is. Delegating the answer is not
+        # deleting the gate.
+        #
+        # At Yolo it *is* deleting the gate, deliberately and by that name. A level whose
+        # proposition is that nothing in the thread stops cannot honour it while still
+        # parking on a corpus recall or a vault read — those are gates raised for reasons
+        # this axis knows nothing about, and "I do not want to be asked" is an answer to
+        # all of them or to none. `levels.py` states the exception; this is where it is
+        # taken, and it is the only place.
+        match policy:
+            case ApprovalPolicy.ALLOW:
+                return Decision.ALLOW
+            case ApprovalPolicy.REVIEW:
+                return Decision.REVIEW
+            case _:
+                return Decision.ASK
     return _BY_POLICY[policy]
 
 

@@ -650,7 +650,7 @@ export interface ChatSummary {
  *  vocabulary, and the second axis of a conversation. Unlike the mode it **moves**:
  *  it is persisted on the thread and changed by sending at a different level, so a
  *  reload comes back where the operator left it. */
-export type PermissionLevel = "plan" | "manual" | "edit" | "auto";
+export type PermissionLevel = "plan" | "manual" | "edit" | "auto" | "yolo";
 
 export interface PermissionLevelSpec {
   id: PermissionLevel;
@@ -660,7 +660,7 @@ export interface PermissionLevelSpec {
   description: string;
 }
 
-/** The four, ordered by how much rope they give — the same order the plan's table
+/** The five, ordered by how much rope they give — the same order the plan's table
  *  reads, so moving down the list is always moving towards *less*. */
 export const PERMISSION_LEVELS: readonly PermissionLevelSpec[] = [
   {
@@ -684,13 +684,24 @@ export const PERMISSION_LEVELS: readonly PermissionLevelSpec[] = [
     description:
       "Acts on its own inside the worktree, reviewed beyond it, asks only on doubt.",
   },
+  // The one level whose description has to be a warning rather than a summary. Every
+  // other row says what the model may do; this row's useful content is what *stops* —
+  // nothing — and the two things that survive, which are the sandbox around a command
+  // and the transcript afterwards. Written in the second person and in plain words
+  // because it is the last thing an operator reads before choosing it.
+  {
+    id: "yolo",
+    label: "Yolo",
+    description:
+      "Free rein. Nothing stops for you — not commands, mail, credentials or anything it can't undo.",
+  },
 ];
 
 /** Whether a free-typed string names a level.
  *
  *  For the one path where it is not already narrowed: `/level auto` in the composer,
  *  where the operator types the word themselves. Derived from the list above rather than
- *  re-listing the four, so a fifth level is offered here the moment it is declared —
+ *  re-listing them, so a further level is offered here the moment it is declared —
  *  presentation only, and the backend re-validates whatever this lets through. */
 export function isPermissionLevel(value: string): value is PermissionLevel {
   return PERMISSION_LEVELS.some((spec) => spec.id === value);

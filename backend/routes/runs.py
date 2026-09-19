@@ -410,13 +410,17 @@ async def approve_run(
         # narrowed type carries.
         if not isinstance(outcome, GrantApproved):
             # Settled on grounds a grant has nothing to do with, and so nothing to
-            # re-validate against: a refusal the permission level made when the turn
-            # parked (the operator was never asked, and a grant recorded since covers a
-            # tool the level does not permit at all), or a call Auto's review cleared on
-            # its own grounds — which leaves no grant behind, and would be denied by a
-            # grant check that took its silence for a revocation. A review that cleared a
-            # call *because* of a grant is marked as the grant's (``agent/gating.py``) and
-            # so is not in this branch: what cleared it is revocable, and is re-checked.
+            # re-validate against. Three of them reach here: a refusal the permission
+            # level made when the turn parked (the operator was never asked, and a grant
+            # recorded since covers a tool the level does not permit at all); a call
+            # Auto's review cleared on its own grounds; and an **approval the level gave
+            # outright** at the top level, where nothing is asked and the grants are never
+            # consulted — a Yolo turn reaches this path when it parks on a *question*
+            # rather than an approval (``agent/turn.py``). None of the three leaves a
+            # grant behind, so all three would be denied by a grant check that took that
+            # silence for a revocation. A review that cleared a call *because* of a grant
+            # is marked as the grant's (``agent/gating.py``) and so is not in this branch:
+            # what cleared it is revocable, and is re-checked.
             decisions[call_id] = outcome
         elif (call := call_by_id.get(call_id)) is not None and _still_covered(
             call, outcome, active

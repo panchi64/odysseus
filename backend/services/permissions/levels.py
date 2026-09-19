@@ -1,35 +1,51 @@
-"""How much rope the model gets — two knobs, and four names over them.
+"""How much rope the model gets — two knobs, and five names over them.
 
 A permission level is the second axis of a thread. The mode says what kind of work this
 is; the level says how far the model may go without stopping to ask. They are orthogonal
-on purpose: every mode carries all four levels, and a level means the same thing in each.
+on purpose: every mode carries all five levels, and a level means the same thing in each.
 
-**Why two knobs rather than four branches.** The obvious shape is four named levels and a
-decision function that switches on the name — which works until a fifth combination is
+**Why two knobs rather than a branch per name.** The obvious shape is named levels and a
+decision function that switches on the name — which works until one more combination is
 wanted, at which point every switch has to grow a case and the ones that are missed fail
 silently. So a level is stored and shown as a name, and *resolved* to a pair:
 
 - a **ceiling** on :class:`~services.tool_sensitivity.Sensitivity` — how far the model may
   reach without permission at all. ``read`` permits observation only; ``workspace_write``
-  also permits changing what this installation owns; the room for a third (a level that
-  may touch the host) is the point;
+  also permits changing what this installation owns; the top class permits every kind of
+  reach there is, which is what the room for a third was for;
 - an **approval policy** — what happens to an act that reaches past that ceiling: withhold
-  the tool outright, park for the operator, or send it to review.
+  the tool outright, park for the operator, send it to review, or allow it outright.
 
-The four levels are presets over that pair. A fifth is a row here, and nothing else moves.
+The levels are presets over that pair. A sixth is a row here, and nothing else moves —
+which is how the fifth arrived: ``yolo`` is one entry in :data:`PERMISSIONS`, one member
+of :class:`ApprovalPolicy`, and one branch in ``decide.py`` for the gate it deliberately
+removes (below). Nothing switched on a name, so nothing else had to be found and edited.
 
 The ceiling is a sensitivity class rather than a name of its own because that is what
 makes the pair decidable: the classes already say what a tool *does*, so "may this run
 without asking?" is a comparison rather than a list of tool names to keep in step.
 
-**What a level cannot do is take a gate away.** Levels widen; they never narrow. A tool
-that gates itself — the global-recall pause, a skill edit — is still answered at every
-level, because the reason it gates is not the one this axis reasons about (a recall pulls
-untrusted content into the model's context; it changes nothing the ceiling describes).
-What clears a tool's own gate is the operator: at the prompt, through a standing
-conversation grant, or — at the one level whose entire meaning is that they asked for
-their answers to be given for them — through the review. That asymmetry is what keeps
-adding a level from quietly deleting a protection nobody re-examined.
+**A level does not take a gate away — with one level as the stated exception.** Levels
+widen; they do not narrow. A tool that gates itself — the global-recall pause, a skill
+edit — is still answered at every level below the top one, because the reason it gates is
+not the one this axis reasons about (a recall pulls untrusted content into the model's
+context; it changes nothing the ceiling describes). What clears a tool's own gate is the
+operator: at the prompt, through a standing conversation grant, or — at the level whose
+meaning is that they asked for their answers to be given for them — through the review.
+That asymmetry is what keeps adding a level from quietly deleting a protection nobody
+re-examined.
+
+**Yolo is where the operator deletes it on purpose, and it is the only one.** Its whole
+proposition is that nothing in a thread stops, and a "free rein" level that still parked
+on a corpus recall or a vault read would be a level whose name lied about it. So its
+policy answers *both* questions with the same word — the level's, and the tool's own —
+and it is the sole reason :class:`ApprovalPolicy` has a fourth member rather than the
+three the other knobs produce. The exception is one row and one branch, both of which say
+so; what makes it defensible is that it is reachable only by an operator naming it, never
+by a default, a fallback or a degrade (:data:`DEFAULT_PERMISSION`,
+:data:`STRICTEST_PERMISSION`), and that it removes the *asking* and not the fence — a
+declared reach still builds the sandbox a command runs inside, and one that needs more
+than it declared still fails in there rather than going ahead.
 
 **At Auto, "through the review" includes the review's own deterministic answer**, and for
 a self-gated *read* that answer costs no model call: ``judge.py`` clears a tool the
@@ -53,9 +69,10 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
 
-from prompts.levels import AUTO_LEVEL, MANUAL_LEVEL, PLAN_LEVEL
+from prompts.levels import AUTO_LEVEL, MANUAL_LEVEL, PLAN_LEVEL, YOLO_LEVEL
 from services.tool_sensitivity import (
     EXTERNAL_PREFIX,
+    TOP_SENSITIVITY,
     Sensitivity,
     classified,
     sensitivity_of,
@@ -64,16 +81,22 @@ from services.tool_sensitivity import (
 
 #: The stored vocabulary. A plain string on the conversation row, like the mode: a
 #: restored backup or a row written by another build must still load.
-type PermissionLevel = Literal["plan", "manual", "edit", "auto"]
+type PermissionLevel = Literal["plan", "manual", "edit", "auto", "yolo"]
 
-#: The four **in the order they are offered**, strictest first. Presentation order, not a
+#: The five **in the order they are offered**, strictest first. Presentation order, not a
 #: comparison: ``edit`` and ``auto`` share a ceiling and differ only in who answers at it,
-#: so nothing should read a ``>`` into the last step. A tuple rather than the set below
+#: so nothing should read a ``>`` into that step. A tuple rather than the set below
 #: because a set has no order to offer — a picker built from one lists the levels
 #: differently on each boot, string hashing being randomised per process.
-PERMISSION_LADDER: tuple[PermissionLevel, ...] = ("plan", "manual", "edit", "auto")
+#:
+#: ``yolo`` is last because it permits the most, and being last is the whole of what the
+#: picker owes it: it is offered in the same list as the rest rather than tucked behind a
+#: setting, since an operator who cannot find the level they want reaches for the nearest
+#: thing instead, and the nearest thing to "stop asking me" is a standing grant on a tool
+#: that runs commands. The copy beside it, not its position, is what says what it costs.
+PERMISSION_LADDER: tuple[PermissionLevel, ...] = ("plan", "manual", "edit", "auto", "yolo")
 
-#: The four, as a set to validate against. Derived from the ladder so no caller re-lists
+#: The five, as a set to validate against. Derived from the ladder so no caller re-lists
 #: them and the two cannot disagree.
 PERMISSION_LEVELS: frozenset[str] = frozenset(PERMISSION_LADDER)
 
@@ -107,6 +130,12 @@ class ApprovalPolicy(StrEnum):
     ASK = "ask"
     #: Judged, then reviewed; parks on doubt.
     REVIEW = "review"
+    #: Run it, asking nobody. The one policy that also answers a gate the *tool* raised
+    #: for reasons this axis knows nothing about — see the module docstring for why
+    #: exactly one level may do that, and ``decide.py`` for the single branch where it
+    #: happens. Like every member here it rules on the call in hand and nothing else;
+    #: what makes the thread feel unstopped is that it gives this answer every time.
+    ALLOW = "allow"
 
 
 @dataclass(frozen=True)
@@ -165,17 +194,38 @@ PERMISSIONS: Mapping[PermissionLevel, PermissionSpec] = {
         approval_policy=ApprovalPolicy.REVIEW,
         instructions=AUTO_LEVEL,
     ),
+    # Free rein: the operator has decided to stop being asked, and this is the level that
+    # says so in one word instead of making them assemble it out of standing grants.
+    #
+    # The ceiling is the top class rather than one of the three named ones, because what
+    # this level permits is *every kind of reach* and the three are tied
+    # (`tool_sensitivity.TOP_SENSITIVITY`) — so nothing is ever beyond scope here, and the
+    # toolset marks nothing for approval in the first place. The policy is what settles
+    # the rest: a tool that gates itself is cleared too, which is the one place a level
+    # takes a gate away and the reason this member exists.
+    #
+    # What it does *not* remove is the fence. A command still declares its reach and still
+    # runs inside the sandbox profile built from that declaration, so a command that needs
+    # more than it declared fails in there exactly as it does at Auto. This level removes
+    # the asking; the containment is not the asking's to remove.
+    "yolo": PermissionSpec(
+        level="yolo",
+        ceiling=TOP_SENSITIVITY,
+        approval_policy=ApprovalPolicy.ALLOW,
+        instructions=YOLO_LEVEL,
+    ),
 }
 
 
 #: How permissive each policy is, once the ceiling has been compared. Withholding the tool
 #: is the least a level can do with an act it does not permit; parking asks the operator;
-#: reviewing answers for them. Only meaningful *within* one ceiling — a level that reaches
-#: further is more permissive whatever it does at the boundary.
+#: reviewing answers for them; allowing asks nobody. Only meaningful *within* one ceiling
+#: — a level that reaches further is more permissive whatever it does at the boundary.
 _POLICY_PERMISSIVENESS: Mapping[ApprovalPolicy, int] = {
     ApprovalPolicy.WITHHOLD: 0,
     ApprovalPolicy.ASK: 1,
     ApprovalPolicy.REVIEW: 2,
+    ApprovalPolicy.ALLOW: 3,
 }
 
 #: The levels that can change something without being asked first — derived from the pair
@@ -294,7 +344,15 @@ def beyond_scope(level: str, tool: str, *, declared: Sensitivity | None = None) 
     In a correct build that branch is unreachable — ``tests/test_tool_sensitivity.py``
     fails in both directions if a catalog tool loses its class — which is exactly why it
     is written the safe way: the cost of it never firing is nothing, and the cost of it
-    firing open is a tool acting unasked at the two levels that let the model act at all.
+    firing open is a tool acting unasked at the levels that let the model act at all.
+
+    **At the top level all of that resolves to "no" and none of it is wasted.** A ceiling
+    of :data:`~services.tool_sensitivity.TOP_SENSITIVITY` is above nothing, so an
+    unclassified name, a fail-closed fallback and a declared class all compare the same
+    way and this returns False — which is the correct answer there and reached through the
+    same comparison as every other, rather than through a name check that would have to be
+    kept in step with the registry. The conservatism above is not bypassed at that level;
+    it is applied, and finds nothing left to elevate.
     """
     if tool in PLANNING_TOOLS:
         return False

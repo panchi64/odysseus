@@ -1708,6 +1708,24 @@ class TestTheSettledPile:
             assert isinstance(approval, GrantApproved), permission
             assert approval.needs_whole_tool is False, permission
 
+    async def test_the_top_levels_allow_is_the_levels_and_never_a_grants(self):
+        """Yolo settles the call itself, so nothing about it is revocable.
+
+        The provenance matters because the resume path *acts* on it: a `GrantApproved` is
+        re-checked against the live grants when the operator answers the rest of a batch,
+        and a call marked as a grant's while resting on none would be denied there. Tested
+        with a live grant in the store as well as without one, since the failure mode is
+        not "no grant was found" but "the grants were consulted at all".
+        """
+        grants = _grant_store()
+        await grants.grant(OWNER, CONV, "mail_send", (), True)
+        for caps in (ServiceContainer.of(grants), ServiceContainer.of()):
+            settled, manual = await _settle("yolo", [_call("mail_send", "c1")], caps=caps)
+            assert manual == []
+            approval = settled["c1"]
+            assert isinstance(approval, ToolApproved)
+            assert not isinstance(approval, GrantApproved)
+
     async def test_an_unrecoverable_act_the_wide_grant_cleared_demands_it_back(
         self, monkeypatch
     ):

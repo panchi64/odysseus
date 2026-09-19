@@ -1,4 +1,4 @@
-"""The permission level: the knobs behind the four names, and the two halves that
+"""The permission level: the knobs behind the five names, and the two halves that
 enforce them.
 
 Two halves, because one alone is not enforcement. The **toolset** marks every tool that
@@ -7,9 +7,14 @@ comes back undone instead of running — that half is checked through the compos
 real run resolves, not through a re-derivation of the rule. The **decision** then rules on
 the call that came back. Between them sits the invariant worth the most here: a level only
 ever adds a gate, never removes one. A tool that pauses its own calls is still answered at
-every level — by the operator, or by the review at the one level whose entire meaning is
-that they asked for their answers to be given for them — so raising a thread to Edit
-cannot quietly delete a protection nobody re-examined.
+every level — by the operator, or by the review at the level whose meaning is that they
+asked for their answers to be given for them — so raising a thread to Edit cannot quietly
+delete a protection nobody re-examined.
+
+**Yolo is the one exception, and it is tested as one rather than excluded from the
+sweeps.** Every "at every level" assertion below either still holds there or names it and
+says what it does instead, because a level that removes a gate is exactly the level whose
+behaviour must be written down rather than left to a loop that skips it.
 """
 
 from __future__ import annotations
@@ -143,19 +148,24 @@ class TestTheKnobs:
         assert beyond_scope("manual", UNCLASSIFIED)
         assert not beyond_scope("edit", UNCLASSIFIED)
         assert not beyond_scope("auto", UNCLASSIFIED)
+        assert not beyond_scope("yolo", UNCLASSIFIED)
         # ...and a call that arrives anyway is still read as the class that reaches
         # furthest, which is what makes Plan's refusal reach it.
         assert decide("plan", UNCLASSIFIED) is Decision.BLOCK
 
-    def test_a_name_from_nowhere_is_gated_at_every_level(self):
+    def test_a_name_from_nowhere_is_gated_at_every_level_that_gates_anything(self):
         # The exemption above is for the operator's *own* external tools, which carry the
         # prefix and have the trust list deciding them. A name that is neither classified
         # nor theirs has nothing to defer to, so it reads as the class that reaches
-        # furthest and is elevated everywhere — including the two levels that let the
-        # model act, which is where a fail-open would have cost something.
+        # furthest and is elevated everywhere — including the levels that let the model
+        # act, which is where a fail-open would have cost something.
         assert sensitivity_of(UNKNOWN) is Sensitivity.EXTERNAL_EFFECT
-        for level in PERMISSION_LEVELS:
+        for level in PERMISSION_LEVELS - {"yolo"}:
             assert beyond_scope(level, UNKNOWN), level
+        # Yolo's ceiling is above every class, so the fail-closed reading is still applied
+        # here and simply finds nothing left to elevate. Asserted rather than skipped:
+        # "the conservative fallback stops mattering" is the level's meaning, not a hole.
+        assert not beyond_scope("yolo", UNKNOWN)
 
     def test_a_toolset_may_state_its_own_class_and_is_believed(self):
         # The seam for tools this installation composes at run time rather than ships:
@@ -190,9 +200,10 @@ class TestTheKnobs:
         assert spec.ceiling is PERMISSIONS["edit"].ceiling
 
     def test_the_levels_that_can_act_are_the_ones_that_reach_past_reading(self):
-        # Derived from the ceiling rather than named, so a fifth preset is a row in the
-        # registry and every caller that means "the levels that can act" follows it.
-        assert ACTING_PERMISSIONS == {"edit", "auto"}
+        # Derived from the ceiling rather than named, so a further preset is a row in the
+        # registry and every caller that means "the levels that can act" follows it —
+        # which is how `yolo` joined this set without anything being edited to admit it.
+        assert ACTING_PERMISSIONS == {"edit", "auto", "yolo"}
         assert all(
             (level in ACTING_PERMISSIONS) is (spec.ceiling is not Sensitivity.READ)
             for level, spec in PERMISSIONS.items()
@@ -242,19 +253,49 @@ class TestTheDecisionMatrix:
         for tool in (HOST_EXEC, EXTERNAL_EFFECT, SECRET, UNCLASSIFIED):
             assert decide("auto", tool) is Decision.REVIEW
 
-    def test_a_tools_own_gate_survives_every_level(self):
+    def test_a_tools_own_gate_survives_every_level_but_the_one_that_deletes_it(self):
         # The asymmetry the module exists to hold, asked of a tool that really has a gate
         # of its own: `corpus_retrieve` pauses a *global* recall from inside the call. It
         # classifies as a read, so it is within every level's scope and no level asked for
-        # it to defer — and none of them may wave it through either.
+        # it to defer — and no level below the top may wave it through either.
         for level in PERMISSION_LEVELS:
             assert not beyond_scope(level, SELF_GATED_READ)
-        for level in PERMISSION_LEVELS - {"auto"}:
+        for level in PERMISSION_LEVELS - {"auto", "yolo"}:
             assert decide(level, SELF_GATED_READ) is Decision.ASK
-        # Auto is the one level that answers it with something other than the operator,
-        # and only because answering on their behalf is what choosing Auto means. It is
-        # still answered, never skipped.
+        # Auto answers it with something other than the operator, and only because
+        # answering on their behalf is what choosing Auto means. It is still answered.
         assert decide("auto", SELF_GATED_READ) is Decision.REVIEW
+        # Yolo does not answer it — it removes it, which is the one deliberate hole in the
+        # invariant this file opens with. Pinned here, beside the rule it breaks, so the
+        # exception cannot be widened by accident: any *other* level starting to return
+        # ALLOW for a self-gated tool fails the loop three lines up.
+        assert decide("yolo", SELF_GATED_READ) is Decision.ALLOW
+
+    def test_yolo_allows_every_class_of_act(self):
+        # The level's whole proposition in one assertion. Includes `SECRET` and
+        # `UNCLASSIFIED` deliberately: the first is the class that survives every other
+        # widening, and the second is the operator's own MCP surface, which is gated by a
+        # guess everywhere else. Neither is an oversight here — an operator who has said
+        # "never ask me" has answered for both.
+        for tool in (WORKSPACE_WRITE, HOST_EXEC, EXTERNAL_EFFECT, SECRET, UNCLASSIFIED):
+            assert decide("yolo", tool) is Decision.ALLOW
+        # And the catalog is not narrowed to get there: the model is offered everything
+        # and nothing it calls comes back deferred by the level.
+        assert tools_beyond_scope("yolo") == frozenset()
+        assert permission_disabled_tools("yolo") == frozenset()
+
+    def test_yolo_is_reachable_only_by_being_named(self):
+        # The one structural guarantee under a level that asks nobody anything: no
+        # fallback, no default and no degrade can land a thread here. Every path that
+        # resolves a level without the operator naming one goes somewhere else.
+        assert DEFAULT_PERMISSION != "yolo"
+        assert STRICTEST_PERMISSION != "yolo"
+        assert permission_level("nonsense") != "yolo"
+        assert all(spec.default_permission != "yolo" for spec in MODES.values())
+        # ...including the spawn path, where a thread opened from inside another one takes
+        # the stricter of the two, so an approved spawn can never buy this level.
+        for level in PERMISSION_LEVELS - {"yolo"}:
+            assert stricter_permission(level, "yolo") == level
 
     def test_a_corrupt_level_decides_as_plan(self):
         assert decide("nonsense", HOST_EXEC) is Decision.BLOCK
@@ -330,6 +371,29 @@ class TestTheToolsetElevation:
         assert not beyond_scope("auto", SELF_MARKED_WRITE)
         for level in ("edit", "auto"):
             assert (await _resolved_kinds(level))[SELF_MARKED_WRITE] == "unapproved"
+
+    async def test_yolo_marks_nothing_of_its_own_and_leaves_every_other_marking_alone(
+        self,
+    ):
+        # The two halves say different things at this level, and the split is the point.
+        #
+        # The *toolset* stops marking: nothing is beyond the ceiling, so a tool the level
+        # elevated at Edit is an ordinary `function` the model calls with no round trip.
+        kinds = await _resolved_kinds("yolo")
+        assert (await _resolved_kinds("edit"))[HOST_EXEC] == "unapproved"
+        assert kinds[HOST_EXEC] == "function"
+        # Every marking that was never the level's is untouched, because this gate is the
+        # toolset's and it never read the level at all. `mail_send` and `vault_get_entry`
+        # carry `requires_approval=True` themselves; `skills_edit` is the witness that
+        # nothing here is being deleted, since the level would not have marked it anyway.
+        for tool in (EXTERNAL_EFFECT, SECRET, SELF_MARKED_WRITE):
+            assert kinds[tool] == "unapproved", tool
+            # ...and every one of them is cleared one layer later, by the *decision*,
+            # which is the single place the exception is written down and can be read.
+            assert decide("yolo", tool) is Decision.ALLOW, tool
+        # Nothing is withheld either, so unlike Plan the model sees the whole catalog.
+        assert WORKSPACE_WRITE in kinds
+        assert kinds[READ] == "function"
 
 
 class TestTheThreadRemembers:

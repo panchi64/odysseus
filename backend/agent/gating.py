@@ -150,6 +150,11 @@ async def settle_deferred(
     a command is scoped to the command's leading words, so a standing yes to `uv run
     pytest` settles the next test run and nothing else the shell could be asked to do.
 
+    **At the top level the grants are not consulted at all**, for the opposite reason to
+    Plan's: nothing is asked, so there is no prompt for a standing yes to skip and no park
+    for a revocation to catch. The approval that comes out is the level's rather than a
+    grant's, and is recorded as such (:func:`_by_level`).
+
     **At Auto the grant is not the answer either — it is an input to the review**, and how
     much of an input depends on which width the operator chose. The level's question there
     is what a particular call would do, and a grant naming one command is not an answer to
@@ -174,11 +179,14 @@ async def settle_deferred(
     if store is not None and conversation_id is not None:
         granted = await store.list(run.owner_id, conversation_id)
     # Ruled on before anything is reviewed, so the batch knows which calls need a model at
-    # all before it pays to resolve one.
-    ruled = [(call, _by_level(permission, call, granted)) for call in approvals]
+    # all before it pays to resolve one. Each row carries the decision *and* whether a
+    # grant is what produced it, because the two are not recoverable from each other: an
+    # ALLOW can come from a grant or from a level that allows outright, and only the first
+    # is revocable.
+    ruled = [(call, *_by_level(permission, call, granted)) for call in approvals]
     reviewed = await review_batch(
         run,
-        [call for call, decision in ruled if decision is Decision.REVIEW],
+        [call for call, decision, _ in ruled if decision is Decision.REVIEW],
         caps=caps,
         deps=deps,
         messages=messages,
@@ -188,20 +196,26 @@ async def settle_deferred(
     )
     settled: dict[str, ToolApproved | ToolDenied] = {}
     manual: list[ToolCallPart] = []
-    for call, decision in ruled:
+    for call, decision, grant_backed in ruled:
         outcome = reviewed.get(call.tool_call_id)
         if outcome is not None:
             decision = outcome.decision
         if decision is Decision.ALLOW:
-            # Reviewed, or resting on a grant — and which of the two is recorded, because
-            # only the second is still worth re-checking when the operator answers. A
-            # review that leant on the grant for its authorization counts as the second:
-            # what cleared the call is revocable, so the resume path has to see that.
-            by_grant = outcome is None or outcome.by_grant
+            # Reviewed, resting on a grant, or given by a level that asks nobody — and
+            # which of the three is recorded, because only the grant is still worth
+            # re-checking when the operator answers. A review that leant on the grant for
+            # its authorization counts as the grant's: what cleared the call is revocable,
+            # so the resume path has to see that. A level's own allow is **not** the
+            # grant's, and marking it so would be a false provenance the resume path takes
+            # literally — it would look for a grant covering the call, find none, and deny
+            # something no operator had refused.
+            by_grant = outcome.by_grant if outcome is not None else grant_backed
             settled[call.tool_call_id] = (
                 GrantApproved(
-                    # A level that settled the call itself (``outcome is None``) took
-                    # either width, so it demands neither back.
+                    # Reaching here with no ``outcome`` means a grant settled the call at
+                    # a level that asks, and those take either width — so it demands
+                    # neither back. Only a review can require the wider one, which is why
+                    # the flag is read off the outcome and nowhere else.
                     needs_whole_tool=outcome is not None and outcome.needs_whole_tool
                 )
                 if by_grant
@@ -218,26 +232,36 @@ async def settle_deferred(
     return settled, manual
 
 
-def _by_level(permission: str, call: ToolCallPart, granted: Sequence[GrantInfo]) -> Decision:
+def _by_level(
+    permission: str, call: ToolCallPart, granted: Sequence[GrantInfo]
+) -> tuple[Decision, bool]:
     """What the thread's level says about one call, with the operator's standing grants
     allowed to answer — but only where the level was asking a question they can answer.
 
-    Two levels' answers stand whatever the grants say. A refusal already carries the
-    operator's answer in the level they chose. And a **review** is not a prompt to be
+    Returns the decision and **whether a grant is what produced it**, which the caller
+    cannot work out from the decision alone once more than one thing can return ``ALLOW``.
+
+    Three of the level's answers stand whatever the grants say. A refusal already carries
+    the operator's answer in the level they chose. A **review** is not a prompt to be
     skipped: it is the level doing the deciding, and a grant that short-circuited it would
     turn one "allow for this conversation" on a shell tool into a thread where no command
-    is ever looked at again. The grant is handed to the review instead.
+    is ever looked at again — the grant is handed to the review instead. And an **allow**
+    has nothing left for a grant to add: at the top level nothing is asked at all, so the
+    grants are not consulted and the resulting approval is the level's rather than
+    theirs. Recording it as a grant's would be worse than merely inaccurate — the resume
+    path re-checks a grant-backed approval against the live grants, and would deny a call
+    that never rested on one.
 
     The *call*, not just its name, because a grant on a command-running tool is scoped to
     the command (``services/approval_grants.py``): what settles a call at Manual and Edit
     is a standing yes to this act, not to everything that tool could be asked to do.
     """
     decision = decide(permission, call.tool_name)
-    if decision in (Decision.BLOCK, Decision.REVIEW):
-        return decision
+    if decision in (Decision.BLOCK, Decision.REVIEW, Decision.ALLOW):
+        return decision, False
     if covered_by_grant(call.tool_name, call.args_as_dict(), granted):
-        return Decision.ALLOW
-    return decision
+        return Decision.ALLOW, True
+    return decision, False
 
 
 async def review_batch(

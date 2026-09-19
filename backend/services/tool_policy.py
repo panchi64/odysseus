@@ -193,11 +193,13 @@ def permission_disabled_tools(level: str) -> frozenset[str]:
     mid-turn must not enter that union.
 
     Only **Plan** narrows the catalog, and it is the reason the sensitivity classes exist:
-    a read-only turn is the one case where withholding beats asking. The other three levels
-    decide *at the call* — they let the model see a tool and then gate its execution — so
+    a read-only turn is the one case where withholding beats asking. Every other level
+    decides *at the call* — it lets the model see a tool and then gates its execution — so
     they withhold nothing here; taking a tool out of their catalog would tell the model the
     capability does not exist rather than that it needs permission, and it would answer as
-    if the operator had never had the option.
+    if the operator had never had the option. At the top level there is nothing to withhold
+    in any case: its ceiling is above every class, so the set below comes back empty
+    through the same comparison rather than through a second rule about that level.
 
     Withholding rather than prompt-toggling is deliberate. A mode that only *asks* the
     model to stay read-only is enforcement by cooperation, which stops working precisely

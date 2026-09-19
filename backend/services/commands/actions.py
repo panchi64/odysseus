@@ -66,12 +66,14 @@ BUILTIN_ACTIONS: tuple[CommandSpec, ...] = (
         action="permission-level",
         title="Set the permission level",
         description="How far the model may go before it stops to ask. Rides the next send.",
-        argument_hint="plan | manual | edit | auto",
-        # From the permissions vocabulary rather than spelled again: a fifth level would
+        argument_hint=" | ".join(PERMISSION_LADDER),
+        # From the permissions vocabulary rather than spelled again: a further level would
         # otherwise be offered everywhere except here, which is the one place the operator
         # would go looking for it. The **ladder**, not the set beside it — a set has no
         # order to hand a picker, and string hashing is randomised per process, so the
-        # levels would come out shuffled differently on every boot.
+        # levels would come out shuffled differently on every boot. The hint is joined from
+        # the same tuple for the same reason: it was spelled out once, and one level later
+        # it was the only line in the command registry still claiming there were four.
         action_choices=PERMISSION_LADDER,
         argument_required=True,
     ),

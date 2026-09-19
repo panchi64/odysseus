@@ -46,7 +46,8 @@ class Conversation(SQLModel, table=True):
     # strand that branch and leave the transcript describing a tree that isn't there.
     # Structural, not user content, so it stays in the clear like `model`/`ephemeral`.
     mode: str = Field(default="normal")
-    # How much rope the model gets in this thread — "plan", "manual", "edit" or "auto".
+    # How much rope the model gets in this thread — "plan", "manual", "edit", "auto" or
+    # "yolo".
     # What each permits is the permission registry's answer (`services/permissions`); the
     # column stores only the name, and a plain string for the same reason `mode` is one.
     # **Unlike the mode, this moves.** It is the operator's live control over a thread

@@ -80,6 +80,17 @@ _ESCALATION: Mapping[Sensitivity, int] = {
     Sensitivity.SECRET: 2,
 }
 
+#: The class nothing escalates past — what a caller means by "every kind of reach".
+#:
+#: Derived rather than spelled, and that is the whole reason it exists. The three top
+#: classes share a rank (:attr:`Sensitivity.escalation`), so naming one of them at a call
+#: site would read as a claim that the other two sit below it — and a sixth class that
+#: reached further than all of them would silently leave such a call site behind. ``max``
+#: over the rank is the statement actually being made: whichever class is furthest out,
+#: this is it. Which of the tied three it lands on is immaterial, because
+#: :meth:`Sensitivity.above` compares ranks and never identities.
+TOP_SENSITIVITY: Sensitivity = max(Sensitivity, key=lambda s: s.escalation)
+
 #: What a name this module has never heard of resolves to (see the module docstring).
 UNCLASSIFIED: Sensitivity = Sensitivity.EXTERNAL_EFFECT
 
