@@ -750,7 +750,10 @@ export function Composer(props: ComposerProps): JSX.Element {
       // override only works if Tailwind emits the corner utility after the
       // shorthand, and a silent cascade dependency is not worth the shared word.
       led() ? "rounded-b-panel shadow-1" : "rounded-panel shadow-bloom",
-      !props.bare && "bg-surface",
+      // `ody-framed`: on a page carrying the deep field the composer's fill goes
+      // glass, so the field reads *through* the screen's focal object instead of
+      // stopping dead at its edge (§11.1). A bare composer has no fill to trade.
+      !props.bare && "ody-framed bg-surface",
       lg() ? "p-4" : "p-3",
       props.class,
     );

@@ -80,6 +80,14 @@ function Mark(props: { class?: string }): JSX.Element {
  * deliberately opens — a fade would say it had always been there and the light
  * had merely come up.
  *
+ * **It is also the system's one frosted framed panel**, and the 404 takes it with a
+ * constant-true `when` for exactly that: marks, rules and `.ody-glass` on the region
+ * between them. Nothing else may reproduce that combination — `RegistrationFrame`
+ * draws marks and deliberately no surface — because two of them would be two things
+ * to keep in step. The 404 is the one consumer that is not *opened*; it has no exit,
+ * and what it borrows from the gesture is a plate assembling itself in front of
+ * someone who arrived by mistake.
+ *
  * **The budget is `--motion-stage` (320ms), and that is not a new exception.**
  * §8 grants the stage token to "a whole region arriving or leaving"; the View's
  * previous `Reveal` already ran at it, and this replaces that reveal. The phases

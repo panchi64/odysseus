@@ -28,6 +28,7 @@ const MAP: Record<string, string> = {
   "chevron-up": "nav-arrow-up",
   "chevron-left": "nav-arrow-left",
   "arrow-right": "arrow-right",
+  "u-turn": "undo",
   plus: "plus",
   minus: "minus",
   close: "xmark",

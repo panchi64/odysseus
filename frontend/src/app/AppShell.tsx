@@ -1,6 +1,7 @@
 import { createEffect, onCleanup, Show, Suspense, type JSX } from "solid-js";
 import { useLocation } from "@solidjs/router";
 import {
+  DeepField,
   ErrorBoundary,
   LoadingText,
   NotConnectedOverlay,
@@ -17,7 +18,7 @@ import {
 } from "~/lib/stores/notifications";
 import { NotificationBell } from "./NotificationBell";
 import { Sidebar, useSidebarWidth } from "./sidebar";
-import { isConnectedRoute, isFlushTopRoute } from "./nav";
+import { isConnectedRoute, isDeepFieldRoute, isFlushTopRoute } from "./nav";
 import { SettingsDialog } from "./settings-dialog";
 
 /** The authenticated app chrome: sidebar rail + top status bar + the routed
@@ -25,6 +26,7 @@ import { SettingsDialog } from "./settings-dialog";
 export function AppShell(props: { children: JSX.Element }): JSX.Element {
   const location = useLocation();
   const connected = () => isConnectedRoute(location.pathname);
+  const deepField = () => isDeepFieldRoute(location.pathname);
   const session = useSession();
   const rail = useSidebarWidth();
 
@@ -55,11 +57,32 @@ export function AppShell(props: { children: JSX.Element }): JSX.Element {
         onResizeEnd={rail.persist}
       />
 
-      <div class="flex min-w-0 flex-1 flex-col">
+      {/* `relative` + `ody-field-page`: the column is where the deep field is
+          painted on the screens that carry one (§11.1), and the marker is what
+          turns every framed surface inside it to glass. It hosts the field rather
+          than the screen doing so, for two reasons — a screen can only paint
+          inside `main`'s padding box, which leaves the limb cropped short of the
+          page edges it is drawn against, and the status bar would sit on bare
+          ground above a field that starts an inch below it. */}
+      <div
+        class={cx(
+          "relative flex min-w-0 flex-1 flex-col",
+          deepField() && "ody-field-page",
+        )}
+      >
+        <Show when={deepField()}>
+          {/* A sibling BEHIND the column's content, never an ancestor of it:
+              `backdrop-filter` samples only what is painted inside its backdrop
+              root, and the field's own `opacity` (Paper runs it at 0.55) would
+              make it one — leaving every glass surface on the page blurring
+              nothing at all. Both siblings below are positioned, so paint order
+              is DOM order and the field stays underneath. */}
+          <DeepField />
+        </Show>
         {/* No rule under the top bar (§7). It is already a distinct region by
             position and by what it holds; a full-width hairline across every
             screen was chrome drawn where the eye had found the break. */}
-        <header class="flex shrink-0 items-center justify-between gap-3 px-4 py-2">
+        <header class="relative flex shrink-0 items-center justify-between gap-3 px-4 py-2">
           <div class="flex items-center gap-3">
             <StatusFlag status="live" dot>
               Link
@@ -83,6 +106,11 @@ export function AppShell(props: { children: JSX.Element }): JSX.Element {
             and two in the bottom corners of the screen — bracketing the window
             rather than anything in it. They now frame the header row, which is
             an actual object. */}
+        {/* `relative` with no z-index: it and the field are both positioned, so
+            paint order is DOM order and the field stays behind without a
+            stacking context — a `z-*` here risks making this a backdrop root in
+            some engines, which would leave the glass surfaces inside it blurring
+            nothing (see the note on `.ody-glass`). */}
         <div class="relative min-h-0 flex-1">
           {/* Scopes a suspending *or throwing* screen to the content region;
               without them the root blanks the shell too, taking the rail and

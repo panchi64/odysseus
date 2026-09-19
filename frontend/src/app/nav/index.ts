@@ -144,6 +144,48 @@ export function isFlushTopRoute(pathname: string): boolean {
   return FLUSH_TOP_ROUTES.some((href) => matchesHref(pathname, href));
 }
 
+/**
+ * Routes whose content column is backed by the deep field (§11.1).
+ *
+ * The field is the *page's* ground, not a region's — cropped to one band it loses the
+ * limb, and a horizon you cannot see run the width of the frame is not a horizon. So
+ * the shell hosts it behind the whole column (status bar included) rather than letting
+ * a screen paint one inside its own padding box, and the screen stops knowing about it.
+ *
+ * It stays rationed. Two surfaces qualify: the launchpad, whose focal object is a
+ * composer and whose other panels are readouts that go glass over it, and the 404,
+ * which has one plate on it and nothing running. A route earns a place here only if
+ * nothing on it is read *against* the field — everything with a surface frosts it out
+ * (`.ody-framed`, theme.css), and everything else on the page is a label or a number
+ * with space around it.
+ *
+ * A list rather than a flag on `NavItem`, for the same reason as `FLUSH_TOP_ROUTES`
+ * above: this is the shell deciding what it paints behind its region.
+ */
+const DEEP_FIELD_ROUTES = ["/"];
+
+/** Whether the shell paints the deep field behind this route's column.
+ *
+ *  **Exact, not `matchesHref`** — and not because a root href would over-match: it
+ *  would not. `matchesHref(p, "/")` asks `p === "/" || p.startsWith("//")`, and no
+ *  path starts with a double slash, so `/` claims nothing but itself either way. The
+ *  reason is what the list *means*. `FLUSH_TOP_ROUTES` hands a region to a surface,
+ *  and whatever hangs off that surface is still it, so a child must inherit. This
+ *  list is a ration, and a route earns a place on it by having nothing that is read
+ *  against the field — which is a fact about one screen and never inherited. Under
+ *  `matchesHref` an entry like `/docs` would silently extend the field to every
+ *  `/docs/*` detail page, each of them full of content and none of them reviewed.
+ *
+ *  `routes` is injectable for the same reason `areas` is on the resolvers above: the
+ *  rule has to be testable against a fixture that fights it, and the real list holds
+ *  only `/`, where exact and prefix matching agree. */
+export function isDeepFieldRoute(
+  pathname: string,
+  routes: string[] = DEEP_FIELD_ROUTES,
+): boolean {
+  return routes.includes(pathname);
+}
+
 /** Search across every area — label first, then description, so a surface is
  *  findable by what it does. The fast jump: a keystroke beats expanding a
  *  section and scanning its rows. */

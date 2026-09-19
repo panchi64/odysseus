@@ -76,7 +76,10 @@ export function Panel(props: PanelProps): JSX.Element {
                 local.state !== "default" &&
                 stateShadow[local.state],
             )
-          : cx("bg-surface", stateShadow[local.state ?? "default"]),
+          : // `ody-framed` is inert everywhere except on a page carrying the
+            // deep field, where it trades the opaque fill for glass (§11.1). A
+            // bare panel has no surface to trade, so it doesn't take the marker.
+            cx("ody-framed bg-surface", stateShadow[local.state ?? "default"]),
         local.bordered && "border border-line",
         local.fill && "flex flex-col",
         local.class,

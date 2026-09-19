@@ -4,7 +4,6 @@ import {
   AnnunciatorGrid,
   Composer,
   ConsoleGroup,
-  DeepField,
   EmptyState,
   ListRow,
   MetClock,
@@ -82,9 +81,12 @@ const RUN_STATUS_TONE: Record<ActiveRun["status"], Status> = {
  *  strip. Every panel reflects real backend state — the composer/threads via the chat
  *  seam, the facts band + capability health via `/overview`, the sequencer via `/runs`.
  *
- *  The composer's region is the screen's **licensed moment** (§11.1) and the only one:
- *  it is the one part of the launchpad with nothing in it but the thing the operator
- *  came to use, so the deep field goes there and nowhere else on the page. */
+ *  The screen's **licensed moment** (§11.1) is the deep field, and this screen does not
+ *  draw it: `isDeepFieldRoute` puts it behind the shell's whole content column, because
+ *  cropping it to one region cut the limb off short of the page edges it is drawn
+ *  against. What this screen owes the field is the other half of the arrangement —
+ *  every surface here either frosts it out (`ody-framed` → glass) or has no surface at
+ *  all, so nothing on the launchpad is read against a graticule. */
 export function DashboardScreen(): JSX.Element {
   const navigate = useNavigate();
   const { data: overview, refetch: refetchOverview } = useOverview();
@@ -217,16 +219,12 @@ export function DashboardScreen(): JSX.Element {
           is the only card on this screen that lights its accent on focus, which
           is what makes "start typing" the obvious move on arrival (§6.2).
 
-          This region is also the launchpad's **licensed moment** (§11.1): the one
-          place on the screen with nothing but the composer in it, so the deep field
-          sits behind it and nowhere else. `overflow-hidden` crops the field to the
-          region — the composer's bloom is wider than this box, so the field is on a
-          sibling layer rather than a parent, and the bloom is left to spill. */}
-      <div class="relative flex min-h-0 flex-1 items-center justify-center py-8">
-        <div class="pointer-events-none absolute inset-0 overflow-hidden">
-          <DeepField />
-        </div>
-        <div class="relative w-full max-w-3xl">
+          The deep field runs behind the whole column now (the shell paints it), so
+          there is no cropping layer here any more — one lived in this region and
+          sliced the field to a 320px band. The composer's own surface goes glass
+          over it, and its bloom spills onto the field as it always did. */}
+      <div class="flex min-h-0 flex-1 items-center justify-center py-8">
+        <div class="w-full max-w-3xl">
           <Composer
             size="lg"
             title="New conversation"

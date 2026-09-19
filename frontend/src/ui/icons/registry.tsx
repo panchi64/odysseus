@@ -39,6 +39,7 @@ export type IconName =
   | "chevron-up"
   | "chevron-left"
   | "arrow-right"
+  | "u-turn"
   | "plus"
   | "minus"
   | "close"
@@ -196,6 +197,19 @@ export const icons: Record<IconName, IconEntry> = {
   "arrow-right": g24(() => (
     <>
       <path d="M3 12h18m0 0l-8.5-8.5M21 12l-8.5 8.5" />
+    </>
+  )),
+  /* A U-turn laid on its side: the line runs right, loops back around, and returns
+     along the top with the head pointing the way it came. `arrow-right` on a RETURN
+     control pointed the operator forward, at the one control on the screen whose
+     whole job is retracing a wrong turn — and the upright U-turn that replaced it
+     read as a road sign, because a vertical loop is a direction you drive, not a
+     direction you go back in. Horizontal is what makes it a *return*: the axis is
+     the one the reader's own eye travels. */
+  "u-turn": g24(() => (
+    <>
+      <path d="M4.5 8H15q0 0 0 0s5 0 5 4.706C20 18 15 18 15 18H6.286" />
+      <path d="M7.5 11.5L4 8l3.5-3.5" />
     </>
   )),
   plus: g24(() => (

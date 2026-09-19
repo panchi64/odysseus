@@ -24,7 +24,8 @@ export function InstrumentBand(props: InstrumentBandProps): JSX.Element {
   return (
     <div
       class={cx(
-        "flex flex-wrap items-stretch divide-x divide-line border border-line bg-surface",
+        // `ody-framed`: glass over a deep field page, inert elsewhere (§11.1).
+        "ody-framed flex flex-wrap items-stretch divide-x divide-line border border-line bg-surface",
         local.class,
       )}
     >

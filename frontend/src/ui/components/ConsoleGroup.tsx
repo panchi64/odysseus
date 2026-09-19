@@ -43,7 +43,10 @@ export function ConsoleGroup(props: ConsoleGroupProps): JSX.Element {
     "class",
   ]);
   return (
-    <div class={cx("border border-line bg-surface", local.class)}>
+    // `ody-framed`: on a page carrying the deep field this surface goes glass,
+    // so the graticule behind a group of readouts arrives blurred rather than as
+    // lines running under the rows (§11.1). Inert on every other page.
+    <div class={cx("ody-framed border border-line bg-surface", local.class)}>
       <div class="flex items-center gap-2 border-b border-line px-2 py-1">
         <Text variant="plate" tone="dim" class="min-w-0 truncate">
           {local.label}
@@ -54,7 +57,17 @@ export function ConsoleGroup(props: ConsoleGroupProps): JSX.Element {
           </div>
         </Show>
       </div>
-      <div class={local.flush ? undefined : "px-2 py-1"}>{local.children}</div>
+      {/* An EVEN gutter, and the TIGHT one (`p-1`), not `px-2 py-1`. The body holds a
+          block — a grid of cells, a list of rows — and an inset that is 8px at the
+          sides and 4px top and bottom reads as the block having slipped upward inside
+          its frame. Equalizing downward rather than upward is the §3 answer: this is a
+          readout, the content inside it carries its own cell padding, and a second
+          8px margin around it only pushes the frame away from what it encloses.
+
+          The header band keeps its own `px-2 py-1` — it is one line of type set into
+          the frame, not a block, and its legend was never flush with the cell text
+          below it anyway (a cell pays its own gutter on top of this one). */}
+      <div class={local.flush ? undefined : "p-1"}>{local.children}</div>
     </div>
   );
 }

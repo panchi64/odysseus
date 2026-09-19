@@ -693,18 +693,24 @@ Keep:
 
 Everything above is texture the eye skips. **One thing per screen is allowed not to be.**
 
-A licensed moment is a single expressive device — the `DeepField`'s graticule, limb and stars are the first and currently only one — permitted in a region where *nothing else is competing for attention*. That is a short list, and it is the whole rule:
+A licensed moment is a single expressive device — the `DeepField`'s graticule, limb and stars are the first and currently only one — permitted on a screen where *nothing is read against it*. That is a short list, and it is the whole rule:
 
 - an **empty state**, which by definition has nothing in it;
 - the **auth screens**, which hold one form and no work;
-- the **launchpad hero**, where the composer is the only object on the screen;
+- the **launchpad**, whose one object is a composer and whose panels are readouts;
 - a **lightbox**, which has already darkened everything else.
 
-**Never behind working content.** Not behind a transcript, not inside a panel holding data, not as an app-wide backdrop. The version of this that covers the whole shell in a starfield was considered and rejected: it is precisely the "atmosphere in the reading path" failure the paragraph above exists to prevent, and it does not stop being that failure because the atmosphere is beautiful.
+**The field backs a page, not a region.** It was first cropped to the launchpad's composer band, and the crop is what argued against itself: the limb is drawn as a horizon too large to see the whole of, and cut off two hundred pixels either side of the composer it reads as an arc in a box. A horizon has to run the width of the frame or it is not one. So the shell paints it behind its whole content column (`isDeepFieldRoute`, `AppShell`), status bar included, and the screen stops owning it.
+
+**What makes that safe is glass, and the two are one decision.** A page-wide field runs under content the operator is meant to read, which is the "atmosphere in the reading path" failure this section exists to prevent — unless nothing readable sits *on* the field. On a field page every framed shell (`.ody-framed`: `Panel`, `ConsoleGroup`, `Composer`, `InstrumentBand`) trades its opaque `bg-surface` for the same glass the View and the park dock use, so a graticule behind a column of numbers arrives as a blur rather than as lines through them. A shell with no surface of its own — a bare panel, the system strip — carries no marker and is instead given space, which is the same answer §7 gives everywhere else. **Ship one without the other and the rejection above stands.**
+
+**Still rationed, and still never inside a container holding data.** Two routes carry it (the launchpad and the 404), the list is explicit rather than a default, and matching is exact — `/` is a prefix of every path in the app, and a `matchesHref` here would put the field behind all of it, which is the outcome the ration exists to prevent.
 
 **Why the exception is worth having at all.** §1.4 says a screen at rest is grayscale and §1.1 says most of the interface should sit at a low volume. Both are right, and followed absolutely they produce a system with no register above "quiet" — which §1.6 already names as the other failure: *restraint is the goal; anonymity is not*. An interface that is only ever recessive has no way to say that the thing in front of you is the point. The moment is that register, and rationing it to one per screen, in a region with nothing to drown out, is what keeps it from becoming decoration.
 
 **It must stay under the thing it sits behind.** The launchpad's moment sits behind the composer, which already carries `shadow-bloom` — two attention devices in the same 200px. The field is neutral and very low contrast, it picks up `--accent` only at the limb and only at low alpha, and where the two compete the field loses. The composer is the point of the screen; the field is the reason the screen feels like somewhere.
+
+**Nothing in it is an instrument.** A reticle bracketing one of the stars was drawn and removed: it reads as the interface pointing at something, and there is nothing there to point at. Diegetic detail that *implies a readout* is a different thing from diegetic detail, and the difference is that one of them is a lie about what the product is doing.
 
 ---
 
