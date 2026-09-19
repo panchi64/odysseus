@@ -13,7 +13,7 @@
  * transcript knowing.
  */
 
-import type { ContextWindow, RunMetrics } from "~/lib/stream";
+import type { ContextWindow, RunMetrics, SummarySection } from "~/lib/stream";
 import type {
   ChatActivity,
   SnapshotDiff,
@@ -133,6 +133,11 @@ export interface MessageDTO {
    *  `conversation.compacted` event's `reason`. Null on every other row, and on a
    *  checkpoint folded before the backend recorded the reason. */
   compaction_reason?: string | null;
+  /** Compaction rows: the summary split into the sections the divider renders, parsed
+   *  by the backend with the same function the live event uses — so a reload draws the
+   *  divider the operator watched arrive. Empty on every other row, and on a checkpoint
+   *  whose text parses into nothing (the divider falls back to `content`). */
+  sections?: SummarySection[] | null;
 }
 
 export interface ActiveRunDTO {

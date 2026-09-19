@@ -63,6 +63,7 @@ from core.container import ServiceContainer
 from runs import (
     DEFAULT_CONTEXT_THRESHOLDS,
     ContextThresholds,
+    FoldPoint,
     Orchestrator,
     Run,
     RunStatus,
@@ -216,6 +217,15 @@ def build_chat_orchestrator(
         settings = get_settings()
         run.context_window = context_window
         run.context_thresholds = context_thresholds
+        # The gauge's fold mark comes off the *same* policy object the trigger reads, so
+        # the number on screen is the number that will act on the thread — including the
+        # conversation's own on/off override, which a client reading the global setting
+        # would miss.
+        run.context_fold = (
+            FoldPoint.of(auto_compact.threshold, active=auto_compact.enabled)
+            if auto_compact is not None
+            else None
+        )
         agent = build_agent(
             model,
             categories=categories,

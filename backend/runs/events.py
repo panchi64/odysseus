@@ -12,11 +12,16 @@ Producers build a typed body (e.g. ``AnswerDelta(text=...)``); the Run stamps
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
+
+from core.compaction_sections import SummarySection, summary_sections
+
+logger = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = 1
 
@@ -68,10 +73,66 @@ class ContextThresholds(_Body):
 
 
 #: The boundaries in force when the operator hasn't moved them. 75/90 leaves roughly a
-#: turn or two of warning at typical turn sizes before the window is genuinely tight,
-#: and both sit below auto-compaction's own 0.95 default - so on a thread with
-#: compaction on, the gauge reddens while there is still something the fold can do.
+#: turn or two of warning at typical turn sizes before the window is genuinely tight.
+#:
+#: **These do not relate to the fold, and the gauge says so rather than pretending they
+#: do.** They were chosen when compaction fired at 0.95, so both sat below it and the ring
+#: reddened while there was still something a fold could do. Compaction now fires at 0.80
+#: (the trigger measures the turn *about to run*), which puts `alert` **above** the fold
+#: point: on a thread with folding on, the window is emptied before it can ever reach 0.90,
+#: so the red band is effectively unreachable. That is not a bug in either number — a
+#: warning and a fold want different moments, and the operator can move them
+#: independently, which is the whole reason they are two dials. It does mean the gauge has
+#: to show where the fold is (:class:`FoldPoint`) instead of leaving the operator to infer
+#: it from a band that never lights.
 DEFAULT_CONTEXT_THRESHOLDS = ContextThresholds(warn=0.75, alert=0.9)
+
+
+class FoldPoint(_Body):
+    """Where conversation compaction will fold this thread, and whether it is armed.
+
+    Rides on :class:`ContextWindow` rather than being fetched separately, because it is
+    only meaningful against the same window the fullness is measured in — and because it is
+    **per-thread**: the operator's global threshold, with that conversation's on/off
+    override folded in. A client reading the global setting would draw the wrong mark on a
+    thread whose folding the operator switched off.
+
+    Deliberately *not* part of the severity derivation. ``level`` stays a function of
+    ``warn``/``alert`` alone: an alert is a notification and a fold is an act on the
+    thread, the right moment for the two differs, and collapsing them into one number would
+    mean every future adjustment to one silently retuned the other.
+
+    ``active`` false still carries a ``fraction``: a thread with folding paused should show
+    where the fold *would* fire, dimmed, rather than dropping the mark and leaving the
+    operator with no sense of the room they are spending."""
+
+    fraction: float = Field(gt=0, le=1)
+    active: bool
+
+    @classmethod
+    def of(cls, fraction: float, *, active: bool) -> FoldPoint | None:
+        """A fold mark for ``fraction``, or ``None`` when there is no sensible mark to draw.
+
+        **Constructed through here rather than directly, because this is a readout and a
+        readout must not be able to stop the thing it describes.** The bounds above are
+        real — a fold at 0 would fire on an empty thread and one above 1 could never fire —
+        but the threshold reaching them is not always a validated value: ``_float_or``
+        bounds what the *settings store* holds and then falls back to
+        ``Settings.auto_compact_threshold``, which is a plain unbounded float. An operator
+        running with ``ODYSSEUS_AUTO_COMPACT_THRESHOLD=0`` would otherwise have a gauge
+        decoration raise inside the orchestrator — killing every turn — and 500 every
+        conversation load, over a mark on a bar.
+
+        So an out-of-range threshold draws no mark, which is the honest reading: there is
+        no share of the window this thread meaningfully folds at. The misconfiguration is
+        still wrong and still changes what ``should_compact`` does; it just stops being
+        fatal on the way to the screen."""
+        if not 0 < fraction <= 1:
+            logger.warning(
+                "no fold mark: auto_compact_threshold %r is outside (0, 1]", fraction
+            )
+            return None
+        return cls(fraction=fraction, active=active)
 
 
 class ContextSegment(_Body):
@@ -137,6 +198,11 @@ class ContextWindow(_Body):
     # predate the measurement, and on a cold load of one — the split is captured while a
     # request is being assembled, and a reload has no request to look at.
     parts: ContextComposition | None = None
+    # Where this thread's fold will fire, and whether it is armed. Null when the caller
+    # had no compaction policy to hand — which is a different statement from "folding is
+    # off": off is `active=False` with the fraction still on it. A client draws no mark
+    # for null and a dimmed one for inactive.
+    fold: FoldPoint | None = None
 
     @classmethod
     def from_used(
@@ -145,6 +211,7 @@ class ContextWindow(_Body):
         window: int | None,
         thresholds: ContextThresholds = DEFAULT_CONTEXT_THRESHOLDS,
         parts: ContextComposition | None = None,
+        fold: FoldPoint | None = None,
     ) -> ContextWindow | None:
         """Derive the window state from the context footprint (``used``), or None
         when there's no ceiling to measure against or no footprint was reported.
@@ -164,7 +231,7 @@ class ContextWindow(_Body):
             if fraction >= thresholds.warn
             else "nominal"
         )
-        return cls(used=used, window=window, fraction=fraction, level=level, parts=parts)
+        return cls(used=used, window=window, fraction=fraction, level=level, parts=parts, fold=fold)
 
 
 class LastRequestUsage(_Body):
@@ -289,9 +356,12 @@ class RunMetrics(_Body):
     # by `context` below. Deliberately **not serialized**: it is an input to the
     # derivation, not part of the readout, and putting it on the wire would invite a
     # client to re-derive the level it is already being handed.
-    context_thresholds: ContextThresholds = Field(
-        default=DEFAULT_CONTEXT_THRESHOLDS, exclude=True
-    )
+    context_thresholds: ContextThresholds = Field(default=DEFAULT_CONTEXT_THRESHOLDS, exclude=True)
+
+    # This thread's fold point, seeded onto the Run beside the thresholds and for the same
+    # reason. Also **not serialized**: it reaches the client on `context` below, where it
+    # sits against the window it is a fraction of, rather than twice on one frame.
+    context_fold: FoldPoint | None = Field(default=None, exclude=True)
 
     # How that footprint splits across the standing brief, the tool schemas and the
     # conversation. Measured during the turn (the tool definitions are only knowable while
@@ -311,7 +381,11 @@ class RunMetrics(_Body):
         """The context-window fullness after this turn — null when unmeasurable
         (no window, or no footprint). Clients render it; they never derive it."""
         return ContextWindow.from_used(
-            self.context_used, self.context_window, self.context_thresholds, self.context_parts
+            self.context_used,
+            self.context_window,
+            self.context_thresholds,
+            self.context_parts,
+            self.context_fold,
         )
 
     @computed_field
@@ -582,6 +656,19 @@ class ConversationCompacted(_Body):
     # nodes, so the backend resolves the position rather than leaving the client to
     # approximate it and land somewhere a reload disagrees with. Null => append.
     after_message_id: str | None = None
+
+    @computed_field
+    @property
+    def sections(self) -> list[SummarySection]:
+        """``summary`` split into the roster sections a divider renders.
+
+        Derived rather than passed in, for the same reason :attr:`RunMetrics.context` is: a
+        second field carrying a parse of a field already on the frame is a second thing to
+        keep in step, and the two disagreeing is a bug nobody sees until a checkpoint reads
+        wrong. ``services/conversation_view.py`` calls the *same* function on the *same*
+        stored text, so the divider a live client draws and the one a reload draws are the
+        same divider."""
+        return summary_sections(self.summary)
 
 
 class ConversationLinked(_Body):

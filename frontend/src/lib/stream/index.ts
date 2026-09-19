@@ -9,10 +9,12 @@ export {
   type ContextInjected,
   type ContextSegment,
   type ContextWindow,
+  type FoldPoint,
   type LastRequestUsage,
   type PlanStatus,
   type PlanUpdated,
   type RunEvent,
+  type SummarySection,
   type TaskItem,
   type RunMetrics,
 } from "./events";

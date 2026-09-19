@@ -20,7 +20,7 @@ from pydantic_ai.usage import RequestUsage
 
 from agent import build_chat_orchestrator
 from agent.model_errors import context_limit_message, is_context_overflow
-from runs import ContextWindow, Run, RunRegistry, RunStatus, RunStream
+from runs import ContextWindow, FoldPoint, Run, RunRegistry, RunStatus, RunStream
 from runs.events import RunMetrics
 from services.conversations import context_footprint
 
@@ -112,7 +112,55 @@ def test_run_metrics_exposes_context_on_the_wire():
         # assembled a request), and the split is one of the things that is absent rather
         # than zeroed when it wasn't measured.
         "parts": None,
+        # Same rule: this frame carried no compaction policy, which is not the same
+        # statement as "folding is off" — that one arrives as `active: false` with the
+        # fraction still on it, so the gauge can dim the mark instead of dropping it.
+        "fold": None,
     }
+
+
+def test_the_fold_point_rides_on_the_window_it_is_a_fraction_of():
+    """The mark and the fullness are one reading, so they travel together — and the
+    fold never touches `level`, which stays the operator's warn/alert story alone."""
+    metrics = RunMetrics(
+        context_used=100_000,
+        context_window=200_000,
+        context_fold=FoldPoint(fraction=0.8, active=True),
+    )
+    payload = metrics.model_dump(mode="json")
+    assert payload["context"]["fold"] == {"fraction": 0.8, "active": True}
+    # Half full against a 75/90 pair: a fold point at 0.8 must not have moved severity.
+    assert payload["context"]["level"] == "nominal"
+    # The seed itself is an input to the derivation, not a second copy on the frame.
+    assert "context_fold" not in payload
+
+
+@pytest.mark.parametrize("fraction", [0.0, -0.5, 1.5])
+def test_a_nonsense_threshold_draws_no_mark_rather_than_raising(fraction: float):
+    """A readout must not be able to stop the thing it describes.
+
+    ``Settings.auto_compact_threshold`` is an unbounded float — ``_float_or`` bounds what
+    the settings store holds and then falls back to it — so a deploy running with
+    ``ODYSSEUS_AUTO_COMPACT_THRESHOLD=0`` reaches here. Constructed directly, the field
+    bounds would raise inside the orchestrator (killing every turn) and 500 every
+    conversation load, over a mark on a bar."""
+    assert FoldPoint.of(fraction, active=True) is None
+
+
+def test_a_valid_threshold_still_draws():
+    mark = FoldPoint.of(0.8, active=False)
+    assert mark is not None
+    assert (mark.fraction, mark.active) == (0.8, False)
+
+
+def test_a_thread_with_folding_off_still_says_where_the_fold_would_be():
+    metrics = RunMetrics(
+        context_used=100_000,
+        context_window=200_000,
+        context_fold=FoldPoint(fraction=0.8, active=False),
+    )
+    fold = metrics.model_dump(mode="json")["context"]["fold"]
+    assert fold == {"fraction": 0.8, "active": False}
 
 
 def test_run_metrics_context_null_without_window():

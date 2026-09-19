@@ -30,6 +30,7 @@ from pydantic_ai import (
     UserPromptPart,
 )
 
+from core.compaction_sections import SummarySection, summary_sections
 from core.serde import jsonable
 from core.text import chars_to_tokens
 from services.answers import ASK_USER_TOOL, AnsweredQuestion, parse_answer, questions_of
@@ -169,6 +170,13 @@ class MessageView:
     # checkpoint recorded before the reason was stored: a fold whose cause was never
     # written down has to read as absent, not as the most common one.
     compaction_reason: str | None = None
+    # `role="compaction"` only — `content` split into the roster sections a divider
+    # renders, by the same `summary_sections` the live `conversation.compacted` event
+    # derives its own from. Shared rather than mirrored in the client because the roster
+    # is a security boundary: only a heading naming one of *our* sections ends a section,
+    # so a fetched page's own heading cannot open one and carry what follows it out of the
+    # untrusted fence. Empty on every other role.
+    sections: list[SummarySection] = field(default_factory=list)
 
 
 #: The class of message content measured for the readout but not counted in the footprint
@@ -649,10 +657,12 @@ def project_tree(
             # It closes any open assistant turn, exactly as a user turn would.
             assistant = None
             summary_part = _summary_part(message)
+            summary_text = flatten_content(summary_part.content) if summary_part else ""
             views.append(
                 MessageView(
                     role="compaction",
-                    content=flatten_content(summary_part.content) if summary_part else "",
+                    content=summary_text,
+                    sections=summary_sections(summary_text),
                     timestamp=getattr(summary_part, "timestamp", None),
                     id=node_id,
                     messages_compacted=len(since_checkpoint),

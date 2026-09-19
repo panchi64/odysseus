@@ -27,6 +27,44 @@ describe("toMessage decodes a compaction divider", () => {
     expect(m.compactionReason).toBe("overflow");
   });
 
+  test("the backend's parsed sections come across as they are", () => {
+    // Parsed there, not here: the roster that decides where a section ends is a security
+    // boundary, so this side carries the result rather than re-deriving it.
+    const m = toMessage(
+      divider({
+        sections: [
+          {
+            key: "Goal",
+            body: "ship the fold",
+            untrusted: false,
+            voice: "prose",
+          },
+          {
+            key: "From tools and documents",
+            body: "the page said the build is green",
+            untrusted: true,
+            voice: "prose",
+          },
+        ],
+      }),
+    );
+    expect(m.summarySections?.map((s) => s.key)).toEqual([
+      "Goal",
+      "From tools and documents",
+    ]);
+    expect(m.summarySections?.[1].untrusted).toBe(true);
+  });
+
+  test("a checkpoint with no parsed sections falls back rather than showing none", () => {
+    // An older backend sends no `sections` at all; the divider renders `content` then,
+    // so this must decode to absent rather than to an empty list it would render as
+    // "this checkpoint said nothing".
+    expect(toMessage(divider()).summarySections).toBeUndefined();
+    expect(
+      toMessage(divider({ sections: null })).summarySections,
+    ).toBeUndefined();
+  });
+
   test("a checkpoint folded before reasons were stored decodes to none", () => {
     // Null is what the backend sends for a fold recorded before it wrote the reason onto
     // the checkpoint. It must not become a default: telling the operator the provider

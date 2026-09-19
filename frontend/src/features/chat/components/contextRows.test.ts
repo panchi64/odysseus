@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ContextSegment } from "~/lib/stream";
 import type { ContextUsage } from "../model";
-import { contextRows } from "./contextRows";
+import { contextRows, foldMarker } from "./contextRows";
 
 const segment = (
   id: string,
@@ -106,5 +106,57 @@ describe("the rows are the backend's figures, laid out", () => {
     const rows = contextRows(usage({ used: 120_000, window: 100_000 }));
     expect(rows.at(-1)!.tokens).toBe(0);
     expect(rows.at(-1)!.share).toBe(0);
+  });
+});
+
+describe("the fold mark", () => {
+  test("sits at its share of the window, with the room left before it", () => {
+    const mark = foldMarker(
+      usage({
+        used: 100_000,
+        window: 200_000,
+        fold: { fraction: 0.8, active: true },
+      }),
+    );
+    // 80% of a 200k window is 160k; 60k of room left from 100k.
+    expect(mark).toEqual({
+      pct: 80,
+      headroomTokens: 60_000,
+      active: true,
+      passed: false,
+    });
+  });
+
+  test("a thread past the fold reports no headroom rather than a negative one", () => {
+    const mark = foldMarker(
+      usage({
+        used: 180_000,
+        window: 200_000,
+        fold: { fraction: 0.8, active: true },
+      }),
+    );
+    expect(mark?.passed).toBe(true);
+    expect(mark?.headroomTokens).toBe(0);
+  });
+
+  test("a paused fold still says where it would fire", () => {
+    // The mark is what tells the operator what the pause is costing them, so it is
+    // dimmed rather than dropped — which means the derivation has to keep reporting it.
+    const mark = foldMarker(
+      usage({
+        used: 10_000,
+        window: 200_000,
+        fold: { fraction: 0.8, active: false },
+      }),
+    );
+    expect(mark?.active).toBe(false);
+    expect(mark?.pct).toBe(80);
+  });
+
+  test("no policy reported is a different answer from folding switched off", () => {
+    // Null draws nothing; `active: false` draws a dimmed mark. Collapsing the two would
+    // lose the distinction between "we don't know" and "we know, and it's paused".
+    expect(foldMarker(usage({ used: 10, window: 100 }))).toBeNull();
+    expect(foldMarker(usage({ used: 10, window: 100, fold: null }))).toBeNull();
   });
 });
