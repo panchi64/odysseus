@@ -181,10 +181,11 @@ class TestTheArithmetic:
 
     @pytest.mark.parametrize("authorization", ["explicitly_no", "neutral", "explicitly_yes"])
     async def test_too_destructive_parks_whatever_was_asked_for(self, authorization):
-        # The one place authorization does not enter: a conversation cannot authorize an
-        # unrecoverable act into being recoverable. It *parks* rather than refusing —
-        # refusing left the operator out of the one decision they most need to be in, and
-        # made Auto less capable than Edit for `git commit --amend` or `rm -rf build`.
+        # The one place *authorization* does not enter: nothing the reviewer reads out of
+        # the turn makes an unrecoverable act recoverable, and with no grant in hand that
+        # includes an explicit yes it inferred. It *parks* rather than refusing — refusing
+        # left the operator out of the one decision they most need to be in, and made Auto
+        # less capable than Edit for `git commit --amend` or `rm -rf build`.
         outcome = await review(
             RISKY, reviewer=reviewer_of(verdict("too_destructive", authorization))
         )
@@ -192,14 +193,37 @@ class TestTheArithmetic:
         # And the reason travels, because the approval card is where it has to be read.
         assert "too_destructive" in outcome.reason
 
-    @pytest.mark.parametrize("width", ["command", "tool"])
-    async def test_a_standing_grant_does_not_make_the_unrecoverable_run_either(self, width):
-        # Neither width, and the wider one is the point: it is the operator's answer to the
-        # authorization question, and whether an act can be undone is not that question.
+    @pytest.mark.parametrize("authorization", ["neutral", "explicitly_yes"])
+    async def test_a_command_grant_does_not_make_the_unrecoverable_run(self, authorization):
+        # The narrow width names one act, and the operator agreeing to an act is not them
+        # agreeing that the act is recoverable. This is the line the wider width is on the
+        # other side of, so it is pinned on its own — including where the reviewer *also*
+        # read a yes, since the risk axis reads the width at first hand and neither half of
+        # that pair is the operator handing the tool over.
         outcome = await review(
-            RISKY, reviewer=reviewer_of(verdict("too_destructive")), granted=width
+            RISKY,
+            reviewer=reviewer_of(verdict("too_destructive", authorization)),
+            granted="command",
         )
         assert outcome.decision is Decision.ASK
+
+    async def test_a_whole_tool_grant_clears_the_unrecoverable(self):
+        # The one thing that moves the risk axis, and only because the operator said it
+        # themselves under copy that says what it costs. Without it a tool whose act the
+        # review cannot *read* — arbitrary script in the operator's own browser, whose
+        # projection withholds the script on purpose — draws the same contentless verdict
+        # on every call and is re-asked forever however they answer.
+        outcome = await review(
+            RISKY, reviewer=reviewer_of(verdict("too_destructive")), granted="tool"
+        )
+        assert outcome.decision is Decision.ALLOW
+        # The row has to say so in as many words: this is the one clearance where the
+        # operator is told afterwards about an act nobody can undo, so the account of it
+        # cannot be the generic "the authorization" sentence.
+        assert "cannot be undone" in outcome.reason
+        assert "this whole tool" in outcome.reason
+        # Revocable, like every other allow a grant produced.
+        assert outcome.by_grant is True
 
     @pytest.mark.parametrize("risk", ["low", "high"])
     async def test_a_command_grant_fills_a_gap_and_never_overturns_a_refusal(self, risk):
@@ -1666,6 +1690,44 @@ class TestTheSettledPile:
             assert manual == [], permission
             assert isinstance(settled["c1"], GrantApproved), permission
 
+    async def test_a_level_settled_call_demands_neither_width_back(self):
+        """Even where the operator's grant is the wider one.
+
+        These levels take either width, so what settled the call is "a grant covers this"
+        and not "the *wide* grant covers this". Recording the width they happened to hold
+        would have the resume path demand it back, and revoking the wide chip in a thread
+        that also holds a command grant would then deny a call the narrow one answers for.
+        """
+        grants = _grant_store()
+        await grants.grant(OWNER, CONV, "mail_send", (), True)
+        for permission in ("manual", "edit"):
+            settled, _ = await _settle(
+                permission, [_call("mail_send", "c1")], caps=ServiceContainer.of(grants)
+            )
+            approval = settled["c1"]
+            assert isinstance(approval, GrantApproved), permission
+            assert approval.needs_whole_tool is False, permission
+
+    async def test_an_unrecoverable_act_the_wide_grant_cleared_demands_it_back(
+        self, monkeypatch
+    ):
+        # The one allow that turns on the width, so it is the one the resume path must
+        # re-check at that width. Marked here, where the review actually produced it.
+        monkeypatch.setattr(
+            gating,
+            "resolve_reviewer",
+            lambda caps, owner: _reviewer(verdict("too_destructive")),
+        )
+        grants = _grant_store()
+        await grants.grant(OWNER, CONV, "mail_send", (), True)
+        settled, manual = await _settle(
+            "auto", [_call("mail_send", "c1")], caps=ServiceContainer.of(grants)
+        )
+        assert manual == []
+        approval = settled["c1"]
+        assert isinstance(approval, GrantApproved)
+        assert approval.needs_whole_tool is True
+
 
 class TestOneTurnsReviewsAreCapped:
     """How many model reviews a turn may spend, and what happens past that.
@@ -2003,3 +2065,91 @@ class TestTheOperatorsAnswerCarriesTheRestForward:
         denial = captured["c2"]
         assert isinstance(denial, ToolDenied)
         assert "no longer in effect" in denial.message
+
+    async def test_a_call_the_wide_grant_cleared_is_rechecked_at_that_width(
+        self, monkeypatch
+    ):
+        """A narrower grant cannot stand in for the revoked wider one.
+
+        Only the whole-tool width clears an act nobody can undo, so a call it cleared has
+        to be re-checked against *that* width. Asking "is this covered at all" would let a
+        surviving command-scoped grant — the very width the risk axis refused — carry the
+        call through after the operator revoked the one that actually cleared it.
+        """
+        async with client_app() as (client, app):
+            unrecoverable = ToolCallPart(
+                tool_name="shell_run_command",
+                args={"command": "uv run pytest tests/a.py"},
+                tool_call_id="c1",
+            )
+            pending = _call("mail_send", "c2")
+            # What is left after the operator revoked the whole-tool chip: a standing yes
+            # to this one command, which covers the call but never cleared it.
+            await app.state.approval_grants.grant(
+                OWNER, CONV, "shell_run_command", ("uv", "run", "pytest")
+            )
+            run_id = await _park_a_run(
+                app,
+                _parked({"c1": GrantApproved(needs_whole_tool=True)}, [unrecoverable, pending]),
+            )
+
+            captured = await _approve(client, monkeypatch, run_id, "c2")
+
+        denial = captured["c1"]
+        assert isinstance(denial, ToolDenied)
+        assert "no longer in effect" in denial.message
+
+    async def test_a_level_settled_call_takes_either_width_back(self, monkeypatch):
+        """A call the *level* cleared is re-checked by coverage, not by width.
+
+        At Manual and Edit a grant of either width settles the call outright, so an
+        operator holding both and revoking only the wider one still has a standing yes to
+        this act. Demanding the wider width back — which recording the width they *held*
+        rather than the width the allow *needed* would do — denies a call the level's own
+        rule still permits.
+        """
+        async with client_app() as (client, app):
+            settled_by_level = ToolCallPart(
+                tool_name="shell_run_command",
+                args={"command": "uv run pytest tests/a.py"},
+                tool_call_id="c1",
+            )
+            pending = _call("mail_send", "c2")
+            # The whole-tool chip is gone; the command one the operator also gave remains.
+            await app.state.approval_grants.grant(
+                OWNER, CONV, "shell_run_command", ("uv", "run", "pytest")
+            )
+            run_id = await _park_a_run(
+                app,
+                # No `needs_whole_tool`: a level took either width, so it demands neither.
+                _parked({"c1": GrantApproved()}, [settled_by_level, pending]),
+            )
+
+            captured = await _approve(client, monkeypatch, run_id, "c2")
+
+        assert isinstance(captured["c1"], ToolApproved)
+
+    async def test_the_wide_grant_still_standing_carries_its_call_through(
+        self, monkeypatch
+    ):
+        # The other half of the pair: nothing was revoked, so the call the wide grant
+        # cleared still runs. Without this the check above would pass on a re-validation
+        # that simply denied everything.
+        async with client_app() as (client, app):
+            unrecoverable = ToolCallPart(
+                tool_name="shell_run_command",
+                args={"command": "uv run pytest tests/a.py"},
+                tool_call_id="c1",
+            )
+            pending = _call("mail_send", "c2")
+            await app.state.approval_grants.grant(
+                OWNER, CONV, "shell_run_command", (), True
+            )
+            run_id = await _park_a_run(
+                app,
+                _parked({"c1": GrantApproved(needs_whole_tool=True)}, [unrecoverable, pending]),
+            )
+
+            captured = await _approve(client, monkeypatch, run_id, "c2")
+
+        assert isinstance(captured["c1"], ToolApproved)

@@ -126,8 +126,10 @@ class ReviewVerdict(BaseModel):
     utility call in this codebase is: a successful injection can move a label, and can
     never issue an instruction."""
 
-    #: What the act could cost. ``too_destructive`` is unrecoverable, and it is the one
-    #: value that overrules everything else — see ``decide.py``.
+    #: What the act could cost. ``too_destructive`` is unrecoverable, and it overrules
+    #: everything this model can say: no authorization it reads out of the turn clears it.
+    #: The one thing that does is the operator's own whole-tool grant, which is not part of
+    #: this verdict and is not visible from here — see ``decide.py``.
     risk: Literal["low", "high", "too_destructive"] = "high"
     #: Whether the operator asked for it. Only the operator's own messages count.
     authorization: Authorization = "neutral"

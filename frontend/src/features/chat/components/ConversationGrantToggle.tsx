@@ -1,5 +1,5 @@
 import { Show, createSignal, type JSX } from "solid-js";
-import { Checkbox, Segmented, Stack } from "~/ui";
+import { Checkbox, Segmented, Stack, Text } from "~/ui";
 import {
   commandScopeLabel,
   tickedWidth,
@@ -55,10 +55,15 @@ export function createGrantToggle() {
  *  the thread's permission level, which is the backend's to decide and can change
  *  between the moment this is ticked and the next call: at Manual and Edit it settles
  *  the call outright, while at Auto it feeds the review as the operator's
- *  authorization and an unrecoverable act still comes back to be asked about. The old
- *  copy ("Allow for the rest of this conversation") promised the first of those at
- *  every level, which is a promise the chassis breaks at the one that is becoming the
- *  default.
+ *  authorization. The old copy ("Allow for the rest of this conversation") promised the
+ *  first of those at every level, which is a promise the chassis breaks at the one that
+ *  is becoming the default.
+ *
+ *  The **wider** width is the exception, and the one place this control does promise an
+ *  outcome: it waives the pause on an act nobody can undo, at every level including Auto.
+ *  That is said in plain sight whenever that width is the one selected — not only in the
+ *  picker's hover description — because it is the one thing ticking this box gives away
+ *  that the operator cannot get back.
  *
  *  It also says *what*, and the three answers are genuinely different. Where the call runs
  *  a command this file can name, the label names it — the grant is scoped to that act and
@@ -76,14 +81,18 @@ export function createGrantToggle() {
  *  tool runs — and the wider one is **a separate control, not a wider default**, because
  *  it is a materially larger thing to say and the narrow one has to stay the easy path.
  *  Its description says what it costs in the only terms that matter at the level that is
- *  the default: nothing this tool runs is asked about again, and an act nobody can undo
- *  still comes back.
+ *  the default: nothing this tool runs is asked about again, an act nobody can undo
+ *  included. That last clause is the whole difference between the widths now, and it is
+ *  why the narrow one must stay where the tick lands by default.
  *
  *  Where no command is involved there is only one width, so no picker appears — a control
  *  offering the same choice twice invents a decision. **That single width is the wider
  *  one**, and it has to be: such a call has nothing narrower to be scoped to, the label
  *  above already says "this tool", and recording the narrower width there would leave the
  *  checkbox promising a standing yes that the level doing the deciding does not honour.
+ *  Being the wider one, it carries the wider one's consequence, and the note below says so
+ *  on both paths: this is how a tool the review can never read — page script, whose
+ *  projection withholds the script on purpose — comes to be granted at all.
  *
  *  **Nothing here promises the grant exists.** The backend refuses to record one for a
  *  command no scope could stand for — one its own walk cannot read, or one reaching
@@ -142,10 +151,31 @@ export function ConversationGrantToggle(props: {
                 ? `Anything ${props.toolName} runs`
                 : "Anything this tool runs",
               description:
-                "Every command it runs for the rest of this conversation, without asking. Actions that can't be undone still pause.",
+                "Every command it runs for the rest of this conversation, without asking — including ones that can't be undone.",
             },
           ]}
         />
+      </Show>
+      {/* **The wider width's one irreversible consequence, on the page rather than in a
+          tooltip.** `Segmented` renders an option's description only on a 600ms hover
+          (`ui/components/Segmented.tsx`), which was fine while that text was reassuring —
+          missing "actions that can't be undone still pause" cost the operator nothing. It
+          now says the opposite, and consent to that cannot depend on hovering: someone who
+          clicks straight through hands over the unrecoverable pause having been told
+          nothing.
+
+          Keyed on the width rather than on which control is showing, so it covers both
+          paths with one sentence — the picker's wider option, and the plain tick on a call
+          that runs no command, which *is* that width and gets no picker to describe it.
+          That second path is the one this most matters for: arbitrary page script takes no
+          command, so without this it would be handed over under a label reading only
+          "this tool". Below the picker, because it is a consequence of the choice rather
+          than a caption on it, and `warn` because it is the only thing here that cannot be
+          taken back. */}
+      <Show when={width() === "tool"}>
+        <Text variant="micro" tone="warn" class="ml-6">
+          Includes actions that can't be undone — those won't pause either.
+        </Text>
       </Show>
     </Stack>
   );
