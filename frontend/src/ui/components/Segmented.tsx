@@ -44,9 +44,10 @@ export interface SegmentedProps<T extends string> {
  *
  * **The edge is what makes it survive both modes.** The two modes carry depth
  * differently (§6): Ink steps up in surface value, which against pure black is
- * legible on its own, while Paper's `surface-raised` is a 4% tint on white and
- * `shadow-1` there is a 5% cast — a fill alone all but vanished in Paper. A
- * hairline is the one instrument that lands in both, and §7 licenses it for
+ * legible on its own, while Paper's `surface-raised` is a 4% tint on white — a
+ * fill alone all but vanished in Paper, and a `shadow-1` cast at 5% there would
+ * not have rescued it. A hairline is the one instrument that lands in both, and
+ * §7 licenses it for
  * exactly this case: a control's own edge, where the border *is* the affordance.
  * The unpicked segments carry the same border transparent, so the ring costs no
  * layout and picking one shifts nothing by a pixel.
@@ -134,10 +135,24 @@ export function Segmented<T extends string>(
                 "outline-none focus-visible:shadow-focus",
                 fills() && "min-w-0 flex-1",
                 // Fill, edge, weight, brightness — four neutral axes, and no
-                // hue. `shadow-1` is the mode-correct resting lift underneath:
-                // a cast in Paper, a faint ring in Ink.
+                // hue. Four is the whole set: there is no shadow.
+                //
+                // `shadow-1` used to sit under the picked segment as a resting
+                // lift, and it was wrong twice. §7 ranks the ways to separate
+                // two things, and the shadow's folded hairline ring is offered
+                // at rank 3 *so that* a surface can drop its border at rank 4 —
+                // it is the alternative to an edge, not a companion to one. A
+                // segment carrying both drew its hairline twice, and a doubled
+                // hairline on a 3px corner is what read as a soft edge in a
+                // system whose corners are meant to be machined.
+                //
+                // The second fault is the register. Shadows separate layers
+                // (§6), and this control sits in the rail as one row among the
+                // thread rows, the area rows and the footer — none of which is
+                // lifted. It was the only shadow in the whole column, so it
+                // read as a chip floating over the rail rather than part of it.
                 active()
-                  ? "border-line-strong bg-raised text-bright font-medium shadow-1"
+                  ? "border-line-strong bg-raised text-bright font-medium"
                   : "border-transparent font-normal text-dim hover:bg-raised hover:text-text",
               )}
             >

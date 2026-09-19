@@ -149,6 +149,20 @@ export const icons: Record<IconName, IconEntry> = {
       <path d="M10 10l4 4M7 5v4M5 7h4" />
     </>
   ),
+  /* Redrawn, and moved off the 24 grid to sit beside `research` — the two are
+     adjacent in the mode switch, which is where the borrowed glyph gave itself
+     away. Iconoir's bubble was a circle of r=10 with a nub: the one fully round
+     form in a system whose corners are chamfered, filling 83% of its box against
+     `code`'s 75%, so it read a full size step larger than the glyph next to it
+     (§9). Both faults are the same fault — it was a stock mark, and a round
+     speech bubble is to a chat control what the paper plane was to send.
+
+     A bubble is a frame, and a frame in this hand carries `rx="1"`. So: one
+     closed outline, chamfered at all four corners, its tail cut out of the
+     bottom edge rather than stuck under it, at 75% of the box. */
+  chat: () => (
+    <path d="M3 3h10a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H8l-3 2.5V12H3a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" />
+  ),
   pen: () => <path d="M2 14s1-3 3-5l5-5 2 2-5 5c-2 2-5 3-5 3z" />,
   // Something placed *into* a frame from outside it: an open-sided box with an arrow
   // entering. Drawn rather than borrowed because the meaning it has to carry — context
@@ -330,11 +344,6 @@ export const icons: Record<IconName, IconEntry> = {
   send: g24(() => (
     <>
       <path d="M6.5 17.5L17.5 6.5M10 6.5h7.5V14" />
-    </>
-  )),
-  chat: g24(() => (
-    <>
-      <path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2S2 6.477 2 12c0 1.821.487 3.53 1.338 5L2.5 21.5l4.5-.838A9.96 9.96 0 0 0 12 22" />
     </>
   )),
   play: g24(() => (

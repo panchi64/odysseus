@@ -31,7 +31,11 @@ export function StackedBar(props: {
 }): JSX.Element {
   return (
     <div
-      class={`flex w-full overflow-hidden rounded-ctl bg-line ${props.height ?? "h-1"}`}
+      // Square. The control radius is sized for a 32px control, and on a 4px
+      // gauge a 3px corner eats the whole height — the ends round off into
+      // lozenges and the first and last segment lose the colour that is the
+      // reading. This is an instrument band, and §7 keeps those at `radius-0`.
+      class={`flex w-full overflow-hidden bg-line ${props.height ?? "h-1"}`}
     >
       <For each={props.segments}>
         {(segment) => (

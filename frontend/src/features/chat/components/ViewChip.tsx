@@ -75,8 +75,13 @@ export function ViewChip(props: {
       type="button"
       onClick={() => props.onOpen()}
       class={cx(
+        // `rounded-ctl`: §7's radius table files chips with the controls, and a
+        // chip that is a button is a control whatever it is filled with — the
+        // fill and `shadow-1` say "liftable", not "container". It does sit in
+        // the transcript beside `ToolCallCard` at 6px, which is a real
+        // difference to settle in the design system rather than here.
         "group/chip flex w-full items-center gap-2 rounded-ctl bg-surface shadow-1",
-        "rounded-ctl px-3 py-2 text-left transition-colors hover:bg-raised",
+        "px-3 py-2 text-left transition-colors hover:bg-raised",
         props.isNew && "opacity-80",
       )}
     >

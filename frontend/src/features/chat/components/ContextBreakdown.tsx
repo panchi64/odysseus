@@ -141,8 +141,9 @@ function Bar(props: {
   fold: FoldMarker | null;
 }): JSX.Element {
   return (
-    // `relative` so the fold mark can sit at its own fraction of the window; the fill
-    // itself keeps `overflow-hidden` so the rounded ends still clip it.
+    // `relative` so the fold mark can sit at its own fraction of the window. The
+    // mark is a sibling of the bar rather than a child, which is what lets it be
+    // taller than the bar and cross it — see below.
     <div class="relative w-full">
       <StackedBar
         segments={props.rows.map((row) => ({
@@ -194,10 +195,13 @@ function Row(props: { row: ContextRow }): JSX.Element {
         onClick={() => setOpen(!open())}
         class="group flex w-full items-center gap-2 py-1 text-left enabled:cursor-pointer"
       >
+        {/* The swatch is square, like `StatusDot`'s 8px block: at this size the
+            control radius is 37% of the mark and turns a legend swatch into a
+            blob. */}
         <span class="flex size-3 shrink-0 items-center justify-center">
           <Show
             when={expandable()}
-            fallback={<span class={`size-2 rounded-ctl ${props.row.fill}`} />}
+            fallback={<span class={`size-2 ${props.row.fill}`} />}
           >
             <Icon
               name={open() ? "chevron-down" : "chevron-right"}
@@ -207,7 +211,7 @@ function Row(props: { row: ContextRow }): JSX.Element {
           </Show>
         </span>
         <Show when={expandable()}>
-          <span class={`size-2 shrink-0 rounded-ctl ${props.row.fill}`} />
+          <span class={`size-2 shrink-0 ${props.row.fill}`} />
         </Show>
         <Text variant="label" tone="default" class="min-w-0 truncate">
           {props.row.label}
