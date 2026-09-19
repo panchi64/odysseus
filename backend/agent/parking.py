@@ -46,6 +46,7 @@ from pydantic_ai import (
 
 from runs import ApprovalRequired, QuestionAsked, Run
 from services.answers import questions_of
+from services.commands.spec import Invocation
 from services.conversations import ConversationBinding, ConversationStore
 from services.notifications import NotificationService
 
@@ -95,6 +96,15 @@ class ParkedTurn:
     # durable attachment markers (and stamps the ids) when the resume finally persists it —
     # keeping replayed history marker-only just like a direct turn.
     attachment_ids: list[str] = field(default_factory=list)
+    # The `@` references this turn carried, for the same reason and by the same route as
+    # the attachment ids above: a turn parked for approval must stamp them when the
+    # resume finally persists it, or the operator's chips vanish on the one turn that
+    # took longest to settle.
+    file_refs: list[str] = field(default_factory=list)
+    # And the command it was sent with, for the third time and the same reason: a turn
+    # parked for approval must still be regenerable once it resumes, and the invocation is
+    # what a regenerate reads to rebuild the block.
+    command: Invocation | None = None
     persisted: list | None = None
     # The turn's model-request budget (the operator's setting, else the config default),
     # carried so the resume continues under the same ceiling the original turn ran with

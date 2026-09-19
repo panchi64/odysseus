@@ -52,7 +52,8 @@ function samePlacement(a: Placement | null, b: Placement): boolean {
     a.top === b.top &&
     a.left === b.left &&
     a.clampHeight === b.clampHeight &&
-    a.minWidth === b.minWidth
+    a.minWidth === b.minWidth &&
+    a.maxWidth === b.maxWidth
   );
 }
 
@@ -83,6 +84,29 @@ export interface FloatingPanelProps {
    *  dropdowns want; a context menu passes a handler that closes, so the operator's
    *  next right-click reaches the row underneath instead of the backdrop. */
   onBackdropContextMenu?: (e: MouseEvent) => void;
+  /** Place the panel and nothing else: **no backdrop, no Escape listener**. The caller
+   *  owns dismissal entirely.
+   *
+   *  For a panel anchored to something the operator is still *typing into* — the
+   *  composer's `/` and `@` menus. Both defaults are actively wrong there and in ways
+   *  that read as flakiness rather than as a bug:
+   *
+   *  - The backdrop is a full-screen `fixed inset-0`, so while the menu is open every
+   *    click on the field underneath hits it instead. The caret cannot be repositioned,
+   *    and mousedown on a non-focusable div blurs the field mid-sentence.
+   *  - The Escape listener is a bare `document` keydown with no editable-target check
+   *    (unlike `~/lib/keymap`), so one Escape would close the menu *and* whatever else
+   *    is listening behind it.
+   *
+   *  Dismissal is not lost, it moves: a menu that lives off the field's own content
+   *  closes when the token does, and the field handles its own Escape. */
+  passive?: boolean;
+  /** Hold the panel to the anchor's width rather than letting its content set it —
+   *  see `Placement.maxWidth`. For a panel that reads as an extension of a full-width
+   *  field, not as a dropdown hanging off a narrow control. */
+  fit?: boolean;
+  /** Which side of the anchor to open on when both would do. Default `"below"`. */
+  prefer?: "above" | "below";
 }
 
 /** The floating half of every overlay in the system: portal, click-out backdrop,
@@ -135,6 +159,8 @@ export function FloatingPanel(props: FloatingPanelProps): JSX.Element {
       viewport: { width: window.innerWidth, height: window.innerHeight },
       align: props.align,
       block: props.block,
+      fit: props.fit,
+      prefer: props.prefer,
     });
     // An unchanged placement is not re-published. The panel's own size is watched
     // below, and applying a clamp *changes* that size — so a pass that concludes
@@ -159,9 +185,10 @@ export function FloatingPanel(props: FloatingPanelProps): JSX.Element {
     });
   });
 
-  // Escape closes while open (the backdrop handles outside clicks).
+  // Escape closes while open (the backdrop handles outside clicks). Both are skipped
+  // for a `passive` panel, whose caller owns dismissal — see the prop.
   createEffect(() => {
-    if (!props.open()) return;
+    if (!props.open() || props.passive) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") props.onClose();
     };
@@ -172,11 +199,13 @@ export function FloatingPanel(props: FloatingPanelProps): JSX.Element {
   return (
     <Show when={props.open()}>
       <Portal>
-        <div
-          class="fixed inset-0 z-40"
-          onClick={() => props.onClose()}
-          onContextMenu={(e) => props.onBackdropContextMenu?.(e)}
-        />
+        <Show when={!props.passive}>
+          <div
+            class="fixed inset-0 z-40"
+            onClick={() => props.onClose()}
+            onContextMenu={(e) => props.onBackdropContextMenu?.(e)}
+          />
+        </Show>
         <PopoverPanel
           ref={(el) => {
             panelRef = el;
@@ -292,6 +321,15 @@ function PopoverPanel(props: {
         // widen the natural size, so re-measuring never feeds a shrinking value back.
         "min-width": props.placement?.minWidth
           ? `${props.placement.minWidth}px`
+          : undefined,
+        // Also safe to measure through, and for a sturdier reason than the min-width
+        // above: it is derived from the anchor and the viewport, never from the panel,
+        // so a pass cannot feed its own result back the way the max-height could. What
+        // it does change is the measured *height* — a narrower panel wraps taller — and
+        // that is the height the flip and the clamp should be deciding against, because
+        // it is the height the panel will actually have.
+        "max-width": props.placement
+          ? `${props.placement.maxWidth}px`
           : undefined,
         // Until the first measure lands the panel would flash at 0,0 in the corner.
         visibility: props.placement ? "visible" : "hidden",

@@ -52,11 +52,14 @@ def listening(port: int) -> bool:
     """Whether something accepts connections on this port right now.
 
     **Every loopback address, because a server picks its own.** Uvicorn is told
-    ``127.0.0.1``; vite binds the *name* ``localhost`` and takes whatever it resolves to
-    first, which on a stock macOS is ``::1``. Probing v4 alone therefore never saw a
-    frontend that had started in 200ms and was serving perfectly — ``up`` waited out its
-    ninety seconds and then tore the whole instance down, with a log showing a healthy
-    server that had been sent SIGTERM for no stated reason.
+    ``127.0.0.1``; vite, left to itself, binds the *name* ``localhost`` and takes whatever
+    it resolves to first, which on a stock macOS is ``::1``. Probing v4 alone therefore
+    never saw a frontend that had started in 200ms and was serving perfectly — ``up``
+    waited out its ninety seconds and then tore the whole instance down, with a log showing
+    a healthy server that had been sent SIGTERM for no stated reason. The frontend is now
+    pinned to the address its URLs are spelled with (``launch.ensure_frontend``); this is
+    the belt-and-braces half, so the next service to bind something else is merely noticed
+    rather than declared dead.
     """
     for family, host in ports.LOOPBACKS:
         try:

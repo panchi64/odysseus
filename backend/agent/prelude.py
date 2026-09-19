@@ -44,6 +44,7 @@ from tools import PromptContextProvider, PromptContextRequest, default_workspace
 
 from .attachments import resolve_attachments
 from .compaction_context import CompactionContext, resolve_max_input_tokens
+from .file_refs import resolve_file_refs
 from .folding import incoming_request, maybe_compact
 from .history import (
     TurnStart,
@@ -71,6 +72,10 @@ class TurnSetup:
     turn_start: TurnStart = field(default_factory=TurnStart)
     persisted: list | None = None
     stamp_ids: list[str] = field(default_factory=list)
+    #: The `@` references that resolved, stamped on the turn's user request so the
+    #: operator's chips come back on a reload. The marker naming them persists with the
+    #: prompt; this is the structured form of the same fact, for rendering.
+    file_refs: list[str] = field(default_factory=list)
     # filled by prepare_turn
     user_prompt: str | list[Any] | None = None
     history: list[ModelMessage] | None = None  # persistence baseline
@@ -94,6 +99,8 @@ async def prepare_turn(
     caps: ServiceContainer,
     uploads: UploadStore | None,
     attachment_ids: list[str] | None,
+    file_refs: list[str] | None,
+    turn_context: str,
     vision: bool,
     binding: ConversationBinding,
     prompt_context_providers: Sequence[PromptContextProvider],
@@ -113,6 +120,13 @@ async def prepare_turn(
     per-turn prompt context, folds the older turns away when the projected footprint calls
     for it, and fixes the persistence boundary against the list the model will actually be
     handed.
+
+    ``turn_context`` is the caller's block for this one invocation (a picked slash
+    command's expansion). It joins the per-turn context at the tail, first, and leaves
+    with it — none of that is persisted, so the turn on record stays what was typed. On a
+    regenerate the caller resolves it again from the invocation stamped on the turn being
+    re-answered, and it rides the replayed history's trailing request like the standing
+    providers do.
     """
 
     history = (
@@ -179,26 +193,34 @@ async def prepare_turn(
     # inline in both the live and the persisted shape. Only on a fresh turn: a
     # regenerate (prompt is None) re-runs history, which already carries the markers.
     user_prompt: str | list[Any] | None = prompt
+    refs_marker = ""
+
+    # Resolved the one way the file tools resolve it, so an attachment lands in — and a
+    # reference points at — the very workspace the agent is about to work in: the
+    # conversation's sandbox, or its project worktree in code mode. Resolved **once**
+    # and shared, since both halves below need the same answer and a turn that resolved
+    # it twice could resolve it differently under a concurrent acquire.
+    workspace = None
+    if prompt is not None and (attachment_ids or file_refs):
+        workspace = await resolve_workspace(
+            mode=binding.mode,
+            project_id=binding.project_id,
+            conversation_id=conversation_id,
+            workspace_key=workspace_key or default_workspace_key(conversation_id, run),
+            owner_id=run.owner_id,
+            sessions=caps.get_optional(SandboxSessionManager),
+            projects=caps.get_optional(ProjectStore),
+            worktrees=caps.get_optional(WorktreeManager),
+            holder=run,
+        )
+
     if attachment_ids and prompt is not None and uploads is not None:
         resolved = await resolve_attachments(
             uploads,
             run.owner_id,
             attachment_ids,
             vision=vision,
-            # Resolved the one way the file tools resolve it, so an attachment
-            # lands in the very workspace the agent is about to work in — the
-            # conversation's sandbox, or its project worktree in code mode.
-            workspace=await resolve_workspace(
-                mode=binding.mode,
-                project_id=binding.project_id,
-                conversation_id=conversation_id,
-                workspace_key=workspace_key or default_workspace_key(conversation_id, run),
-                owner_id=run.owner_id,
-                sessions=caps.get_optional(SandboxSessionManager),
-                projects=caps.get_optional(ProjectStore),
-                worktrees=caps.get_optional(WorktreeManager),
-                holder=run,
-            ),
+            workspace=workspace,
         )
         # Only build a multimodal prompt when something actually resolved — else leave
         # the plain string, so an all-deleted-ids turn doesn't persist as a bare list
@@ -208,6 +230,25 @@ async def prepare_turn(
             user_prompt = [prompt, *resolved.content]
         setup.persisted = resolved.persisted or None
         setup.stamp_ids = resolved.ids
+
+    # Files the operator named with `@`. A **reference**, not an injection: the block
+    # names the paths and the model reads what it wants with `files_read_file`, which is
+    # classified a read and so costs no approval at any level.
+    #
+    # It rides the prompt and **persists**, exactly like an attachment marker and for the
+    # same reason. A marker is a statement of fact — these paths were referenced — so
+    # replaying it is honest, where replaying a file's *contents* would be a copy going
+    # stale behind the file. Persisting is also what makes a regenerate work without a
+    # second mechanism: the marker is already in the history a regenerate replays.
+    if file_refs and prompt is not None:
+        setup.file_refs, refs_marker = resolve_file_refs(file_refs, workspace)
+        if refs_marker:
+            base = user_prompt if isinstance(user_prompt, list) else [user_prompt]
+            user_prompt = [*base, refs_marker]
+            # Beside whatever the attachments left, never instead of it: a turn can carry
+            # both, and an empty list here is still the "strip to the typed prompt" signal
+            # the tail context relies on.
+            setup.persisted = [*(setup.persisted or []), refs_marker]
 
     # Per-turn prompt context (each manifest's `prompt_context` export — the
     # document state): appended at the *tail* of the current turn's user prompt,
@@ -230,6 +271,27 @@ async def prepare_turn(
         workspace_key=workspace_key or default_workspace_key(conversation_id, run),
     )
     context_texts: list[str] = []
+    # The caller's own block for *this* invocation goes first, ahead of the standing
+    # per-turn providers: it is what the operator just asked for, and the providers are
+    # background the turn happens to carry. Announced under a fixed slug rather than a
+    # provider's name, since there is no provider — the chassis put it here on the
+    # operator's behalf, which is precisely what the injection row exists to say.
+    #
+    # Unguarded by `prompt is not None`, unlike the attachment and reference work above,
+    # and for the reason the standing providers below are: a **regenerate** has no fresh
+    # prompt but still has a turn to compose. Its block rides the trailing request of the
+    # replayed history instead (`with_tail_context`, at the foot of this function), which
+    # is the same place and the same non-persisted lifetime. Without this a re-answer would
+    # be answering a plain `/reviewer …` token — a different question than the first time.
+    if turn_context:
+        context_texts.append(turn_context)
+        announce_injection(run, "command", turn_context, "prompt")
+    if refs_marker:
+        # Announced, but not appended: it is already on the prompt above. The operator's
+        # question — what was put in front of the model that they did not write — is the
+        # same either way, and the row is how they see a reference was expanded into a
+        # block of instructions about reading files.
+        announce_injection(run, "file_refs", refs_marker, "prompt")
     for provider in prompt_context_providers:
         text = await provider(context_request)
         if not text:

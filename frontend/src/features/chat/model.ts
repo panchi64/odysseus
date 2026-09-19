@@ -537,6 +537,9 @@ export interface ChatMessage {
   /** User turns: ids of the uploads attached to this message. Rendered as
    *  read-only chips on the sent turn; absent/empty on assistant turns. */
   attachmentIds?: string[];
+  /** User turns: workspace-relative paths the operator named with `@`. Rendered as
+   *  read-only chips beside the attachments; absent/empty everywhere else. */
+  fileRefs?: string[];
   /** Compaction dividers only: what the fold actually cost. `foldedMessages` counts
    *  **messages**, not exchanges — a plain exchange is two of them and a tool-heavy
    *  turn many more, so this is deliberately not called turns; the backend doesn't
@@ -664,6 +667,16 @@ export const PERMISSION_LEVELS: readonly PermissionLevelSpec[] = [
       "Acts on its own inside the worktree, reviewed beyond it, asks only on doubt.",
   },
 ];
+
+/** Whether a free-typed string names a level.
+ *
+ *  For the one path where it is not already narrowed: `/level auto` in the composer,
+ *  where the operator types the word themselves. Derived from the list above rather than
+ *  re-listing the four, so a fifth level is offered here the moment it is declared —
+ *  presentation only, and the backend re-validates whatever this lets through. */
+export function isPermissionLevel(value: string): value is PermissionLevel {
+  return PERMISSION_LEVELS.some((spec) => spec.id === value);
+}
 
 /** The level a thread runs at when nothing says otherwise — the backend's
  *  `DEFAULT_PERMISSION`, which is also each mode's default today.

@@ -67,6 +67,7 @@ from runs import (
     Run,
     RunStatus,
 )
+from services.commands.spec import Invocation
 from services.conversations import (
     ConversationBinding,
     ConversationStore,
@@ -119,6 +120,9 @@ def build_chat_orchestrator(
     context_thresholds: ContextThresholds = DEFAULT_CONTEXT_THRESHOLDS,
     uploads: UploadStore | None = None,
     attachment_ids: list[str] | None = None,
+    file_refs: list[str] | None = None,
+    turn_context: str = "",
+    command: Invocation | None = None,
     vision: bool = False,
     auto_compact: AutoCompactPolicy | None = None,
     utility_context_window: int | None = None,
@@ -141,6 +145,28 @@ def build_chat_orchestrator(
     still rides inline (and is retained on persist). Attachments are injected only on a
     fresh turn; a regenerate (``prompt is None``) re-runs prior history, which already
     carries the markers.
+
+    ``file_refs`` are workspace-relative paths the operator named with ``@``. A
+    **reference, not an injection**: the turn carries the paths and the model reads what it
+    wants with ``files_read_file``. Resolved against the run's own workspace and silently
+    narrowed to what is actually there, so a path picked before a worktree existed cannot
+    point the model at a file it has no way to open.
+
+    ``turn_context`` is a block the *caller* resolved for this one turn — today the
+    expansion of a slash command the operator picked. It rides the tail of the turn's user
+    prompt beside the manifests' own per-turn context and is stripped before the turn is
+    recorded, so what persists stays the text the operator actually typed. It is a
+    parameter rather than a ``PromptContextProvider`` because a provider re-resolves from
+    ``(caps, owner_id, conversation_id)`` and never sees *this* request — which is exactly
+    what a per-invocation block is.
+
+    ``command`` is the *invocation* behind that block — the name the operator typed and the
+    argument after it — written onto the turn's user request so a later regenerate can ask
+    what it meant and build the block again. Deliberately not the block itself: a template
+    persisted into history would replay an old copy of a file that has since been edited,
+    and a directive reading "before anything else in this turn" is false by the next turn.
+    The pair is not redundant, it is the split between *what to say now* and *what to write
+    down*, and only the second survives the turn.
 
     ``model`` is the resolved ``main`` model (the route resolves it from the
     registry, with any per-conversation override). ``categories`` overrides the
@@ -212,6 +238,12 @@ def build_chat_orchestrator(
         # an in-turn fold moves it: `drive_turn` rewrites it in place, and every reader
         # below reads through it rather than closing over a stale integer.
         setup = TurnSetup()
+        # Only a turn that carries a fresh prompt records a user request, and the stamp
+        # belongs on that request. A regenerate re-answers a request already in the tree —
+        # one that has carried its own stamp since the day it was sent — so stamping here
+        # would have nothing to write on, and `prepare_turn` ignores the expansion's twin
+        # for the same reason.
+        stamped = command if prompt is not None else None
         # Reachable mid-turn so a wall-clock/inactivity bound can flush whatever the
         # turn has produced before the registry force-cancels this task (which would
         # otherwise interrupt us before we reach `finalize` below and silently drop
@@ -245,6 +277,8 @@ def build_chat_orchestrator(
                 start=TurnStart(),
                 clean_drop=_flush_clean_drop(),
                 attachment_ids=setup.stamp_ids,
+                file_refs=setup.file_refs,
+                command=stamped,
                 persisted=setup.persisted,
             )
 
@@ -288,6 +322,8 @@ def build_chat_orchestrator(
             caps=capabilities,
             uploads=uploads,
             attachment_ids=attachment_ids,
+            file_refs=file_refs,
+            turn_context=turn_context,
             vision=vision,
             binding=binding,
             prompt_context_providers=prompt_context_providers,
@@ -382,6 +418,8 @@ def build_chat_orchestrator(
                     start=setup.turn_start,
                     clean_drop=turn.clean_drop,
                     attachment_ids=setup.stamp_ids,
+                    file_refs=setup.file_refs,
+                    command=stamped,
                     persisted=setup.persisted,
                 ),
             )

@@ -1,4 +1,4 @@
-import { For, Show, createMemo, type JSX } from "solid-js";
+import { For, Show, createMemo, createSignal, type JSX } from "solid-js";
 import { useNavigate } from "@solidjs/router";
 import {
   Composer,
@@ -34,6 +34,10 @@ import {
 } from "~/lib/stores/models";
 import { ModelPicker } from "~/app/ModelPicker";
 import { createComposerAttachments } from "~/features/uploads/data";
+import { createComposerCommands } from "~/features/chat/commands/useComposerCommands";
+import { isPermissionLevel, type PermissionLevel } from "~/features/chat/model";
+import { activeSessionMode, codeProjectId } from "~/lib/stores/sessionMode";
+import { toast } from "~/ui";
 
 /** Overall status for the header flag. Any down capability is an alert; a
  *  degraded *critical* capability is a warning. Non-critical degradations
@@ -103,8 +107,52 @@ export function DashboardScreen(): JSX.Element {
     return triggering.map((c) => `${c.label}: ${c.detail}`).join(" · ");
   };
 
+  /**
+   * The launchpad's `/` menu. No `@` beside it: that browses a thread's own worktree,
+   * and there is no thread here yet.
+   *
+   * Three of the five built-in actions are absent without the picker doing anything —
+   * the route drops `compact`, `fork` and `retitle` when it is told there is no
+   * conversation, which is the whole reason availability is decided there. Of the two
+   * that remain, `new` is what this screen already *is*, and `level` has nowhere to write
+   * until a thread exists — so it is staged onto the handoff and applied as the thread is
+   * created, which is what its own description already promises.
+   */
+  const commands = createComposerCommands(
+    activeSessionMode,
+    () => null,
+    // The project staged in the rail for the next code thread, so a repository's own
+    // `.claude/commands` are offered here too — from the operator's checkout, since the
+    // worktree that thread will work in does not exist yet.
+    () => codeProjectId() ?? null,
+    {
+      // Unreachable — the route withholds all three without a conversation. They are
+      // wired rather than left to throw, because "what this build does with an id it was
+      // offered" should not depend on which ids the backend happens to send today.
+      compact: () => {},
+      fork: () => {},
+      retitle: () => {},
+      // Already here: an empty composer on the launchpad is a new thread.
+      newThread: () => {},
+      setPermissionLevel: (level) => {
+        if (isPermissionLevel(level)) setPendingLevel(level);
+        else toast.error(`"${level}" isn't a permission level.`);
+      },
+    },
+  );
+  const [pendingLevel, setPendingLevel] = createSignal<
+    PermissionLevel | undefined
+  >();
+
   const handleStart = (text: string, attachmentIds: string[]) => {
-    startConversation(text, effectiveSelection(), attachmentIds);
+    const intent = commands.consume(text);
+    // `/level auto` on its own is not a message: the relay has run (the level is staged)
+    // and there is nothing to open a thread with. Clearing the composer is the feedback.
+    if (intent.kind === "acted") return;
+    startConversation(text, effectiveSelection(), attachmentIds, {
+      command: intent.command,
+      permissionLevel: pendingLevel(),
+    });
     navigate("/chat");
   };
   const openThread = (id: string) => {
@@ -151,6 +199,7 @@ export function DashboardScreen(): JSX.Element {
             placeholder="Ask anything, request a summary, or describe a task…"
             onSend={handleStart}
             attachments={attachments}
+            menu={commands}
             sendBlocked={sendBlockedReason()}
             // Same slot, same component as the docked composer in a room: the
             // launchpad's picker was a second inline copy of the shared one, and two

@@ -116,6 +116,8 @@ export interface MessageDTO {
   pinned?: boolean;
   /** User turns: ids of the uploads attached to this message. */
   attachment_ids?: string[];
+  /** User turns: workspace-relative paths named with `@`. */
+  file_refs?: string[];
   /** Set when the run behind this assistant turn ended blocked (a usage/loop/
    *  context/time bound) — the human-readable reason. */
   blocked_reason?: string | null;

@@ -45,8 +45,8 @@ def slot_ports(slot: int) -> tuple[int, int, int]:
 
 #: The loopback addresses a local server can be reached on. Both are checked everywhere
 #: a port is probed, because which one a server picks is the runtime's choice and not
-#: ours: uvicorn is told ``127.0.0.1`` explicitly, while vite binds the name
-#: ``localhost`` and takes whatever it resolves to first — ``::1`` on a stock macOS.
+#: ours: uvicorn and vite are each told ``127.0.0.1`` explicitly, but a server left to
+#: the name ``localhost`` takes whatever it resolves to first — ``::1`` on a stock macOS.
 LOOPBACKS: tuple[tuple[int, str], ...] = (
     (socket.AF_INET, "127.0.0.1"),
     (socket.AF_INET6, "::1"),

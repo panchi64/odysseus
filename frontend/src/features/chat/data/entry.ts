@@ -13,12 +13,23 @@
 
 import { createSignal } from "solid-js";
 import type { ModelSelection } from "~/lib/stores/models";
+import type { PermissionLevel } from "../model";
+import type { CommandInvocation } from "../commands/model";
 
 interface PendingDraft {
   text: string;
   model: ModelSelection | null;
   /** Ids of uploads attached on the launchpad, carried into the first turn. */
   attachmentIds?: string[];
+  /** A `/` command picked on the launchpad. It has to ride the handoff or it is lost:
+   *  the launchpad unmounts as the room mounts, and the room would receive the operator's
+   *  literal `/reviewer …` with nothing saying what that token was. */
+  command?: CommandInvocation | null;
+  /** A level picked with `/level` on the launchpad. The one action command that is
+   *  offered without a thread and has nowhere to write until one exists — so it is staged
+   *  here and applied as the thread is created, which is exactly what the command's own
+   *  description already promises ("rides the next send"). */
+  permissionLevel?: PermissionLevel;
 }
 
 const [_pendingDraft, _setPendingDraft] = createSignal<PendingDraft | null>(
@@ -29,8 +40,12 @@ export function startConversation(
   text: string,
   model: ModelSelection | null,
   attachmentIds?: string[],
+  extras?: {
+    command?: CommandInvocation | null;
+    permissionLevel?: PermissionLevel;
+  },
 ): void {
-  _setPendingDraft({ text, model, attachmentIds });
+  _setPendingDraft({ text, model, attachmentIds, ...extras });
 }
 export function consumePendingDraft(): PendingDraft | null {
   const v = _pendingDraft();

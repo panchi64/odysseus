@@ -33,6 +33,7 @@ from pydantic_ai import (
 from core.serde import jsonable
 from core.text import chars_to_tokens
 from services.answers import ASK_USER_TOOL, AnsweredQuestion, parse_answer, questions_of
+from services.commands.spec import Invocation
 from services.subagents.report import direction_body, report_body
 
 if TYPE_CHECKING:  # a type, not a dependency — nothing here calls into the run substrate
@@ -46,6 +47,36 @@ if TYPE_CHECKING:  # a type, not a dependency — nothing here calls into the ru
 #: the only reader of would buy nothing. A checkpoint written before this existed simply
 #: has no such key, which the projection reports as "unknown" rather than guessing.
 COMPACTION_REASON_KEY = "compaction_reason"
+
+#: Where a turn's `@` file references ride — the same metadata channel, chosen for the
+#: same reasons. The marker naming them is already in the persisted prompt, so this is not
+#: how the *model* learns about them; it is the structured form the operator's chips are
+#: drawn from, which reading back out of the marker's prose would be a parser nobody wants.
+FILE_REFS_KEY = "file_refs"
+
+#: How the `@` marker opens. Declared here, in the module that has to *remove* it, and
+#: imported by the one that writes it (`agent/file_refs.py`) — never the other way round,
+#: since `services` sits below `agent`.
+#:
+#: The marker has to persist, so that a regenerate replaying this turn still tells the
+#: model which files were meant. It must not be *rendered*, because the bubble it lands in
+#: is captioned with the operator's name and they did not write it. Those two pull in
+#: opposite directions and a sentinel is what settles them: one exact string, owned by the
+#: pair of functions on either side of it, rather than a parser trying to recognise prose.
+FILE_REFS_MARKER_OPEN = "[The operator referenced these files with @:"
+
+#: Where the slash command a turn was sent with rides — the same metadata channel again,
+#: and the only one of the three the **backend** reads back rather than the operator.
+#:
+#: A command's expansion is never persisted (``services/commands/expand``), so a regenerate
+#: replaying this turn's history would otherwise hand the model the bare ``/reviewer …``
+#: token and nothing else. Writing down the *invocation* instead of the expansion is what
+#: closes that without the stale copy: the name and the argument are facts about what the
+#: operator did, and the block is built again from whatever that name resolves to now.
+#:
+#: Read by ``ConversationStore.turn_stamps`` and re-expanded by the chat route, which is
+#: the layer that holds the registry. Nothing in ``agent/`` resolves a command name.
+COMMAND_KEY = "command"
 
 
 @dataclass
@@ -115,6 +146,10 @@ class MessageView:
     # Upload ids the operator attached to this (user) turn — the frontend renders them
     # as file chips. Empty for assistant turns and turns sent without attachments.
     attachment_ids: list[str] = field(default_factory=list)
+    # Workspace-relative paths the operator named with `@` on this (user) turn — chips
+    # again, beside the attachments. Read off the request's metadata rather than a column;
+    # empty for assistant turns and for turns that referenced nothing.
+    file_refs: list[str] = field(default_factory=list)
     # Set when the run behind this assistant turn ended `outcome: "blocked"` (a
     # usage/loop/context/time bound) — the human-readable reason. Filled in by the
     # store from the branch node, like `pinned`; None for every other turn.
@@ -498,6 +533,60 @@ def _compaction_reason(message: Any) -> str | None:
     return reason if isinstance(reason, str) and reason else None
 
 
+def strip_file_refs_marker(text: str) -> str:
+    """The operator's own words, with the chassis's `@` block taken back off.
+
+    The block is in the persisted turn on purpose — see ``FILE_REFS_MARKER_OPEN`` — and
+    the bubble it would otherwise show up in carries the operator's name. The references
+    are still reported, as chips, from the structured field beside this.
+
+    Splits on the sentinel rather than matching a shape, so a message that merely *talks*
+    about the marker is untouched unless it reproduces it exactly, and a marker whose
+    wording changes cannot quietly stop being stripped.
+    """
+    head, sep, _tail = text.partition(FILE_REFS_MARKER_OPEN)
+    return head.rstrip() if sep else text
+
+
+def stamped_file_refs(message: Any) -> list[str]:
+    """The `@` paths stamped on this request, or an empty list.
+
+    Read defensively for the same reason ``_compaction_reason`` is: a turn recorded before
+    this existed has no such key, and metadata is a free-form dict the library round-trips
+    without inspecting — so anything unrecognised reads as "none", never as a crash in the
+    projection every transcript load goes through.
+    """
+    metadata = getattr(message, "metadata", None)
+    if not isinstance(metadata, dict):
+        return []
+    refs = metadata.get(FILE_REFS_KEY)
+    if not isinstance(refs, list):
+        return []
+    return [ref for ref in refs if isinstance(ref, str) and ref]
+
+
+def stamped_command(message: Any) -> Invocation | None:
+    """The slash command this request was sent with, or ``None``.
+
+    Read as defensively as the two above, and for one more reason besides: this one is fed
+    straight back into a resolver on the regenerate path, so a malformed stamp must read as
+    "no command" rather than as a name made of the wrong type. A turn recorded before this
+    existed simply has no key, and replays exactly as it did before — which is the correct
+    outcome, not a degraded one.
+    """
+    metadata = getattr(message, "metadata", None)
+    if not isinstance(metadata, dict):
+        return None
+    stamp = metadata.get(COMMAND_KEY)
+    if not isinstance(stamp, dict):
+        return None
+    name = stamp.get("name")
+    argument = stamp.get("argument", "")
+    if not isinstance(name, str) or not name:
+        return None
+    return Invocation(name=name, argument=argument if isinstance(argument, str) else "")
+
+
 def _summary_part(message: Any) -> Any | None:
     """A checkpoint's summary part — the one the divider renders.
 
@@ -607,9 +696,10 @@ def project_tree(
                 views.append(
                     MessageView(
                         role="subagent" if report is not None else "user",
-                        content=text if body is None else body,
+                        content=strip_file_refs_marker(text if body is None else body),
                         timestamp=getattr(part, "timestamp", None),
                         id=node_id,
+                        file_refs=stamped_file_refs(message),
                     )
                 )
                 continue

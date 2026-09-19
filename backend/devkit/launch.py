@@ -137,7 +137,21 @@ def ensure_frontend(instance: DevInstance, supervisor: Supervisor) -> str:
     installed = ensure_frontend_deps(instance)
     supervisor.start(
         "frontend",
-        ["bun", "run", "dev", "--port", str(instance.frontend_port), "--strictPort"],
+        # `--host 127.0.0.1`, because that is the address every URL this instance hands
+        # out is spelled with. Vite's default is to bind whatever `localhost` resolves
+        # to, which on a host that answers it with `::1` means the dev server comes up
+        # perfectly and nothing at `http://127.0.0.1:<port>` ever answers — a frontend
+        # that "did not start" with a log showing it ready.
+        [
+            "bun",
+            "run",
+            "dev",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(instance.frontend_port),
+            "--strictPort",
+        ],
         cwd=repo.FRONTEND,
         env=dict(instance.frontend_env()),
         log_dir=instance.logs_dir,

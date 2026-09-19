@@ -8,6 +8,7 @@ FastAPI ``Depends`` later).
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import httpx
 from fastapi import HTTPException, Request, WebSocket
@@ -17,6 +18,7 @@ from core.api_scopes import ScopeTable
 from core.auth import AuthManager
 from core.config import Settings
 from core.container import ServiceContainer
+from core.exceptions import NotFoundError
 from core.ratelimit import RateLimiter
 from core.vault import Vault
 from runs import ConversationBusyError, RunRegistry
@@ -26,6 +28,8 @@ from services.artifacts import ArtifactStore
 from services.backup import BackupService
 from services.browser import BrowserSessionManager
 from services.calendar import CalendarService
+from services.commands import CommandRegistry
+from services.commands.store import CommandStore
 from services.conversation_search import ConversationSearch
 from services.conversations import ConversationStore
 from services.corpus import CorpusIndex
@@ -41,6 +45,7 @@ from services.notifications import NotificationService
 from services.offline import OfflineModeService
 from services.plan_mode import PlanMode
 from services.projects import ProjectStore, WorktreeManager, visible_project_ids
+from services.projects.listing import worktree_root
 from services.registry import ModelRegistry
 from services.reindex import EmbeddingReindexer
 from services.sandbox import SandboxSessionManager
@@ -194,6 +199,53 @@ def egress(request: Request) -> EgressPolicy:
 
 def skills(request: Request) -> SkillStore:
     return request.app.state.skills
+
+
+def commands(request: Request) -> CommandRegistry:
+    return request.app.state.commands
+
+
+def command_store(request: Request) -> CommandStore:
+    return request.app.state.command_store
+
+
+async def composer_tree(
+    request: Request, project_id: str | None, conversation_id: str | None
+) -> tuple[Path | None, bool]:
+    """The checkout a composer in this thread is looking at, and whether it is the thread's
+    own worktree rather than the operator's checkout.
+
+    The question three surfaces ask — the `@` picker listing files, the `/` picker offering
+    what the project declares, and the turn that has to resolve a picked command against the
+    same tree the menu listed from. Answering it in three places would mean three chances to
+    disagree about which tree a name came from, so it is answered here; the two that do not
+    care which tree answered call :func:`composer_root` instead.
+
+    **Rooted on the project, upgraded by the conversation**, and never creating a worktree:
+    typing a character must not acquire the project's single checkout. An unfiled thread, or
+    a project that has since been deleted, is ``None`` rather than an error — nothing on
+    either surface is worth failing a keystroke over.
+    """
+    if not project_id:
+        return None, False
+    try:
+        project = await projects(request).get(OPERATOR_ID, project_id)
+    except NotFoundError:
+        return None, False
+    root = Path(project.root_path)
+    if not conversation_id:
+        return root, False
+    return await worktree_root(
+        worktrees(request).path_for(project_id), conversation_id, root
+    )
+
+
+async def composer_root(
+    request: Request, project_id: str | None, conversation_id: str | None
+) -> Path | None:
+    """:func:`composer_tree` for the callers that only need the tree, not its provenance."""
+    root, _from_worktree = await composer_tree(request, project_id, conversation_id)
+    return root
 
 
 def uploads(request: Request) -> UploadStore:

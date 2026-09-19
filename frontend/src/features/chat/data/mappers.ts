@@ -372,6 +372,7 @@ export function toMessage(dto: MessageDTO): ChatMessage {
     versionCount: dto.version_count,
     pinned: dto.pinned,
     attachmentIds: dto.attachment_ids,
+    fileRefs: dto.file_refs,
     foldedMessages: dto.messages_compacted ?? undefined,
     tokensBefore: dto.tokens_before ?? undefined,
     tokensAfter: dto.tokens_after ?? undefined,

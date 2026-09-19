@@ -13,7 +13,20 @@ import { Text } from "../primitives/Text";
 import { HIDDEN_FILE_INPUT, useFileDrop } from "../primitives/useFileDrop";
 import { AttachmentChip, type ComposerAttachment } from "./AttachmentChip";
 import { Button } from "./Button";
+import {
+  ComposerMenu,
+  type ComposerMenuGroup,
+  type ComposerMenuItem,
+} from "./ComposerMenu";
+import {
+  replaceToken,
+  tokenAt,
+  tokenSpans,
+  type ComposerToken,
+  type ComposerTrigger,
+} from "./composerToken";
 import { LedEdge } from "./LedEdge";
+import { type Rect } from "./popoverPlacement";
 import { Tooltip } from "./Tooltip";
 
 // Self-contained guarded storage: the design system does not depend on ~/lib, so
@@ -66,6 +79,31 @@ export interface ComposerAttachmentsApi {
   remove: (id: string) => void;
   toggleKbExcluded: (id: string) => void;
   clear: () => void;
+}
+
+/**
+ * The `/` and `@` menu controller, injected by the feature layer — the same split as
+ * `ComposerAttachmentsApi` above and for the same reason: the design system cannot reach
+ * a data seam, so the Composer owns the *token* and the *keys* and the feature owns what
+ * the rows are and what picking one means.
+ *
+ * The Composer calls `onQuery` whenever the token under the caret changes (and with
+ * `null` when there is none), renders `groups`, and routes the navigation keys here
+ * before applying its own Enter-sends rule.
+ */
+export interface ComposerMenuApi {
+  /** Rows to show for the current query. Empty closes the menu. */
+  groups: Accessor<ComposerMenuGroup[]>;
+  /** The token under the caret changed. `null` means there is none — the menu closes. */
+  onQuery: (token: { trigger: ComposerTrigger; query: string } | null) => void;
+  /** What picking a row inserts in place of the token, **without** its trigger
+   *  character (`reviewer`, `src/app.tsx`). Returning null leaves the field alone, for a
+   *  row that acts instead of completing — an action command fires its relay and the
+   *  composer clears. */
+  onPick: (item: ComposerMenuItem) => string | null;
+  /** Called after a pick that returned null, so the feature can clear the draft itself
+   *  once its relay has fired. */
+  onClear?: () => void;
 }
 
 export interface ComposerProps {
@@ -146,6 +184,9 @@ export interface ComposerProps {
   /** File-attachment controller. When supplied, the Composer shows an attach
    *  button + drag-drop and renders the attachment chips; omit to hide them. */
   attachments?: ComposerAttachmentsApi;
+  /** `/` and `@` menu controller. Omit and neither character does anything special,
+   *  which is what the compare bench and the approval dock want. */
+  menu?: ComposerMenuApi;
   class?: string;
 }
 
@@ -160,6 +201,126 @@ export interface ComposerProps {
 export function Composer(props: ComposerProps): JSX.Element {
   const [text, setText] = createSignal("");
   let field: HTMLTextAreaElement | undefined;
+  // The accent layer behind the field. Held so its scroll can be kept in step with the
+  // field's — past `MAX_ROWS` the textarea scrolls, and a layer that stayed put would
+  // paint the colours of the first lines over whatever had scrolled into view.
+  let highlightRef: HTMLDivElement | undefined;
+
+  // ── The `/` and `@` menu ────────────────────────────────────────────────────────
+  // Three pieces of state and no more: the token under the caret, the field's rect to
+  // hang the panel off, and which row the keyboard is on. Everything else — what the
+  // rows *are*, what picking one means — is the feature's, through `props.menu`.
+  const [token, setToken] = createSignal<ComposerToken | null>(null);
+  const [anchor, setAnchor] = createSignal<Rect | null>(null);
+  const [activeId, setActiveId] = createSignal<string | null>(null);
+
+  const groups = () => props.menu?.groups() ?? [];
+  const rows = () => groups().flatMap((group) => group.items);
+  // Open only with something to show. A panel that appears empty on the first `/` and
+  // then fills in reads as a glitch; one that never appears reads as "no matches".
+  const menuOpen = () => token() !== null && rows().length > 0;
+
+  /** Re-read the token under the caret and tell the feature what to fetch.
+   *
+   *  Driven from input and from selection changes alike, because moving the caret back
+   *  into a half-typed `/rev` is the same situation as having just typed it. */
+  const syncToken = (): void => {
+    if (!props.menu || !field) return;
+    const next = tokenAt(field.value, field.selectionStart);
+    const current = token();
+    if (next?.trigger === current?.trigger && next?.query === current?.query) {
+      // Same token, moved: keep the rows, re-measure in case the field grew a line.
+      setToken(next);
+      setAnchor(field.getBoundingClientRect());
+      return;
+    }
+    setToken(next);
+    setAnchor(next ? field.getBoundingClientRect() : null);
+    props.menu.onQuery(next && { trigger: next.trigger, query: next.query });
+  };
+
+  // Keep the cursor on a row that still exists. A query narrowing under the operator's
+  // fingers otherwise leaves the selection pointing at a row that has been filtered
+  // away, and Enter would insert nothing.
+  createEffect(() => {
+    const ids = rows().map((row) => row.id);
+    if (ids.length === 0) {
+      setActiveId(null);
+      return;
+    }
+    setActiveId((current) =>
+      current !== null && ids.includes(current) ? current : ids[0]!,
+    );
+  });
+
+  const dismissMenu = (): void => {
+    setToken(null);
+    setAnchor(null);
+    props.menu?.onQuery(null);
+  };
+
+  const step = (delta: number): void => {
+    const ids = rows().map((row) => row.id);
+    if (ids.length === 0) return;
+    const at = ids.indexOf(activeId() ?? "");
+    // Wraps, because a menu of five rows is faster to reach the end of by going up.
+    setActiveId(ids[(at + delta + ids.length) % ids.length]!);
+  };
+
+  const pick = (item: ComposerMenuItem): void => {
+    const current = token();
+    if (!props.menu || !current) return;
+    const insert = props.menu.onPick(item);
+    if (insert === null) {
+      // The row acted rather than completed — an action command. The feature clears the
+      // draft once its relay has fired; the composer only takes the menu down.
+      setText("");
+      props.menu.onClear?.();
+      dismissMenu();
+      field?.focus();
+      return;
+    }
+    const next = replaceToken(text(), current, insert);
+    setText(next.text);
+    dismissMenu();
+    // After the DOM has the new value, or the caret lands at the old length.
+    queueMicrotask(() => {
+      field?.focus();
+      field?.setSelectionRange(next.caret, next.caret);
+    });
+  };
+
+  /** The navigation keys, taken **before** the Composer's own Enter-sends rule.
+   *
+   *  They have to be handled here rather than on the panel: focus never leaves this
+   *  textarea while the menu is up, and the panel is portalled to `document.body`, so
+   *  nothing typed here would ever reach a handler over there. Returns whether the key
+   *  was consumed.
+   */
+  const menuKey = (e: KeyboardEvent): boolean => {
+    if (!menuOpen()) return false;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      step(e.key === "ArrowDown" ? 1 : -1);
+      return true;
+    }
+    if (e.key === "Enter" || e.key === "Tab") {
+      const row = rows().find((item) => item.id === activeId());
+      if (!row) return false;
+      e.preventDefault();
+      pick(row);
+      return true;
+    }
+    if (e.key === "Escape") {
+      // Stopped as well as prevented: the menu is the innermost thing Escape can mean,
+      // and letting it through would also close the panel or the room behind it.
+      e.preventDefault();
+      e.stopPropagation();
+      dismissMenu();
+      return true;
+    }
+    return false;
+  };
 
   const items = () => props.attachments?.items() ?? [];
   const readyIds = () =>
@@ -236,6 +397,9 @@ export function Composer(props: ComposerProps): JSX.Element {
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
+    // The menu gets first refusal. Enter picks a row rather than sending the message —
+    // without this the operator's `/rev` would be sent as a literal prompt.
+    if (menuKey(e)) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       submit();
@@ -277,21 +441,106 @@ export function Composer(props: ComposerProps): JSX.Element {
       /* `text-prose`, the reading scale — the field produces the operator's turn,
          which renders at reading size a few pixels above it. Typing at 13px and
          watching it come back at 16px is the same mismatch, one step earlier. */
-      "w-full resize-none border-0 bg-transparent px-1 py-1 text-prose font-sans text-bright placeholder:text-dim outline-none disabled:opacity-40",
+      /* `block`, because a textarea is inline-block and carries a baseline descender —
+         ~5px of dead space under it inside any block container. It cost nothing in the
+         flex column this used to sit in directly, and it is load-bearing now that the
+         field shares a wrapper with the accent layer measured against it. */
+      "block w-full resize-none border-0 bg-transparent px-1 py-1 text-prose font-sans text-bright placeholder:text-dim outline-none disabled:opacity-40",
       lg() ? "min-h-20" : "min-h-8",
     );
+
+  /** The field's text split into plain runs and accent-coloured tokens.
+   *
+   *  A textarea cannot colour part of its own value, so the standard arrangement is used:
+   *  this layer sits directly behind a text-transparent field, painting the same string
+   *  with the same metrics, and the operator sees the caret and selection of the real
+   *  control over the colours of this one.
+   *
+   *  Everything about it is therefore metric-bound to the field, which is why it shares
+   *  `fieldClass()` rather than restating the typography: any difference in font, size,
+   *  padding or wrapping shows up immediately as the colour drifting off the words. It
+   *  also has to render a trailing newline as a space, since a `<div>` collapses one that
+   *  a textarea shows — without it the last line scrolls out of step.
+   */
+  const highlighted = () => {
+    const value = text();
+    const spans = props.menu ? tokenSpans(value) : [];
+    const runs: { text: string; token: boolean }[] = [];
+    let at = 0;
+    for (const span of spans) {
+      if (span.start > at)
+        runs.push({ text: value.slice(at, span.start), token: false });
+      runs.push({ text: value.slice(span.start, span.end), token: true });
+      at = span.end;
+    }
+    if (at < value.length) runs.push({ text: value.slice(at), token: false });
+    return runs;
+  };
+
+  const highlightLayer = (
+    <Show when={props.menu}>
+      <div
+        aria-hidden="true"
+        ref={(el) => {
+          highlightRef = el;
+        }}
+        class={cx(
+          fieldClass(),
+          // Behind the field, exactly on top of it, and inert: the real control takes
+          // every click, caret move and selection.
+          "pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words text-bright",
+        )}
+      >
+        <For each={highlighted()}>
+          {(run) => (
+            <Show when={run.token} fallback={run.text}>
+              <span class="text-accent">{run.text}</span>
+            </Show>
+          )}
+        </For>
+        {/* A textarea shows a trailing newline; a div collapses it. */}
+        {text().endsWith("\n") ? " " : ""}
+      </div>
+    </Show>
+  );
 
   const textarea = (
     <textarea
       ref={field}
       value={text()}
-      onInput={(e) => setText(e.currentTarget.value)}
+      onInput={(e) => {
+        setText(e.currentTarget.value);
+        syncToken();
+      }}
       onKeyDown={onKeyDown}
+      // Arrow keys and clicks move the caret without changing the text, and moving back
+      // into a half-typed `/rev` is the same situation as having just typed it.
+      onKeyUp={syncToken}
+      onClick={syncToken}
+      // The menu hangs off the field's content, so it goes when the field does. This is
+      // also what replaces the backdrop `FloatingPanel` would otherwise draw over the
+      // whole screen — see its `passive` prop.
+      onBlur={dismissMenu}
+      onScroll={(e) => {
+        if (highlightRef) highlightRef.scrollTop = e.currentTarget.scrollTop;
+      }}
       onPaste={props.attachments ? drop.pasteHandlers.onPaste : undefined}
       rows={lg() ? 3 : 1}
       placeholder={props.placeholder ?? "Message the agent…"}
       disabled={props.disabled}
-      class={fieldClass()}
+      role={props.menu ? "combobox" : undefined}
+      aria-expanded={props.menu ? menuOpen() : undefined}
+      aria-controls={props.menu ? "composer-menu" : undefined}
+      // Focus stays here the whole time, so this is the only thing that tells a screen
+      // reader which row the arrows are on.
+      aria-activedescendant={menuOpen() ? (activeId() ?? undefined) : undefined}
+      class={cx(
+        fieldClass(),
+        // The field's own glyphs go transparent so the coloured layer behind shows
+        // through; the caret keeps a colour of its own, or typing would be invisible.
+        // `relative` so it stacks above that layer rather than under it.
+        props.menu && "relative bg-transparent text-transparent caret-bright",
+      )}
     />
   );
 
@@ -434,16 +683,47 @@ export function Composer(props: ComposerProps): JSX.Element {
      top so the strip meets the card's own edges instead of overhanging them, and
      it keeps `shadow-1`: the bloom's hairline ring went with it, and in Paper
      that ring is the only thing separating a white card from a white page. */
+  // Portalled to the body by `FloatingPanel`, so it sits outside the composer's own
+  // stacking context and outside the transcript's `overflow-auto` — the two things that
+  // would otherwise clip it. Mounted inside the card only so it shares the card's
+  // lifetime.
+  const menu = (
+    <Show when={props.menu}>
+      <ComposerMenu
+        open={menuOpen()}
+        groups={groups()}
+        anchor={anchor}
+        activeId={activeId()}
+        onPick={pick}
+        onActivate={(item) => setActiveId(item.id)}
+      />
+    </Show>
+  );
+
   const body = (
     <>
       {dropOverlay}
+      {menu}
       <Show when={props.title}>
         <Text variant="label" tone="dim">
           {props.title}
         </Text>
       </Show>
       {chips}
-      {textarea}
+      {/* The two are one control: the layer paints the words, the field owns the caret,
+          and they must occupy the same box for the colours to land on the right glyphs.
+          The gap this wrapper would otherwise add is closed on the field itself (`block`
+          in `fieldClass`), not here: a textarea is inline-block, so a block wrapper puts
+          ~5px of baseline descender under it where the surrounding flex column never did.
+          The layer is `inset-0` of this wrapper, so those 5px made it taller than the
+          field, and past six rows the two scrolled by different amounts and the colours
+          slid off the words. Closing it with `flex` here instead looked equivalent and is
+          not: a stretched flex item breaks the `height:auto` measurement the autosize
+          takes, and the field collapses to one row. */}
+      <div class="relative">
+        {highlightLayer}
+        {textarea}
+      </div>
       <div class="flex items-center justify-between gap-2">
         <div class="flex min-w-0 items-center gap-1">
           {attachBtn}

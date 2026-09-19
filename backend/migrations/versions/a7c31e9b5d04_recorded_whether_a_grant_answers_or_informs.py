@@ -1,7 +1,7 @@
 """Recorded whether an approval grant answers or only informs
 
 Revision ID: a7c31e9b5d04
-Revises: e1b7c0a3f52d
+Revises: 6ff96c574e3b
 Create Date: 2026-09-17 12:00:00.000000
 
 """
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = 'a7c31e9b5d04'
-down_revision: Union[str, Sequence[str], None] = 'e1b7c0a3f52d'
+down_revision: Union[str, Sequence[str], None] = '6ff96c574e3b'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

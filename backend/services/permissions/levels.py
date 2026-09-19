@@ -66,8 +66,16 @@ from services.tool_sensitivity import (
 #: restored backup or a row written by another build must still load.
 type PermissionLevel = Literal["plan", "manual", "edit", "auto"]
 
-#: The four, as a set to validate against. Written once here so no caller re-lists them.
-PERMISSION_LEVELS: frozenset[str] = frozenset({"plan", "manual", "edit", "auto"})
+#: The four **in the order they are offered**, strictest first. Presentation order, not a
+#: comparison: ``edit`` and ``auto`` share a ceiling and differ only in who answers at it,
+#: so nothing should read a ``>`` into the last step. A tuple rather than the set below
+#: because a set has no order to offer — a picker built from one lists the levels
+#: differently on each boot, string hashing being randomised per process.
+PERMISSION_LADDER: tuple[PermissionLevel, ...] = ("plan", "manual", "edit", "auto")
+
+#: The four, as a set to validate against. Derived from the ladder so no caller re-lists
+#: them and the two cannot disagree.
+PERMISSION_LEVELS: frozenset[str] = frozenset(PERMISSION_LADDER)
 
 #: What a mode that names no level of its own starts a thread at, and what a caller with
 #: no level to pass gets.

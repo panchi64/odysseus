@@ -6,7 +6,7 @@ import {
   untrack,
   type JSX,
 } from "solid-js";
-import { Composer, cx, toast } from "~/ui";
+import { Composer, cx, toast, type ComposerMenuItem } from "~/ui";
 import {
   conversationGrantsRevision,
   consumePendingDraft,
@@ -43,6 +43,9 @@ import { createBranchState } from "../branchState";
 import { createSubagentsState } from "../subagentsState";
 import { createTranscriptFollow } from "../transcriptScroll";
 import { createRenameConversation } from "../components/RenameConversationModal";
+import { createComposerCommands } from "../commands/useComposerCommands";
+import { createComposerFileRefs } from "../files/useFileRefs";
+import { isPermissionLevel } from "../model";
 
 /** The conversation's reading measure. A line of text on a 27" display is
  *  unreadable at full width long before it is uncomfortable, and the composer
@@ -158,8 +161,20 @@ export function ChatRoomScreen(): JSX.Element {
       // Only adopt an explicit pick — an empty draft (discovery not yet resolved
       // on the overview) must not clobber the operator's sticky selection.
       if (draft.model) void setSelectedModel(draft.model);
+      // A `/level` picked on the launchpad, applied before the thread is created rather
+      // than after — the same relay the room's own control calls, so the level the
+      // operator chose is the one this first turn actually runs at.
+      if (draft.permissionLevel) setPermission(draft.permissionLevel);
       setCurrentId(null);
-      queueMicrotask(() => void stream.send(draft.text, draft.attachmentIds));
+      queueMicrotask(
+        () =>
+          void stream.send(draft.text, draft.attachmentIds, {
+            // Whatever `/` command the launchpad staged. Without this the room would
+            // send the operator's literal `/reviewer …` with nothing saying what that
+            // token was, and the turn would quietly mean less than it said.
+            command: draft.command ?? null,
+          }),
+      );
       markWarmResolved();
       return;
     }
@@ -291,6 +306,80 @@ export function ChatRoomScreen(): JSX.Element {
   // either the first-turn auto-title (stream) or a manual regenerate.
   const titleWorking = () => stream.titlePending() || actions.retitling();
 
+  // Which project this composer is about, for both menus. The saved thread's own, else
+  // the one staged in the rail for the next code thread — the same pair the send gate and
+  // the header subtitle already read, so neither picker can be browsing a directory the
+  // thread is not about to work in.
+  //
+  // Derived once and passed to both rather than resolved twice: the `@` picker lists that
+  // checkout's files and the `/` picker offers the commands that checkout declares, and a
+  // pair that disagreed would put a file from one tree beside a command from another.
+  const composerProjectId = (): string | null =>
+    currentSummary()?.projectId ??
+    (currentId() === null ? codeProjectId() : null) ??
+    null;
+
+  // The composer's `/` menu. Every action it can fire is a relay this room already owns
+  // — a command is a second way to reach a control, never a second implementation of
+  // one. `fork` takes the newest turn, which is what "fork from here" means when the
+  // operator is typing rather than pointing at a message.
+  const commands = createComposerCommands(mode, currentId, composerProjectId, {
+    compact: () => void stream.compactNow(),
+    fork: () => {
+      const last = stream.messages.at(-1);
+      if (last) void actions.fork(last.id);
+    },
+    retitle: () => void actions.retitle(),
+    newThread: clearThread,
+    setPermissionLevel: (level) => {
+      if (isPermissionLevel(level)) setPermission(level);
+      else toast.error(`"${level}" isn't a permission level.`);
+    },
+  });
+
+  // The `@` menu, over the thread's own filesystem. Offered only in a worktree mode —
+  // a sandbox thread works in a container holding nothing the operator has ever seen.
+  const fileRefs = createComposerFileRefs(mode, composerProjectId, currentId);
+
+  /** Both menus behind the Composer's one slot.
+   *
+   *  The Composer reads the token and reports it to both; each answers for its own
+   *  trigger and returns nothing for the other, so exactly one is ever open. Merging them
+   *  here rather than teaching the Composer about two controllers keeps the design system
+   *  ignorant of what a `/` and an `@` mean, which is the whole point of the seam. */
+  const composerMenu = {
+    groups: () => [...commands.groups(), ...fileRefs.groups()],
+    onQuery: (token: Parameters<typeof commands.onQuery>[0]) => {
+      commands.onQuery(token);
+      fileRefs.onQuery(token);
+    },
+    // Routed by the row's own id prefix rather than by trying one and falling through:
+    // an action command legitimately returns null (it ran, and the field clears), and a
+    // fallthrough would read that as "not mine" and ask the file picker about it.
+    onPick: (item: ComposerMenuItem) =>
+      item.id.startsWith("file-")
+        ? fileRefs.onPick(item)
+        : commands.onPick(item),
+    onClear: () => {
+      commands.clear();
+      fileRefs.clear();
+    },
+  };
+
+  /** Send, once both staged sets have been read against what was actually typed.
+   *
+   *  An action resolves to nothing sent: the relay has already run (or just ran, for the
+   *  one that carries an argument), and there is no message for the model. */
+  const sendTurn = (text: string, attachmentIds: string[]): void => {
+    const intent = commands.consume(text);
+    const refs = fileRefs.consume(text);
+    if (intent.kind === "acted") return;
+    void stream.send(text, attachmentIds, {
+      command: intent.command,
+      fileRefs: refs,
+    });
+  };
+
   return (
     <div ref={viewport.rowRef} class="flex h-full min-h-0">
       {/* Conversation — the thread list now lives in the app rail's RECENTS, so
@@ -386,7 +475,8 @@ export function ChatRoomScreen(): JSX.Element {
                 autofocus
                 streaming={stream.sending()}
                 onStop={() => void stopRun()}
-                onSend={(text, ids) => void stream.send(text, ids)}
+                onSend={sendTurn}
+                menu={composerMenu}
                 // The backend refuses a turn it can't keep inside a context window; this
                 // is the same stop, arriving before the message is committed to it.
                 sendBlocked={sendBlocked()}

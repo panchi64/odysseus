@@ -19,6 +19,7 @@ run-submission path.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -42,7 +43,8 @@ from runs import (
     RunRegistry,
 )
 from runs.registry import _UNSET
-from services.conversations import ConversationBinding, ConversationStore
+from services.commands import Invocation, expand
+from services.conversations import ConversationBinding, ConversationStore, TurnStamps
 from services.modes import DEFAULT_MODE, ModeId, mode_spec
 from services.permissions import PermissionLevel
 from services.registry import ModelRegistry
@@ -71,6 +73,28 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 _CONVERSATION_BUSY_DETAIL = "A response is already in progress in this conversation"
 
 
+class CommandInvocation(BaseModel):
+    """Which slash command was picked, and what the operator typed after it."""
+
+    #: A bare name (``reviewer``) or a qualified one (``agent:reviewer``). Resolved against
+    #: the same narrowed catalog the picker was served, so a command this thread is not
+    #: offered cannot be reached by typing its name.
+    name: str
+    argument: str = ""
+
+    def recorded(self) -> Invocation:
+        """The wire shape as the fact that gets written onto the turn.
+
+        Two near-identical two-field records, kept apart on purpose: this one is a
+        client's claim and is validated as one, while :class:`~services.commands.Invocation`
+        is what the store stamps and what a regenerate reads back. Collapsing them would
+        put a Pydantic model from a route into the conversation store's signature — and
+        into the sealed blob's metadata — which is the wrong direction for a dependency
+        that already runs the other way.
+        """
+        return Invocation(name=self.name, argument=self.argument)
+
+
 class ChatCreate(BaseModel):
     prompt: str
     conversation_id: str | None = None  # continue an existing conversation
@@ -82,6 +106,11 @@ class ChatCreate(BaseModel):
     # uploads first via POST /uploads, then sends the ids here). They're handed to the
     # model for this turn and enrolled in the knowledge base via the upload pipeline.
     attachment_ids: list[str] = []
+    # Files the operator named with `@` in the composer, relative to the run's workspace.
+    # A **reference only**: the turn names the paths and the model reads what it wants
+    # with the file tools. Nothing here is read on the way in, so a reference cannot go
+    # stale in history the way a pasted copy would.
+    file_refs: list[str] = []
     # When creating a fresh conversation, mark it a scratch thread the listing
     # hides (the side-by-side compare panes set this). Ignored when continuing an
     # existing conversation.
@@ -110,6 +139,12 @@ class ChatCreate(BaseModel):
     # warning doesn't outlive the thing it was asking for. Ignored on a new
     # conversation — nothing there can be blocked yet.
     continues_message_id: str | None = None
+    # A slash command the operator picked in the composer. The prompt above is still their
+    # literal `/review the auth route` — this says which command that token was, so the
+    # backend can resolve it and expand it. Deliberately *not* a pre-expanded prompt: what
+    # a command means is the backend's to decide, and a client that sent the expansion
+    # would be sending a turn the operator never wrote.
+    command: CommandInvocation | None = None
 
 
 class RegenerateCreate(BaseModel):
@@ -314,6 +349,14 @@ def compose_turn(
     binding: ConversationBinding | None = None,
     owner_id: str = OPERATOR_ID,
     attachment_ids: list[str] | None = None,
+    file_refs: list[str] | None = None,
+    # The expansion of a slash command this turn was sent with, already resolved by the
+    # caller. Rides the tail of the turn's user prompt and is stripped before the turn is
+    # recorded, so what persists is the `/name` the operator typed.
+    turn_context: str = "",
+    # …and the invocation that produced it, which *is* written down — so a regenerate can
+    # ask what `/reviewer` means now rather than replaying a block built a week ago.
+    command: Invocation | None = None,
     ephemeral: bool = False,
     auto_compact: AutoCompactPolicy | None = None,
     request_limit: int | None = None,
@@ -365,6 +408,9 @@ def compose_turn(
         conversation_id=conversation_id,
         uploads=uploads,
         attachment_ids=attachment_ids,
+        file_refs=file_refs,
+        turn_context=turn_context,
+        command=command,
         vision=vision,
         # The operator's conversation-compaction policy; absent ⇒ the config defaults.
         auto_compact=auto_compact,
@@ -407,6 +453,129 @@ def compose_turn(
     return ChatCreated(run_id=run.id, conversation_id=conversation_id)
 
 
+async def _command_context(
+    request: Request,
+    command: Invocation | None,
+    conversation_id: str,
+    binding: ConversationBinding,
+    disabled_tools: frozenset[str],
+) -> str:
+    """The tail block a picked command contributes to this turn, or ``""``.
+
+    **A name that resolves to nothing is not an error.** The catalog narrows on facts that
+    move between the picker's read and the send — a skill unpublished in another tab, a
+    tool the operator just switched off — and failing the turn over one would throw away
+    the message they typed to punish them for a race they did not cause. The prompt still
+    carries their literal `/name`, which is a perfectly legible thing for the model to
+    receive and ask about, so the turn goes through with nothing added.
+
+    The same latitude is what makes **regenerate** honest rather than merely convenient.
+    A regenerate arrives here with the invocation read back off the turn it is re-answering,
+    and resolves it *now*: an edited template takes effect, an unpublished skill quietly
+    stops expanding, and neither outcome is a failure — re-answering a turn has always
+    meant re-running it against the world as it currently stands.
+    """
+    if command is None:
+        return ""
+    spec = await deps.commands(request).resolve(
+        OPERATOR_ID,
+        command.name,
+        mode=binding.mode,
+        has_conversation=True,
+        disabled_tools=disabled_tools,
+        # The same tree the picker listed from, resolved the same way — a project's own
+        # `/release-notes` must mean the same thing on the way out as it did in the menu.
+        root=await deps.composer_root(request, binding.project_id, conversation_id),
+    )
+    return expand(spec, command.argument) if spec is not None else ""
+
+
+def _still_named(stamps: TurnStamps, prompt: str) -> TurnStamps:
+    """The parts of a turn's stamps its edited text still claims.
+
+    One rule, the composer's: **the text is the turn of record.** The `/` menu already
+    applies it on the way out — a command staged and then typed away does not ride the send
+    — and an edit is the same question asked later, about a message the operator has just
+    rewritten. So a command survives while the prompt still opens with its name, and a
+    reference survives while the prompt still contains its `@path`.
+
+    Matching the *bare* name as well as the qualified one, because a client may have sent
+    either and the operator sees only what they typed.
+
+    **Both halves match on a whole token, never on a prefix.** A bare ``startswith`` would
+    read ``/reviewer the auth`` as the command ``review`` carrying the argument
+    ``er the auth`` — the name is kept *and* its argument is sliced at the wrong place, so
+    a template runs on text nobody wrote. The same applies to a path: ``@src/a.ts`` is not
+    named by a message that says ``@src/a.tsx``. So the character after the token has to
+    end it, which for a command means whitespace or end of prompt, and for a path means
+    anything that could not be part of the path itself.
+
+    **The argument is re-read from the edited text, never carried over.** The name says
+    *which* command; everything after it is the operator's own words, and those are the
+    half an edit exists to change. Keeping the stamped argument would launch a sub-agent on
+    the brief that was corrected, under a turn that visibly says otherwise.
+    """
+    typed = prompt.strip()
+    command = stamps.command
+    if command is not None:
+        # Longest first, so a qualified stamp reads its own argument rather than the bare
+        # form swallowing the prefix.
+        token = next(
+            (
+                f"/{name}"
+                for name in sorted(
+                    {command.name, command.name.rpartition(":")[2]}, key=len, reverse=True
+                )
+                if _opens_with(typed, f"/{name}")
+            ),
+            None,
+        )
+        command = (
+            Invocation(name=command.name, argument=typed[len(token) :].strip())
+            if token is not None
+            else None
+        )
+    return TurnStamps(
+        command=command,
+        file_refs=[path for path in stamps.file_refs if _names_path(prompt, path)],
+    )
+
+
+def _opens_with(text: str, token: str) -> bool:
+    """``text`` begins with ``token`` and ends it there — not part of a longer name."""
+    return text.startswith(token) and (
+        len(text) == len(token) or text[len(token)].isspace()
+    )
+
+
+#: The run of characters after a token that could still be part of the same path.
+#: Deliberately broader than the path characters a picker offers: the question is whether
+#: the text names *this* file, and a token that continues into anything name-shaped names a
+#: different one.
+_PATH_RUN = re.compile(r"[^\s\"'`,;:)\]}>]*")
+
+
+def _names_path(text: str, path: str) -> bool:
+    """``text`` contains ``@path`` as a whole token rather than as the head of a longer one.
+
+    **A trailing dot is punctuation, not an extension.** "please read @src/a.ts." is an
+    ordinary sentence and the commonest way a path is written in one, so asking only
+    "is the next character path-shaped" would drop the reference on a full stop while
+    correctly dropping it on ``.bak``. The two are told apart by what follows the dots.
+
+    Mirrored in the composer (``features/chat/files/useFileRefs.namesPath``) — the same
+    question asked at two moments, and the two have to agree.
+    """
+    token = f"@{path}"
+    start = text.find(token)
+    while start != -1:
+        run = _PATH_RUN.match(text, start + len(token)).group()
+        if not run or run.strip(".") == "":
+            return True
+        start = text.find(token, start + 1)
+    return False
+
+
 async def _submit_turn(
     request: Request,
     *,
@@ -414,6 +583,8 @@ async def _submit_turn(
     conversation_id: str,
     models: tuple[Model, Model, ModelSettings | None, int | None, bool, int | None],
     attachment_ids: list[str] | None = None,
+    file_refs: list[str] | None = None,
+    command: Invocation | None = None,
     ephemeral: bool = False,
 ) -> ChatCreated:
     """Gather this route's resources from the `Request` and hand off to `compose_turn`.
@@ -424,10 +595,28 @@ async def _submit_turn(
     # Read once and used twice — the mode decides which tools belong in this run as well
     # as where its file work happens, and the two must never be resolved separately.
     binding = await deps.store(request).binding(conversation_id)
+    # `models[4]` is the resolved main model's vision fact — the same one `compose_turn`
+    # passes to the engine for attachments. A tool that answers with an image is withheld
+    # from a model that can't read one.
+    #
+    # Hoisted out of the call below because the command catalog needs it too: a `/reviewer`
+    # is an offer to launch a sub-agent, and where `subagents_launch` has been withheld
+    # from this run there is nothing to offer. Resolving it twice would let the command the
+    # operator picked and the tools the turn actually has disagree.
+    disabled = await deps.disabled_tools(request, binding.mode, vision=models[4])
     return compose_turn(
         prompt=prompt,
         conversation_id=conversation_id,
         models=models,
+        # Resolved here rather than in the engine, for the same reason the enabled-tool
+        # policy is: it is a persisted read, and `compose_turn` is the synchronous step
+        # after the caller has already mutated the conversation.
+        turn_context=await _command_context(
+            request, command, conversation_id, binding, disabled
+        ),
+        # Written onto the turn as well as spoken into it — see `compose_turn`. Harmless on
+        # a regenerate, which records no user request for it to land on.
+        command=command,
         # The app's one agent-facing capability bag — assembled at startup from every
         # feature manifest's `capabilities` export, so a turn never enumerates handles.
         capabilities=deps.capabilities(request),
@@ -440,14 +629,10 @@ async def _submit_turn(
         dormant=deps.dormant_summaries(request),
         instruction_providers=deps.instruction_providers(request),
         prompt_context_providers=deps.prompt_context_providers(request),
-        # `models[4]` is the resolved main model's vision fact — the same one
-        # `compose_turn` passes to the engine for attachments. A tool that answers with
-        # an image is withheld from a model that can't read one.
-        disabled_tools=await deps.disabled_tools(
-            request, binding.mode, vision=models[4]
-        ),
+        disabled_tools=disabled,
         binding=binding,
         attachment_ids=attachment_ids,
+        file_refs=file_refs,
         ephemeral=ephemeral,
         # Resolved here, not at each caller, for the same reason as the request limit
         # below: send, regenerate and edit all want it and none of them should have to
@@ -511,16 +696,24 @@ def _enqueue_steering(
     """Queue a mid-run message into the conversation's live chat run, or None when
     the busy conversation can't take one (the claim is held by a regenerate/edit
     with no run registered yet, the run isn't a chat turn, or the send carries
-    attachments — steering is text-only). Synchronous end to end: no ``await``
-    between finding the run and enqueueing, so the run can't reach terminal (or
-    drain) in between.
+    attachments or a command — steering is text-only). Synchronous end to end: no
+    ``await`` between finding the run and enqueueing, so the run can't reach terminal
+    (or drain) in between.
+
+    **A command is refused rather than queued**, and that is not an oversight. A queued
+    message is injected verbatim: there is no prelude around it to resolve a command
+    through, so `/deploy prod` would reach the model as the literal token. Expanding
+    before enqueueing is the alternative and is worse — the operator can edit a queued
+    message (`PATCH /runs/{id}/messages/{mid}`), and they would then be editing text
+    they never wrote. The 409 sends it down the ordinary path instead, where the whole
+    composition exists.
 
     "Is a chat turn" is membership in the composed kinds, not equality with ``chat``: a
     scheduled task's run and a research thread the agent opened both drive a conversation
     the operator can open and both drain the queued-message inbox, so both take steering.
     Only a run some other orchestrator submitted — which would never read the queue — is
     refused."""
-    if body.attachment_ids:
+    if body.attachment_ids or body.command or body.file_refs:
         return None
     run = registry.active_run_for(conversation_id, OPERATOR_ID)
     if run is None or run.kind not in CHAT_TURN_KINDS:
@@ -647,6 +840,8 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
             conversation_id=conversation_id,
             models=models,
             attachment_ids=body.attachment_ids,
+            file_refs=body.file_refs,
+            command=body.command.recorded() if body.command else None,
             ephemeral=body.ephemeral,
         )
         # Only once the run is submitted — a rejected send leaves the operator with the
@@ -663,7 +858,12 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
 async def regenerate(body: RegenerateCreate, request: Request) -> ChatCreated:
     """Re-answer a turn: drop back to the user request that produced ``message_id``
     and run again (no new prompt), recording the answer as a new version alongside
-    the old one. An optional model override regenerates with a different model."""
+    the old one. An optional model override regenerates with a different model.
+
+    A turn sent with a slash command is re-answered **with that command**, resolved again
+    rather than replayed. The history a regenerate re-runs has only the operator's literal
+    `/reviewer …` in it — the expansion was tail context and left with the turn — so
+    without this the second answer would be to a different question than the first."""
     store = deps.store(request)
     if not await store.exists(body.conversation_id, OPERATOR_ID):
         raise HTTPException(status_code=404, detail="conversation not found")
@@ -683,6 +883,12 @@ async def regenerate(body: RegenerateCreate, request: Request) -> ChatCreated:
             prompt=None,
             conversation_id=body.conversation_id,
             models=models,
+            # Read *after* `regenerate_point`, which is what puts the turn being
+            # re-answered at the active leaf — before it, this would report whichever
+            # turn the thread happened to end on. The `@` references need no such
+            # rescue: their marker persisted with the prompt and is already in the
+            # history this replays.
+            command=(await store.turn_stamps(body.conversation_id)).command,
         )
     finally:
         deps.release_conversation(request, body.conversation_id)
@@ -692,7 +898,15 @@ async def regenerate(body: RegenerateCreate, request: Request) -> ChatCreated:
 async def edit(body: EditCreate, request: Request) -> ChatCreated:
     """Re-ask a changed request: branch from the edited user turn's parent and run
     with the new prompt, recording a new version of that turn (and a fresh answer)
-    beside the original."""
+    beside the original.
+
+    **The turn's command and its `@` references are carried forward, as far as the new text
+    still names them.** The inline edit box is a plain textarea — there is no picker in it —
+    so a client cannot re-send either, and dropping them would mean fixing a typo in
+    `/reviewer chekc the auth route` silently turned it into an ordinary message. The rule
+    applied is the composer's own: the **text is the turn of record**, so a stamp survives
+    only while the edited prompt still carries its token. Deleting the `/name` is how the
+    operator says they no longer meant it."""
     if not body.prompt.strip() and not body.attachment_ids:
         raise HTTPException(status_code=422, detail="prompt must not be empty")
     await _validate_attachments(request, body.attachment_ids)
@@ -704,6 +918,10 @@ async def edit(body: EditCreate, request: Request) -> ChatCreated:
     deps.claim_conversation(request, body.conversation_id)
     try:
         models = await _resolve_models(request, body.endpoint_id, body.model)
+        # Read before `edit_point`, which reseats the leaf to this request's *parent* —
+        # after it, the trailing request is the previous turn.
+        stamped = await store.turn_stamps(body.conversation_id, body.message_id)
+        stamps = _still_named(stamped, body.prompt)
         if not await store.edit_point(body.conversation_id, body.message_id):
             raise HTTPException(status_code=404, detail="message not found")
         return await _submit_turn(
@@ -712,6 +930,8 @@ async def edit(body: EditCreate, request: Request) -> ChatCreated:
             conversation_id=body.conversation_id,
             models=models,
             attachment_ids=body.attachment_ids,
+            file_refs=stamps.file_refs,
+            command=stamps.command,
         )
     finally:
         deps.release_conversation(request, body.conversation_id)
