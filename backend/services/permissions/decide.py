@@ -145,6 +145,13 @@ class ReviewOutcome:
     #: against the grants as they stand then (``routes/runs.py``). An allow the review
     #: reached on its own grounds has nothing to re-check and must not be re-checked.
     by_grant: bool = False
+    #: Whether that re-check has to find the grant still at its **wider** width. Set only
+    #: where the whole-tool width is what did the work — it cleared an act nobody can undo
+    #: — because that is the one allow a narrower surviving grant cannot stand in for. Every
+    #: other grant-driven allow is re-checked as it always was, by whether any live grant
+    #: still covers the call: at Manual and Edit either width settles it outright, so
+    #: demanding the wider one there would deny a call the level's own rule still permits.
+    needs_whole_tool: bool = False
 
 
 @dataclass
@@ -214,9 +221,21 @@ async def review(
     A ``"tool"`` grant *is* that answer, and is read as one. The operator was offered the
     wider width in its own words — this tool, everything it runs, for this thread — and
     picked it, so the review takes it as their authorization outright rather than only
-    where it found a gap. What it still cannot do is make an act nobody can undo into one
-    somebody can: a ``too_destructive`` verdict parks at both widths, because that is not a
-    question about authorization (:func:`_verdict_decision`).
+    where it found a gap. **It reaches the risk axis too**, and is the only thing that
+    does: a ``too_destructive`` verdict runs under a whole-tool grant and parks under
+    every other (:func:`_verdict_decision`).
+
+    That is the one place the level hands an unrecoverable act over without showing it,
+    and it is deliberate. A tool whose act cannot be *read* by the review — arbitrary
+    script in the operator's own browser is the case that forced this, since the projection
+    withholds the script precisely so a password cannot reach the reviewer — draws the same
+    contentless verdict on every call, so it would be re-asked forever however the operator
+    answered. Offering a standing yes that can never take effect is worse than honouring
+    the one they gave: it is the same promise the card makes, and the same promise Manual
+    and Edit have always kept, where a grant of either width settles the call before the
+    risk axis is consulted at all. A ``"command"`` grant is not enough for this — agreeing
+    to an act is not agreeing that the act is recoverable — and neither is a reviewer's own
+    reading of the turn.
 
     **Both widths are inputs to a review that *ran*.** Where there is no reviewer at all
     there is nothing for a grant to authorize, so the call parks like every other
@@ -229,10 +248,10 @@ async def review(
     (``reviewer.py``):
 
     - the deterministic stage's approval **runs**, with no model call at all;
-    - ``too_destructive`` **parks**, whatever the operator is judged to have asked for —
-      an unrecoverable act is not something a conversation can authorize into being
-      recoverable, and it is the one act they most need to be shown rather than told
-      about afterwards;
+    - ``too_destructive`` **parks**, unless the operator holds a whole-tool grant over the
+      tool — it is the one act they most need to be shown rather than told about
+      afterwards, and the only thing that outranks that is their own standing word,
+      given in the width whose copy says so;
     - ``low`` risk **runs** unless the operator said no;
     - ``high`` risk runs **only** on an explicit yes;
     - everything else **parks**, and so does every way this can fail.
@@ -277,25 +296,40 @@ async def review(
     # have to be reading the same authorization, and re-deriving it in each was two places
     # for the grant's rule to be stated in.
     authorization = _authorization(verdict, granted=granted)
-    decision = _verdict_decision(verdict, authorization=authorization)
+    decision = _verdict_decision(verdict, authorization=authorization, granted=granted)
+    # The same verdict read with no grant at all. Derived once: it is what says whether the
+    # grant changed the answer, and re-deriving it per use was two spellings of one
+    # counterfactual. Both axes are reset, not just the authorization — a grant that
+    # cleared an unrecoverable act did so on the risk axis, and a counterfactual that left
+    # the width in place would not notice it.
+    without_grant = _verdict_decision(
+        verdict, authorization=verdict.authorization, granted="none"
+    )
+    # The one clearance the risk axis owes the operator an explicit account of.
+    unrecoverable = verdict.risk == "too_destructive" and decision is Decision.ALLOW
     return ReviewOutcome(
         decision,
         "reviewer",
         _verdict_reason(
             verdict,
-            grant=granted if authorization != verdict.authorization else "none",
+            grant=granted
+            if authorization != verdict.authorization or unrecoverable
+            else "none",
+            unrecoverable=unrecoverable,
         ),
         verdict,
         # Marked as the grant's only where the grant is what *changed* the answer — the
         # same verdict read without it parks. A low-risk act the review would have cleared
         # anyway does not become revocable for having a grant sitting beside it, and
         # marking it so would have the resume path deny a call the review approved.
-        by_grant=decision is Decision.ALLOW
-        and _verdict_decision(verdict, authorization=verdict.authorization) is not Decision.ALLOW,
+        by_grant=decision is Decision.ALLOW and without_grant is not Decision.ALLOW,
+        needs_whole_tool=unrecoverable,
     )
 
 
-def _verdict_decision(verdict: ReviewVerdict, *, authorization: Authorization) -> Decision:
+def _verdict_decision(
+    verdict: ReviewVerdict, *, authorization: Authorization, granted: GrantWidth
+) -> Decision:
     """The arithmetic, one branch per risk word.
 
     Written as a match on the *named* values rather than as a chain ending in an else,
@@ -304,14 +338,29 @@ def _verdict_decision(verdict: ReviewVerdict, *, authorization: Authorization) -
     have inherited the one branch that can return ALLOW on nothing more than an
     authorization. Unnamed risk parks, which is what the docstring above always said.
 
-    A standing grant enters through :func:`_authorization` and nowhere else: the verdict
-    object itself is left exactly as the model returned it, because it travels onto the
-    review row and onto the run's own event, and what the model concluded from the thread
-    is a different fact from what the operator said when they left the grant.
+    ``authorization`` is the collapsed axis :func:`_authorization` produces, and every
+    branch but the first runs on it alone. The verdict object itself is left exactly as
+    the model returned it, because it travels onto the review row and onto the run's own
+    event, and what the model concluded from the thread is a different fact from what the
+    operator said when they left the grant.
+
+    **``granted`` is taken separately, and only the ``too_destructive`` branch reads it.**
+    That branch needs to know *why* the authorization says yes, which the collapsed axis
+    cannot tell it: a reviewer inferring consent from the prose of a turn and the operator
+    ticking "everything this tool runs, without asking" both arrive here as
+    ``explicitly_yes``, and only the second may clear an act nobody can undo. So the width
+    is read at first hand — ``"tool"`` is the operator's own word, given under copy that
+    says what it costs, and it is the single thing that moves the risk axis. A
+    ``"command"`` grant does not: it names one act, and the operator agreeing to an act is
+    not them agreeing that the act is recoverable.
+
+    Unrecoverability is otherwise still absolute. With no whole-tool grant this branch
+    parks exactly as it always has, which is what keeps a tool nobody granted — and every
+    installation where the operator never ticks the wider box — on the old rule.
     """
     match verdict.risk:
         case "too_destructive":
-            return Decision.ASK
+            return Decision.ALLOW if granted == "tool" else Decision.ASK
         case "low":
             return Decision.ASK if authorization == "explicitly_no" else Decision.ALLOW
         case "high":
@@ -336,8 +385,13 @@ def _authorization(verdict: ReviewVerdict, *, granted: GrantWidth) -> Authorizat
     width is only ever written because the operator picked it under copy that says what it
     does — everything this tool runs, for this thread, without being asked — so a reviewer
     inferring a refusal from the prose of the turn is not a more recent word than the one
-    they typed into the card. The risk axis is untouched either way, which is where the act
-    nobody can undo still stops (:func:`_verdict_decision`).
+    they typed into the card.
+
+    What this function produces is only ever the authorization axis. The whole-tool width
+    also reaches the *risk* axis, and it does so in :func:`_verdict_decision` from the
+    width at first hand rather than through the ``explicitly_yes`` this returns — because
+    a reviewer that inferred an explicit yes from the turn must not clear an unrecoverable
+    act, and once the two are collapsed into one word that distinction is gone.
     """
     if granted == "tool":
         return "explicitly_yes"
@@ -346,7 +400,9 @@ def _authorization(verdict: ReviewVerdict, *, granted: GrantWidth) -> Authorizat
     return verdict.authorization
 
 
-def _verdict_reason(verdict: ReviewVerdict, *, grant: GrantWidth) -> str:
+def _verdict_reason(
+    verdict: ReviewVerdict, *, grant: GrantWidth, unrecoverable: bool = False
+) -> str:
     """The row's account of the ruling — the reviewer's two axes as it read them, and the
     grant named separately where one supplied the authorization. Stated apart rather than
     folded together because "the model found you had asked for this" and "you had already
@@ -359,9 +415,22 @@ def _verdict_reason(verdict: ReviewVerdict, *, grant: GrantWidth) -> str:
     tool over for the thread. A row that read the same for both would hide, from the one
     surface that explains a decision, which of the two the operator is actually holding —
     and the wider one is the one they are most likely to want to go and revoke.
+
+    ``unrecoverable`` is the third sentence, and the one this row most owes the operator.
+    A whole-tool grant that supplied an authorization and a whole-tool grant that let an
+    act nobody can undo run without them are not the same event, and a row that described
+    both as "the authorization" would leave the only account of the decision silent about
+    the part of it they would most want to find. It is stated in place of that clause
+    rather than after it, because on such a row the authorization is no longer what is
+    doing the work.
     """
     reason = f"{verdict.risk} risk, authorization {verdict.authorization}"
-    if grant == "command":
+    if unrecoverable:
+        reason += (
+            "; this act cannot be undone and ran only because your standing grant "
+            "for this whole tool covers it"
+        )
+    elif grant == "command":
         reason += "; your standing grant for this command is the authorization"
     elif grant == "tool":
         reason += "; your standing grant for this whole tool is the authorization"

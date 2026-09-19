@@ -104,7 +104,20 @@ class GrantApproved(ToolApproved):
     The mark rides on the decision rather than beside it because the decision is the only
     part of the settled pile that crosses into the parked payload, and a provenance kept
     anywhere else would have to be carried through by hand at every hop that touches it.
+
+    ``needs_whole_tool`` is what the re-check has to *demand*, and it is deliberately not
+    the width the operator happened to be holding. Only one allow turns on that width —
+    the one where it cleared an act nobody can undo
+    (``services/permissions/decide.py``) — and only that one may be denied when a narrower
+    grant is all that survives a revocation. Recording the held width instead would break
+    Manual and Edit, where either width settles the call outright: a thread holding both a
+    whole-tool grant and a command one would measure "tool", and revoking only the former
+    would then deny a call the surviving command grant still fully answers for.
     """
+
+    #: Whether this allow rests on the *wider* width specifically. False for every allow a
+    #: grant of either width could have produced, which is all of them but one.
+    needs_whole_tool: bool = False
 
 
 async def settle_deferred(
@@ -143,9 +156,9 @@ async def settle_deferred(
     that for every command in the thread: it rides along as the authorization for the act
     it names and the review still runs. The wider grant — the one offered in its own words,
     this tool and everything it runs — *is* read as that answer, because it is the
-    operator's reply to the same question the review is asking. Neither is a way past the
-    judge, neither clears an act nobody can undo, and neither stands in for a review that
-    could not run at all, which parks whatever the grants say
+    operator's reply to the same question the review is asking, and it is the one thing
+    that also clears an act nobody can undo. Neither is a way past the judge, and neither
+    stands in for a review that could not run at all, which parks whatever the grants say
     (:func:`services.permissions.review`). An allow the grant's authorization is what
     produced is recorded as the grant's (:class:`GrantApproved`), so the resume path
     re-checks it if the operator revokes while the rest of the batch waits.
@@ -185,7 +198,15 @@ async def settle_deferred(
             # review that leant on the grant for its authorization counts as the second:
             # what cleared the call is revocable, so the resume path has to see that.
             by_grant = outcome is None or outcome.by_grant
-            settled[call.tool_call_id] = GrantApproved() if by_grant else ToolApproved()
+            settled[call.tool_call_id] = (
+                GrantApproved(
+                    # A level that settled the call itself (``outcome is None``) took
+                    # either width, so it demands neither back.
+                    needs_whole_tool=outcome is not None and outcome.needs_whole_tool
+                )
+                if by_grant
+                else ToolApproved()
+            )
         elif decision is Decision.BLOCK:
             # Only a level refuses outright; the review's own refusals became parks, since
             # an act nobody can undo is the one the operator most needs to be shown.

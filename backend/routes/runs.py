@@ -7,12 +7,14 @@ Run is a feature concern (the chat and agent routes), not here — those call
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai import ToolApproved, ToolDenied
+from pydantic_ai.messages import ToolCallPart
 
 from agent import ParkedTurn, build_resume_orchestrator
 from agent.gating import GrantApproved
@@ -31,7 +33,7 @@ from services.answers import (
     questions_of,
     render_answer,
 )
-from services.approval_grants import ONCE_ONLY_TOOLS, covered_by_grant, grant_scopes
+from services.approval_grants import ONCE_ONLY_TOOLS, GrantInfo, grant_scopes, grant_width
 from services.plan_mode import PLAN_SUBMIT_TOOL
 from services.settings_store import get_inactivity_timeout, get_wall_clock_timeout
 
@@ -289,6 +291,27 @@ class ApprovalOutcome(BaseModel):
     unscoped: list[str] = Field(default_factory=list)
 
 
+def _still_covered(
+    call: ToolCallPart, settled: GrantApproved, active: Sequence[GrantInfo]
+) -> bool:
+    """Whether the grant that settled this call still covers it, **at the width it needed**.
+
+    A grant can be revoked, or lapse, while the run waits — so an allow made without the
+    operator is re-checked before the turn resumes. What it is re-checked *against* is the
+    part this has to get right, because the two widths stopped buying the same thing: only
+    a whole-tool grant clears an act nobody can undo
+    (:func:`services.permissions.decide.review`).
+
+    That one allow is re-checked at the wider width and nothing less. Asking only "is this
+    covered at all" would, on a command-scoped tool, let a surviving grant over one command
+    stand in for the revoked whole-tool one — and that narrower grant is precisely the one
+    the risk axis refused. Every other grant-driven allow keeps the question it always had:
+    covered by a grant of either width, since either is what produced it.
+    """
+    width = grant_width(call.tool_name, call.args_as_dict(), active)
+    return width == "tool" if settled.needs_whole_tool else width != "none"
+
+
 @router.post("/{run_id}/approve", status_code=202)
 async def approve_run(
     run_id: str, body: ApprovalDecisions, request: Request
@@ -382,7 +405,10 @@ async def approve_run(
     )
     decisions: dict[str, ToolApproved | ToolDenied] = {}
     for call_id, outcome in parked.settled.items():
-        if call_id not in grant_approved:
+        # The same `isinstance` the set above is built from, rather than a lookup in it:
+        # the re-check below needs the grant's *width* off the decision, which only the
+        # narrowed type carries.
+        if not isinstance(outcome, GrantApproved):
             # Settled on grounds a grant has nothing to do with, and so nothing to
             # re-validate against: a refusal the permission level made when the turn
             # parked (the operator was never asked, and a grant recorded since covers a
@@ -392,8 +418,8 @@ async def approve_run(
             # call *because* of a grant is marked as the grant's (``agent/gating.py``) and
             # so is not in this branch: what cleared it is revocable, and is re-checked.
             decisions[call_id] = outcome
-        elif (call := call_by_id.get(call_id)) is not None and covered_by_grant(
-            call.tool_name, call.args_as_dict(), active
+        elif (call := call_by_id.get(call_id)) is not None and _still_covered(
+            call, outcome, active
         ):
             decisions[call_id] = ToolApproved()
         else:
