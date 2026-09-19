@@ -4,6 +4,7 @@ import { cx } from "../cx";
 
 export type TextVariant =
   | "micro"
+  | "plate"
   | "meta"
   | "label"
   | "body"
@@ -42,6 +43,12 @@ export type TextTone =
 const variantClass: Record<TextVariant, string> = {
   // ---- machine voice ----
   micro: "text-micro font-mono transition-none",
+  // An engraved panel legend. `plate` NAMES a region, `meta` REPORTS a state —
+  // the legend on the panel versus the value the panel is showing. The wider
+  // tracking is load-bearing: at the same measure as its own readout it stops
+  // reading as a legend.
+  plate:
+    "text-plate font-mono font-medium uppercase tracking-plate transition-none",
   meta: "text-meta font-mono font-medium uppercase tracking-label transition-none",
   // ---- interface voice ----
   label: "text-label font-sans font-medium",

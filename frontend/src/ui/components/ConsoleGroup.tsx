@@ -1,0 +1,60 @@
+import { Show, splitProps, type JSX } from "solid-js";
+import { cx } from "../cx";
+import { Text } from "../primitives/Text";
+
+export interface ConsoleGroupProps {
+  /** The engraved legend in the header band. Sentence or upper — `plate` uppercases. */
+  label: string;
+  /** Readout at the right of the header band: a count, a clock, a status flag. */
+  right?: JSX.Element;
+  /** Flush ruled rows. Give them no horizontal padding of their own — the group
+   *  supplies it, so every row's rules land on the same two columns. */
+  children: JSX.Element;
+  /** Rows run edge to edge and carry their own padding — for a `divide-y` list, whose
+   *  rules must reach the frame on both sides. Use the same `px-2` gutter the header
+   *  does, or the legend stops lining up with the rows it names. */
+  flush?: boolean;
+  class?: string;
+}
+
+/** A console group (§10.14): a frame, a header band, and flush ruled rows.
+ *
+ *  **This is the one shell allowed to be a box.** §7 makes a border the last resort
+ *  and this is the case it is last for: the rows inside are flush by construction, so
+ *  there is no gap for space to work in, and they must read as set *into* the panel
+ *  rather than lifted off it, so surface value cannot do it either. Both of the other
+ *  devices are unavailable, which is exactly when a real border is justified.
+ *
+ *  **What goes in one:** ruled rows and fixed cells — content read by scanning a
+ *  column, at the §3 tabular density. **What does not:** prose, forms, or a stack of
+ *  cards. `Panel` is still the default container and stays the default; reach for this
+ *  only when the content is genuinely a readout and the frame is what says where that
+ *  readout begins and ends.
+ *
+ *  Square by construction (§7): anything in a ruled grid takes `radius-0`, and rounding
+ *  the frame would leave the rows inside it mitred against a curve.
+ */
+export function ConsoleGroup(props: ConsoleGroupProps): JSX.Element {
+  const [local] = splitProps(props, [
+    "label",
+    "right",
+    "children",
+    "flush",
+    "class",
+  ]);
+  return (
+    <div class={cx("border border-line bg-surface", local.class)}>
+      <div class="flex items-center gap-2 border-b border-line px-2 py-1">
+        <Text variant="plate" tone="dim" class="min-w-0 truncate">
+          {local.label}
+        </Text>
+        <Show when={local.right}>
+          <div class="ml-auto flex shrink-0 items-center gap-2">
+            {local.right}
+          </div>
+        </Show>
+      </div>
+      <div class={local.flush ? undefined : "px-2 py-1"}>{local.children}</div>
+    </div>
+  );
+}

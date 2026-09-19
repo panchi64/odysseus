@@ -391,6 +391,7 @@ export function ChatRoomScreen(): JSX.Element {
           workspaceHint={workspaceHint}
           working={titleWorking}
           model={() => conversationModel(stream.messages)}
+          createdAt={() => currentSummary()?.createdAt}
           conversationId={currentId}
           streaming={stream.sending}
           messageCount={() => stream.messages.length}

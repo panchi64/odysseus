@@ -1,5 +1,6 @@
 import { Show, type JSX } from "solid-js";
 import { Frames, ProgressRing, StatusDot, Text } from "~/ui";
+import { duration, parseInstant } from "~/lib/format";
 import { isLive, type Subagent, type SubagentStatus } from "../data";
 
 /** How a sub-agent's state reads at a glance.
@@ -46,12 +47,17 @@ function ringTone(value: number): "dim" | "warn" | "alert" {
   return value >= 75 ? "warn" : "dim";
 }
 
-/** How long it ran, in the coarsest unit that is still true. */
+/** How long it ran, in the coarsest unit that is still true.
+ *
+ *  That is `duration()`'s contract verbatim, so it is `duration()` — this used to
+ *  hand-roll the first two of its branches and stop, which meant a sub-agent that ran
+ *  three minutes read `184.0s` where every other elapsed figure in the product read
+ *  `3m4s`. */
 function took(subagent: Subagent): string | null {
   if (subagent.endedAt === null) return null;
-  const ms = Date.parse(subagent.endedAt) - Date.parse(subagent.startedAt);
+  const ms = parseInstant(subagent.endedAt) - parseInstant(subagent.startedAt);
   if (!Number.isFinite(ms) || ms < 0) return null;
-  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+  return duration(ms);
 }
 
 /**
@@ -150,9 +156,11 @@ export function SubagentCard(props: {
           · {LABEL[props.subagent.status]}
         </Text>
         <Show when={took(props.subagent)}>
-          {(duration) => (
+          {/* Not named `duration` — that is the shared formatter `took` now calls,
+              and shadowing it here is how the next edit reaches for the wrong one. */}
+          {(ran) => (
             <Text variant="micro" tone="dim" class="shrink-0">
-              · {duration()}
+              · {ran()}
             </Text>
           )}
         </Show>

@@ -64,6 +64,12 @@
      serving both means either cramped prose or bloated chrome. */
   --type-micro-size: 10px; /* mono — ambient telemetry, fine print */
   --type-micro-lh: 14px;
+  /* mono UPPERCASE, widely tracked — an engraved panel legend. `plate` NAMES a
+     region (a console group's header, an annunciator cell); `meta` below REPORTS
+     a state. Same voice, one level down: the legend on the panel versus the
+     value the panel is showing. */
+  --type-plate-size: 10px;
+  --type-plate-lh: 14px;
   --type-meta-size: 11px; /* mono UPPERCASE — machine labels & state */
   --type-meta-lh: 16px;
   --type-label-size: 12px; /* sans sentence case — field labels */
@@ -115,6 +121,9 @@
      case sans takes none — tracking a lowercase grotesque is what makes an
      interface read as a logo. */
   --tracking-label: 0.08em;
+  /* Twice `--tracking-label`, and that separation is the point: a legend that
+     measures the same as its own readout stops reading as a legend. */
+  --tracking-plate: 0.16em;
   /* Helvetica at display size set at 0 looks loose; negative tracking is the
      single most recognizable Swiss-modernist tell. */
   --tracking-tight: -0.02em;
@@ -166,6 +175,10 @@
      model's turn carries no fill at all. It stays well under `--line` so the
      bubble is still quieter than the rules around it. */
   --surface-sunken: #0f0f0f;
+  /* An UNLIT caution & warning cell. Deliberately almost indistinguishable from
+     `--surface`: the operator reads the panel by looking for the lit one, so a
+     dark cell's whole job is to not be looked at. */
+  --annunciator-dark: #0d0d0d;
   --line: #212121;
   --line-strong: #333333;
   --text-dim: #6e6e6e; /* 3.9:1 on bg */
@@ -256,17 +269,25 @@
      says it must not become. Still ~2/3 of the separation from the page, so the
      two voices stay tellable apart. */
   --surface-sunken: #f4f3f0;
+  /* Paper steps the unlit cell *down* for the same reason `--surface-sunken`
+     does: there is nowhere above white to go. */
+  --annunciator-dark: #f7f7f5;
   --line: #e4e4e1;
   --line-strong: #cfcfcb;
   --text-dim: #8a8a85; /* 3.5:1 on bg */
   --text: #3d3d3a; /* 10.9:1 on bg */
   --text-bright: #000000; /* 21:1 on bg */
 
-  /* Cerulean: the same instrument-precise idea as phosphor green, executed for
-     a light substrate, where green turns acidic and illegible. 4.9:1 on white.
+  /* The same instrument-precise idea as phosphor green, executed for a light
+     substrate, where green turns acidic and illegible. 10.0:1 on white.
+     This was #0077b6 (cerulean, 4.9:1); the darker, less saturated value is the
+     blue of a printed standards plate rather than of a web link, which is what
+     a signature on paper should read as.
+     `accent-alert` deliberately did NOT move with it — the matching brighter red
+     measures 3.6:1 on white and fails the §12 floor outright.
      `accent-nominal` stays green in both modes — green *means* OK independently
      of the theme. */
-  --accent: #0077b6;
+  --accent: #0b3d91;
   --accent-nominal: #0e7a46;
   --accent-warn: #9a6510;
   --accent-alert: #c0342b;

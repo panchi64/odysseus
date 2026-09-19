@@ -18,7 +18,7 @@ import {
   confirm,
   toast,
 } from "~/ui";
-import { date } from "~/lib/format";
+import { date, parseInstant } from "~/lib/format";
 import {
   useCalendars,
   useCalendarEvents,
@@ -93,7 +93,10 @@ function getDaysInMonth(year: number, month: number): Date[] {
  *  local getters rather than by slicing the ISO string, which would show UTC and shift the
  *  event by the operator's offset the moment they saved it back. */
 function toLocalInput(iso: string): string {
-  const d = new Date(iso);
+  // `parseInstant`, not `new Date` — a zone-less backend stamp read as local makes the
+  // local getters below hand back the UTC digits, which is exactly the shift this
+  // function exists to avoid.
+  const d = new Date(parseInstant(iso));
   const pad = (n: number) => String(n).padStart(2, "0");
   return (
     `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
@@ -171,7 +174,7 @@ export function CalendarScreen(): JSX.Element {
   const days = () => getDaysInMonth(viewYear(), viewMonth());
 
   const eventsForDay = (d: Date) =>
-    events().filter((evt) => sameDay(new Date(evt.start), d));
+    events().filter((evt) => sameDay(new Date(parseInstant(evt.start)), d));
 
   const calendarForEvent = (evt: CalendarEvent) =>
     (calendars() ?? []).find((c) => c.id === evt.calendarId);
@@ -192,7 +195,7 @@ export function CalendarScreen(): JSX.Element {
 
   const eventsThisMonth = () =>
     events().filter((evt) => {
-      const d = new Date(evt.start);
+      const d = new Date(parseInstant(evt.start));
       return (
         d.getUTCFullYear() === viewYear() && d.getUTCMonth() === viewMonth()
       );
@@ -490,11 +493,8 @@ export function CalendarScreen(): JSX.Element {
             >
               <For
                 each={events()
-                  .filter((e) => new Date(e.start) >= today)
-                  .sort(
-                    (a, b) =>
-                      new Date(a.start).getTime() - new Date(b.start).getTime(),
-                  )
+                  .filter((e) => parseInstant(e.start) >= today.getTime())
+                  .sort((a, b) => parseInstant(a.start) - parseInstant(b.start))
                   .slice(0, 5)}
                 fallback={
                   <div class="p-3">

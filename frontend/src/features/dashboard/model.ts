@@ -45,6 +45,12 @@ export interface ActiveRun {
   status: "running" | "queued" | "awaiting_input";
   /** Compact status readout, e.g. RUNNING / QUEUED / NEEDS APPROVAL. */
   detail: string;
+  /** When the run actually began, ISO-8601 — the run clock's input. Absent while
+   *  the run is still queued, which is a different fact from "started just now". */
+  startedAt?: string;
+  /** When it finished, ISO-8601. Stops the clock: a run clock still counting after
+   *  the run ended reports the age of a record as though it were work in progress. */
+  endedAt?: string;
   /** The conversation this run belongs to, when it's chat-linked — the row is
    *  clickable straight through to it. Absent for a stateless run. */
   conversationId?: string;

@@ -19,6 +19,7 @@ import {
   type Accessor,
 } from "solid-js";
 import { api } from "~/lib/api";
+import { parseInstant } from "~/lib/format";
 import { readLS, writeLS } from "~/lib/storage";
 import type { ChatSummary } from "../model";
 import { toSummary } from "./mappers";
@@ -31,7 +32,10 @@ import type { ConversationSummaryDTO } from "./wire";
 export const RESUME_WINDOW_MS = 15 * 60 * 1000;
 
 export function isWarm(iso: string, now = Date.now()): boolean {
-  const t = new Date(iso).getTime();
+  // `parseInstant`, not `new Date` — a zone-less backend stamp read as local time
+  // lands in the future west of Greenwich, which makes `now - t` negative and every
+  // thread warm forever, so the window silently stopped expiring.
+  const t = parseInstant(iso);
   return !Number.isNaN(t) && now - t <= RESUME_WINDOW_MS;
 }
 

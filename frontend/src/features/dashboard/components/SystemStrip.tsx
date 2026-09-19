@@ -1,10 +1,9 @@
 import { For, type JSX } from "solid-js";
-import { Marquee, StatusDot, Text } from "~/ui";
-import type { CapabilityHealth, SystemStat } from "../model";
+import { Marquee, Text } from "~/ui";
+import type { SystemStat } from "../model";
 
 export interface SystemStripProps {
   band: SystemStat[];
-  capabilities: CapabilityHealth[];
 }
 
 /**
@@ -16,7 +15,13 @@ export interface SystemStripProps {
  * `micro`** (§2) — 10px, dim, no surface, no border. It was set in sans `label`
  * and `body` at 12–13px, which is interface-sized type: the same weight as
  * content the operator is meant to read, for content they are meant to skim
- * past. Accent appears only when a service is actually degraded.
+ * past.
+ *
+ * **Capability health left this strip for the annunciator grid** (`~/ui`
+ * `AnnunciatorGrid`, §10.15). A row of service dots inline with the facts band made
+ * every capability equally loud and equally easy to skim past, which is the wrong
+ * reading for the one thing on this strip that can be *wrong*. What stays here is
+ * genuinely ambient — counts and versions, nothing that ever needs the operator.
  */
 export function SystemStrip(props: SystemStripProps): JSX.Element {
   return (
@@ -37,30 +42,6 @@ export function SystemStrip(props: SystemStripProps): JSX.Element {
                 </Text>
                 <Text variant="micro" tone="dim">
                   {stat.value}
-                </Text>
-              </span>
-            )}
-          </For>
-          <span
-            class="inline-block h-3 w-px shrink-0 bg-line"
-            aria-hidden="true"
-          />
-          <For each={props.capabilities}>
-            {(cap) => (
-              <span class="inline-flex items-center gap-1">
-                <StatusDot status={cap.status} />
-                {/* The dot carries the state; the name stays dim unless the
-                    capability is genuinely degraded (§10.5). A row of coloured
-                    service names is a row of alarms for a system that is fine. */}
-                <Text
-                  variant="micro"
-                  tone={
-                    cap.status === "warn" || cap.status === "alert"
-                      ? cap.status
-                      : "dim"
-                  }
-                >
-                  {cap.label}
                 </Text>
               </span>
             )}

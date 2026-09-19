@@ -2,7 +2,9 @@
 
 *A quiet, high-precision interface language: Swiss neo-grotesque structure, pure-neutral surfaces, and a monospaced second voice reserved for the machine.*
 
-**Version 1.0** · Status: Foundation spec · Supersedes *Terminal-HUD 0.1*
+**Version 1.1** · Status: Foundation spec · Supersedes *Terminal-HUD 0.1*
+
+*1.1 adds the mission-control register: a console group, a caution & warning grid, a mission clock, the `plate` type step, and §11.1's licensed moment — one expressive device per screen, where nothing competes.*
 
 ---
 
@@ -25,7 +27,7 @@ Instrument keeps the skeleton and changes the voice:
 | Type | Mono everywhere | **Sans for the interface, mono for the machine** (§2) |
 | Labels | `UPPERCASE` + tracking, always | Sentence case; uppercase mono reserved for telemetry |
 | Color | Green-tinted near-blacks, off-whites | **Pure `#000` / pure `#FFF`**, true neutral grays |
-| Accent | Phosphor green, both modes | Green in Ink, **cerulean in Paper** — and rationed harder |
+| Accent | Phosphor green, both modes | Green in Ink, **instrument blue in Paper** — and rationed harder |
 | Elevation | Forbidden (no shadows) | **Subtle shadow**, plus an accent shadow for primary focus |
 | Corners | Square, always | Square for data grids; **3px controls, 6px panels** |
 | Borders | "Free ink" — everywhere | **The exception** (§7); space and surface value separate first |
@@ -110,6 +112,8 @@ Instrument runs at **one step less dense** than Terminal-HUD. Where the old syst
 
 The exception is **tabular data** — tables, instrument bands, log output, list rows. Density is a virtue there because scanning many rows is the task. Keep those at `space-1`/`space-2` vertical.
 
+**Console groups (§10.14) and the annunciator grid (§10.15) join that exception**, for the same reason and not for a new one: their contents are ruled rows and fixed cells read by scanning, so the rule that governs a table governs them. What the exception does *not* license is a console group wrapped around prose, a form, or a stack of cards — those are read one at a time, and the frame would just be a box drawn around ordinary content at the wrong density.
+
 ### Margins & gutters
 
 - **Gutters:** `space-4` default; `space-2` inside dense tabular regions.
@@ -150,6 +154,7 @@ looked at*, so they differ in scale.
 | Token | Size/LH | Family | Weight | Case | Use |
 |---|---|---|---|---|---|
 | `micro` | 10 / 14 | Mono | 400 | as-is | Ambient telemetry, fine print, precision coordinates |
+| `plate` | 10 / 14 | Mono | 500 | UPPER, +0.16em | **Engraved panel label.** Names a region: a console group's header, an annunciator cell |
 | `meta` | 11 / 16 | Mono | 500 | UPPER, +0.08em | Machine labels & state: `RUN-0341`, `LIVE`, `QUEUED` |
 | `label` | 12 / 16 | Sans | 500 | Sentence | Field labels, column headers, section eyebrows |
 | `code` | 12 / 16 | Mono | 400 | as-is | Code, diffs, patches inside chrome |
@@ -189,7 +194,8 @@ other follows silently.
 ### Rules
 
 - **Labels are sentence case.** "Context used", not "CONTEXT USED". Uppercase is now a *signal* (it means "machine"), and a signal used everywhere signals nothing.
-- **Uppercase belongs to `meta` and `micro` only**, always in mono, always with +0.08em tracking, usually dimmed.
+- **Uppercase belongs to `meta`, `micro` and `plate` only**, always in mono, usually dimmed.
+- **`plate` names a region; `meta` reports a state.** That is the whole distinction, and it is the §2 test applied one level down — both are the machine talking, but one is the legend engraved on a panel and the other is the value the panel is currently showing. They are deliberately one step apart in size and twice apart in tracking (+0.16em against +0.08em), because a legend that measures the same as its own readout stops reading as a legend. A third uppercase-mono step is only worth its keep while that holds: if `plate` ever starts appearing where a value should be, delete it and use `meta`.
 - **Display type takes negative tracking** (−0.02em), as do prose `h1`/`h2`. Helvetica at those sizes set at 0 looks loose; this is the single most recognizable Swiss-modernist tell.
 - **Tabular figures for anything that changes or aligns.** Set globally; never turn it off in a table or a counter.
 - **Left-align, ragged right.** No justification. Centering only for an isolated hero readout.
@@ -240,13 +246,15 @@ The base is pure neutral. Both modes are built on true black and true white — 
 
 | Accent | Hex | Meaning |
 |---|---|---|
-| `accent` | `#0077B6` | **Signature / primary focus.** Cerulean (4.9:1 on white) |
+| `accent` | `#0B3D91` | **Signature / primary focus.** Deep instrument blue (10.0:1 on white) |
 | `accent-nominal` | `#0E7A46` | Active, healthy, OK |
 | `accent-warn` | `#9A6510` | Caution, degraded |
 | `accent-alert` | `#C0342B` | Error, critical, destructive |
 | `accent-info` | `#0F5FA8` | Live data, secondary signal |
 
-> **The signature accent is mode-dependent and that is intentional.** Phosphor green is the product's lineage and it belongs on black; on white it turns acidic and illegible. Cerulean is the same idea executed for a light substrate — cool, precise, instrument-like. `accent-nominal` stays green in both modes because green *means* "OK" independently of the theme.
+> **The signature accent is mode-dependent and that is intentional.** Phosphor green is the product's lineage and it belongs on black — it is also, literally, what a mission-control console displayed, which is why Ink keeps it. On white it turns acidic and illegible, so Paper carries the same idea executed for a light substrate: a deep instrument blue, cool and precise. `accent-nominal` stays green in both modes because green *means* "OK" independently of the theme.
+>
+> Paper's blue was `#0077B6` (cerulean, 4.9:1). It moved to `#0B3D91` — the darker, less saturated blue of a printed standards manual, which reads as ink on a plate rather than as a web link, and clears the §12 floor twice over at 10.0:1. **Only the signature moved.** `accent-alert` stays `#C0342B`: the brighter red of the same lineage (`#FC3D21`) measures 3.6:1 on white and fails §12 outright, and a semantic token is not worth re-pointing for a hue that cannot be read.
 
 > **The signature accent also carries the session mode, and only the signature accent.** A thread is Normal, Research or Code, and the root carries that as `data-mode` beside `data-theme`. Normal is the base value above; Research is cyan (`#3DDBD9` / `#0E7490`) and Code violet (`#B98CFF` / `#6D28D9`), declared as `[data-theme=…][data-mode=…]` rules in tokens.css. The signature token *is* the primary-focus token — the live run, the composer edge, the blocking approval — so binding it to the mode makes the whole window say which kind of work is open without adding a badge to anything.
 >
@@ -339,7 +347,8 @@ The order of preference for separating two things:
 - it is a cell edge in a **ruled data grid** — a table, an instrument band, a genuinely tabular list, where the rule aligns values across rows and is doing structural work;
 - it is a **control's own edge**, where the border *is* the affordance (a secondary button, a text field's resting state);
 - it is a **process timeline** rail, where an unbroken vertical line is the thing being communicated;
-- it is the **boundary between two tiled panes** — a splitter, or a strip stacked on the region below it. Panes fill one surface edge to edge, so there is no gap for space to work in, and anything inside a framed region is bare (§8), so there is no fill for surface value to work with. Both of the other devices are unavailable by construction, which is exactly the case this last resort is for. The splitter's own hairline is that line; it does not draw a second one.
+- it is the **boundary between two tiled panes** — a splitter, or a strip stacked on the region below it. Panes fill one surface edge to edge, so there is no gap for space to work in, and anything inside a framed region is bare (§8), so there is no fill for surface value to work with. Both of the other devices are unavailable by construction, which is exactly the case this last resort is for. The splitter's own hairline is that line; it does not draw a second one;
+- it is a **console group** (§10.14) — a frame with a header band, holding flush ruled rows. This is the ruled-data-grid case with a lid on it: the rows inside already carry justified rules, and the frame closes them into one readout instead of leaving a grid floating on the page with nothing saying where it starts or what it is called. Space cannot do that job here, because the rows are flush by construction and a gap between them would destroy the alignment that makes them scannable; surface value cannot either, because the cells need to read as set *into* the panel rather than lifted off it.
 
 **A border is not justified** under a page title, under a tab strip, around every panel, under every list row, between a panel's header and its body, around a chip, or down the side of a nav rail. All of those were borders drawn where the eye had already found the break.
 
@@ -617,6 +626,40 @@ Alignment of the *block* and alignment of the *words* are separate decisions: th
 
 One implementation note that is easy to get wrong: the entry animation runs with `animation-fill-mode: both`, and an animated `opacity` outranks a utility class. A turn that is also *dimmed* (above a compaction divider) therefore needs two nodes — one owning the dim, one owning the movement — or the animation silently cancels the dim.
 
+### 10.14 Console group
+
+A frame, a header band, and flush ruled rows. The header carries a `plate` label at the left and an optional readout at the right; the rows inside sit at `radius-0`, `space-1`/`space-2` vertical, hairline-separated, edge to edge with no padding of their own.
+
+This is the one shell that is allowed to be a box (§7), and the reason it exists rather than being drawn per screen is that three surfaces want the identical skeleton — the launchpad's sequencer, the annunciator grid's frame, and the chat status strip. A shape repeated three times in three files drifts three ways.
+
+**What goes in one:** ruled rows and fixed cells — things read by scanning a column. **What does not:** prose, forms, or a stack of cards. A `Panel` (§10.2) is still the default container, and it stays the default; a console group is what you reach for when the content is genuinely a readout and the frame is telling the operator where that readout begins and ends.
+
+### 10.15 Annunciator grid — caution & warning
+
+The capability strip as a console panel: one cell per capability, laid out as a ruled grid at `radius-0` with 1px `line` gaps, inside a console group.
+
+**A cell is two lines: the legend, and why it is lit.** An unlit cell carries its `plate` legend at a tone barely above the surface it sits on, and an empty second line. A lit cell fills, and its reason occupies that second line — scrolling (`Marquee`) rather than truncating where it overflows the column, because the reason is the one thing in the cell the operator has to finish reading. The second line is reserved either way, so a capability degrading changes a cell's contents and never its size.
+
+The reason used to be set in a list *beneath* the grid. That restated every legend in order to say the thing the cell it named had room for, and grew the panel by a line per fault.
+
+**Caution is a tint; alert is a solid fill.** With the reason occupying the second line there is no status *word* left, so §12 has real work to do here: the two severities are told apart by fill weight — a luminance difference that survives any colour vision — rather than by hue. It is also what the hardware does, where a master alarm is not merely a different colour from a caution. Lit and unlit stay separable on a third, independent channel: an unlit cell's second line is empty.
+
+**The column count comes from the cell count**, capped per breakpoint (4 / 6 / 8), filling the rows as evenly as possible. A fixed count left seven capabilities sitting 5 + 2, and the three dead positions read as a row that failed to finish. It cannot always reach zero — nine cells at a cap of eight is 5 + 4 whatever is chosen — so it minimizes the gap rather than promising none. Letting the last row's cells *stretch* would promise none, and is rejected: the columns would stop aligning between rows, which is the ruled structure §7 keeps the borders for.
+
+This replaces a flat band where every cell was equally loud, and it is a better instrument for the same reason the real panel was: **the operator reads the panel by looking for the lit one.** A band of eight equally-bright cells has to be read left to right every time; a matrix with one amber cell in it has already answered the question from across the room. It is §1.1 — volume is hierarchy — applied to a region that was violating it.
+
+Never hue alone (§12): the fill weight separates the two severities, an empty second line separates unlit from lit, and the console group's header carries the count in words.
+
+The failure mode is real and worth naming: with few enough capabilities, a grid of dark cells can read as a wall of empty boxes rather than as a calm panel. If it does, render only the lit cells plus a single count of the rest.
+
+### 10.16 Mission clock
+
+`T+ 004:21:07` — elapsed time since a thing started, fixed-width, zero-padded, every field always present. Mono, `meta` or `plate` depending on where it sits, and squarely in the machine register (§8): it snaps, it never eases, and it never animates between values.
+
+**It is a formatter over a backend timestamp and nothing else.** The frontend is given `created_at`/`started_at` and renders the difference; it does not decide when anything began. A clock is the easiest place in an interface to accidentally invent state, and this one must not.
+
+Two are defined: the **session clock** in the shell header, running from the current conversation's `created_at`, and a **run clock** on any in-flight run, from its `started_at`. Both are diegetic detail under §11 and stay within its budget — one per region, at the region's edge.
+
 ### States — all components
 
 | State | Treatment |
@@ -645,6 +688,23 @@ Keep:
 - **Consistent naming** — pick a scheme (`[DOMAIN]-[SUBSYSTEM]-[SEQ]`) and hold to it
 
 **The budget:** at most one diegetic detail per panel, and it lives at the panel's edge — a footer line, a header's right slot — never between a label and its value. Terminal-HUD's mistake was letting atmosphere sit in the reading path. Set at `micro`/`meta` in `text-dim`, it becomes texture the eye skips until it wants it, which is exactly the intent.
+
+### 11.1 The licensed moment
+
+Everything above is texture the eye skips. **One thing per screen is allowed not to be.**
+
+A licensed moment is a single expressive device — the `DeepField`'s graticule, limb and stars are the first and currently only one — permitted in a region where *nothing else is competing for attention*. That is a short list, and it is the whole rule:
+
+- an **empty state**, which by definition has nothing in it;
+- the **auth screens**, which hold one form and no work;
+- the **launchpad hero**, where the composer is the only object on the screen;
+- a **lightbox**, which has already darkened everything else.
+
+**Never behind working content.** Not behind a transcript, not inside a panel holding data, not as an app-wide backdrop. The version of this that covers the whole shell in a starfield was considered and rejected: it is precisely the "atmosphere in the reading path" failure the paragraph above exists to prevent, and it does not stop being that failure because the atmosphere is beautiful.
+
+**Why the exception is worth having at all.** §1.4 says a screen at rest is grayscale and §1.1 says most of the interface should sit at a low volume. Both are right, and followed absolutely they produce a system with no register above "quiet" — which §1.6 already names as the other failure: *restraint is the goal; anonymity is not*. An interface that is only ever recessive has no way to say that the thing in front of you is the point. The moment is that register, and rationing it to one per screen, in a region with nothing to drown out, is what keeps it from becoming decoration.
+
+**It must stay under the thing it sits behind.** The launchpad's moment sits behind the composer, which already carries `shadow-bloom` — two attention devices in the same 200px. The field is neutral and very low contrast, it picks up `--accent` only at the limb and only at low alpha, and where the two compete the field loses. The composer is the point of the screen; the field is the reason the screen feels like somewhere.
 
 ---
 
@@ -678,6 +738,7 @@ Keep:
 
   /* ---- type scale ---- */
   --type-micro-size: 10px;      --type-micro-lh: 14px;
+  --type-plate-size: 10px;      --type-plate-lh: 14px;
   --type-meta-size: 11px;       --type-meta-lh: 16px;
   --type-label-size: 12px;      --type-label-lh: 16px;
   --type-body-size: 13px;       --type-body-lh: 20px;
@@ -685,6 +746,7 @@ Keep:
   --type-readout-lg-size: 32px; --type-readout-lg-lh: 40px;
   --type-display-size: 40px;    --type-display-lh: 44px;
   --tracking-label: 0.08em;   /* uppercase mono meta only */
+  --tracking-plate: 0.16em;   /* engraved panel labels */
   --tracking-tight: -0.02em;  /* display */
 
   /* ---- motion: human register ---- */
@@ -698,6 +760,7 @@ Keep:
   /* ---- INK (dark, default) ---- */
   --bg: #000000;         --surface: #0a0a0a;      --surface-raised: #161616;
   --surface-sunken: #0f0f0f;
+  --annunciator-dark: #0d0d0d;   /* an unlit caution & warning cell */
   --line: #212121;       --line-strong: #333333;
   --text-dim: #6e6e6e;   --text: #a8a8a8;         --text-bright: #ffffff;
   --accent: #34d67f;
@@ -710,9 +773,10 @@ Keep:
 [data-theme="paper"] {
   --bg: #ffffff;         --surface: #ffffff;      --surface-raised: #f5f5f4;
   --surface-sunken: #f4f3f0;
+  --annunciator-dark: #f7f7f5;
   --line: #e4e4e1;       --line-strong: #cfcfcb;
   --text-dim: #8a8a85;   --text: #3d3d3a;         --text-bright: #000000;
-  --accent: #0077b6;
+  --accent: #0b3d91;
   --accent-nominal: #0e7a46;  --accent-warn: #9a6510;
   --accent-alert: #c0342b;    --accent-info: #0f5fa8;
   --shadow-1: 0 1px 2px rgb(0 0 0 / 0.05), 0 1px 1px rgb(0 0 0 / 0.04);
@@ -739,4 +803,4 @@ Keep:
 
 ## Appendix A — One-line brief
 
-> A quiet, pure-neutral interface on a strict 4px grid, set in Helvetica with a monospaced second voice reserved strictly for machine output; hierarchy from size, weight, and brightness, with color rationed to semantic state and a single mode-dependent accent — phosphor green on black, cerulean on white — marking the one thing that needs attention; separation carried by space and surface value rather than by borders, which survive only inside a ruled data grid; marginally smoothed corners; subtle elevation used only to say what is on top; and motion split into two registers, smooth and decelerating for the interface, instantaneous for anything the computer is doing.
+> A quiet, pure-neutral interface on a strict 4px grid, set in Helvetica with a monospaced second voice reserved strictly for machine output; hierarchy from size, weight, and brightness, with color rationed to semantic state and a single mode-dependent accent — phosphor green on black, instrument blue on white — marking the one thing that needs attention; separation carried by space and surface value rather than by borders, which survive only inside a ruled data grid; marginally smoothed corners; subtle elevation used only to say what is on top; and motion split into two registers, smooth and decelerating for the interface, instantaneous for anything the computer is doing.

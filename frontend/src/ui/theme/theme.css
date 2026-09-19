@@ -16,6 +16,7 @@
   --color-surface: var(--surface);
   --color-raised: var(--surface-raised);
   --color-sunken: var(--surface-sunken);
+  --color-annunciator-dark: var(--annunciator-dark);
   --color-line: var(--line);
   --color-line-strong: var(--line-strong);
   --color-dim: var(--text-dim);
@@ -41,13 +42,17 @@
   --font-mono: var(--font-mono);
   --font-display: var(--font-display);
 
-  /* ---- letter spacing -> tracking-label (mono uppercase) / tracking-tight ---- */
+  /* ---- letter spacing -> tracking-label (mono uppercase) / tracking-plate
+         (engraved panel legends) / tracking-tight ---- */
   --tracking-label: var(--tracking-label);
+  --tracking-plate: var(--tracking-plate);
   --tracking-tight: var(--tracking-tight);
 
   /* ---- type scale -> text-micro / text-meta / text-label / ... ---- */
   --text-micro: var(--type-micro-size);
   --text-micro--line-height: var(--type-micro-lh);
+  --text-plate: var(--type-plate-size);
+  --text-plate--line-height: var(--type-plate-lh);
   --text-meta: var(--type-meta-size);
   --text-meta--line-height: var(--type-meta-lh);
   --text-label: var(--type-label-size);
@@ -300,6 +305,60 @@ body {
 }
 .ody-pulse {
   animation: ody-pulse 1s steps(1, end) infinite;
+}
+
+/* The caution & warning matrix (§10.15). The column count is the COMPONENT's, passed
+   in as `--ann-cols-*` per breakpoint, because the only way to avoid a ragged last row
+   is to choose the columns from how many cells there are — a fixed count leaves seven
+   capabilities sitting 5 + 2, with three dead positions the eye reads as an unfinished
+   row. The tiers are capped rather than free: past the cap a cell gets narrower than
+   its own legend, and a matrix of truncated names is worse than one blank position.
+
+   A media query cannot do this arithmetic and Tailwind cannot emit a class per count,
+   so the breakpoints live here and the integers arrive as custom properties. */
+.ody-annunciator {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (min-width: 40rem) {
+  .ody-annunciator {
+    grid-template-columns: repeat(var(--ann-cols-sm, 3), minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 64rem) {
+  .ody-annunciator {
+    grid-template-columns: repeat(var(--ann-cols-lg, 5), minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 80rem) {
+  .ody-annunciator {
+    grid-template-columns: repeat(var(--ann-cols-xl, 5), minmax(0, 1fr));
+  }
+}
+
+/* The licensed moment (§11.1) — the deep field behind a region with nothing else
+   in it. One per screen, and it must stay under whatever it sits behind.
+
+   The whole figure is drawn in `currentColor` plus `--accent`, so it inverts with
+   the theme for free: on Ink it is faint light against black, on Paper it is faint
+   ink on white, which reads as a printed plate rather than as a photograph of
+   space. What does NOT carry over is the alpha — the same opacity that is barely
+   there in white-on-black is plainly visible in black-on-white, because the eye
+   resolves dark marks on a light ground far more readily. Paper therefore runs the
+   whole figure at roughly half strength; without this the moment stops being
+   ambient in exactly one of the two modes. */
+.ody-deep-field {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 1;
+}
+
+[data-theme="paper"] .ody-deep-field {
+  opacity: 0.55;
 }
 
 /* Marquee — a FUNCTIONAL reveal of clipped content (e.g. a long status message
