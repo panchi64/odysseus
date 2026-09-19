@@ -91,6 +91,7 @@ def turn_metrics(run: Run, messages: list[ModelMessage], *, settings: Settings) 
         context_window=run.context_window,
         context_used=footprint,
         context_thresholds=run.context_thresholds,
+        context_fold=run.context_fold,
         # The split of that footprint. Scaled to the provider's own total, so the parts
         # always add up to the figure beside them even though each is an estimate.
         context_parts=compose(footprint, run.context_overhead, messages),

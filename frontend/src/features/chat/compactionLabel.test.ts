@@ -18,7 +18,7 @@ function divider(overrides: Partial<ChatMessage> = {}): ChatMessage {
 describe("the divider's label", () => {
   test("a full fold reads as cause, count, then the replacement", () => {
     expect(compactionLabel(divider({ compactionReason: "manual" }))).toBe(
-      "Context compacted · You asked · 14 Messages FOLDED · ~62k → ~4k",
+      "Context compacted · You asked · 14 messages folded · ~62k → ~4k",
     );
   });
 
@@ -27,7 +27,7 @@ describe("the divider's label", () => {
     // the backend recorded one), so the sentence has to stand without it — no stranded
     // separator, no blank between two `·`.
     const label = compactionLabel(divider());
-    expect(label).toBe("Context compacted · 14 Messages FOLDED · ~62k → ~4k");
+    expect(label).toBe("Context compacted · 14 messages folded · ~62k → ~4k");
     expect(label).not.toContain("··");
     expect(label.endsWith("·")).toBe(false);
   });
@@ -39,7 +39,7 @@ describe("the divider's label", () => {
           compactionReason: "pressure" as ChatMessage["compactionReason"],
         }),
       ),
-    ).toBe("Context compacted · 14 Messages FOLDED · ~62k → ~4k");
+    ).toBe("Context compacted · 14 messages folded · ~62k → ~4k");
   });
 
   test("zeros are absent segments, not printed ones", () => {
@@ -55,7 +55,7 @@ describe("the divider's label", () => {
 
   test("one message is singular", () => {
     expect(compactionLabel(divider({ foldedMessages: 1 }))).toContain(
-      "1 Message FOLDED",
+      "1 message folded",
     );
   });
 

@@ -39,8 +39,12 @@ export function compactionLabelParts(message: ChatMessage): string[] {
   // Messages, not turns: the backend counts `ModelMessage`s (a plain exchange is two, a
   // tool-heavy turn many more) and doesn't count turns at fold time, so calling them
   // turns would overstate every fold.
+  //
+  // Sentence case, because this renders in the *interface* voice: the divider's label is
+  // `Text variant="label"` — sans, no uppercase transform — so caps here are literal
+  // shouting rather than the mono machine register that earns them (`ui/primitives/Text.tsx`).
   if (folded > 0)
-    parts.push(`${folded} ${folded === 1 ? "Message" : "Messages"} FOLDED`);
+    parts.push(`${folded} ${folded === 1 ? "message" : "messages"} folded`);
   const before = message.tokensBefore ?? 0;
   const after = message.tokensAfter ?? 0;
   // *What the fold replaced → what replaced it*, not "context before/after": `tokensAfter`

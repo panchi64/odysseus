@@ -111,3 +111,39 @@ export function contextRows(usage: ContextUsage): ContextRow[] {
   });
   return rows;
 }
+
+/** Where the fold sits on the bar, and how much room is left before it fires. */
+export interface FoldMarker {
+  /** Its position along the **window**, 0–100 — the same scale the rows use, so the
+   *  mark and the fill are read against one ceiling. */
+  pct: number;
+  /** Tokens between here and the fold. 0 once the thread is past it. */
+  headroomTokens: number;
+  /** Whether folding is switched on for this thread. A paused fold still draws, dimmed:
+   *  where the fold *would* be is what tells the operator what the pause is costing. */
+  active: boolean;
+  /** True once fullness has reached the fold point — with folding on this is a
+   *  momentary state (the next turn folds), and with it off it is where a thread sits
+   *  while it spends the room the fold was going to reclaim. */
+  passed: boolean;
+}
+
+/** The fold mark for a usage reading, or null when the backend reported no policy.
+ *
+ *  Derived here rather than in the component for the reason every readout in this
+ *  codebase is: a screen renders a derivation, it doesn't perform one. Null and
+ *  `active: false` are deliberately different answers — null means "nothing to say",
+ *  while inactive means "here, but not armed", and only one of them draws. */
+export function foldMarker(usage: ContextUsage): FoldMarker | null {
+  const fold = usage.fold;
+  if (!fold || !usage.window) return null;
+  return {
+    pct: Math.min(100, Math.max(0, fold.fraction * 100)),
+    headroomTokens: Math.max(
+      0,
+      Math.round(fold.fraction * usage.window - usage.used),
+    ),
+    active: fold.active,
+    passed: usage.fraction >= fold.fraction,
+  };
+}

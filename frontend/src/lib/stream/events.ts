@@ -77,6 +77,26 @@ export interface ContextWindow {
    *  Absent, never zeroed: a split claiming no tools and no brief would be a confident
    *  lie about the one thing this exists to expose. */
   parts: ContextComposition | null;
+  /** Where conversation compaction will fold *this thread*, and whether it is armed.
+   *
+   *  Per-thread, not the global setting: it is the operator's threshold with the
+   *  conversation's own on/off override already folded in, so a client must not
+   *  substitute what the settings page says. Null when the backend had no policy to
+   *  report — which is **not** the same as folding being off; that arrives as
+   *  `active: false` with the fraction still present, so the mark can be dimmed rather
+   *  than dropped. Optional so an older backend still renders the gauge.
+   *
+   *  Deliberately absent from `level`: an alert is a notification and a fold is an act
+   *  on the thread, so the two are separate dials and the gauge shows both. */
+  fold?: FoldPoint | null;
+}
+
+/** See `ContextWindow.fold`. Mirrors `FoldPoint` in `backend/runs/events.py`. */
+export interface FoldPoint {
+  /** The share of the window at which the fold fires, 0–1. */
+  fraction: number;
+  /** Whether folding is switched on for this thread. */
+  active: boolean;
 }
 
 /** What the thread has cost so far — **cumulative over the conversation**, not the
@@ -247,6 +267,31 @@ export interface ConversationTitled extends Base {
  *  infer it from timing. Mirrors backend/runs/events.py. */
 export type CompactionReason = "threshold" | "overflow" | "manual";
 
+/** One section of a compaction summary, parsed by the backend rather than here.
+ *
+ *  The eight headings are a contract the summarizer is held to, and the roster is a
+ *  **security boundary**: only a heading naming one of *our* sections ends a section, so a
+ *  heading the summarizer copied out of a fetched page cannot open one of its own and
+ *  carry what follows it out of the untrusted fence. That rule lives in
+ *  `backend/core/compaction_sections.py` and is deliberately not mirrored here — one
+ *  parser, in the language that also writes the fence.
+ *
+ *  `key` is the heading verbatim, or **empty** for the single section a checkpoint that
+ *  parses into nothing degrades to (an old checkpoint, or a summarizer that drifted off
+ *  format) — render that one without a heading. `body` never carries a fence marker or the
+ *  model-facing preamble. Mirrors `SummarySection` in `backend/core/compaction_sections.py`. */
+export interface SummarySection {
+  key: string;
+  body: string;
+  /** Repeats what a tool, file or web page returned, so it is shown attributed rather
+   *  than in the workspace's own voice. Set by *section identity*, not by finding a
+   *  fence — a checkpoint written before fencing existed still quotes a page. */
+  untrusted: boolean;
+  /** How the section wants to be set. `"machine"` is Anchors, whose whole purpose is
+   *  exact paths, ids and numbers; everything else is prose. */
+  voice: "prose" | "machine";
+}
+
 /** A fold is starting. Emitted *before* the summarizer call, which can take tens of
  *  seconds on a long thread — without it the turn simply stalls with nothing on
  *  screen, and the only account of the pause arrives after it is over. `messages` and
@@ -292,6 +337,11 @@ export interface ConversationCompacted extends Base {
    *  Optional only so an older backend still renders the divider — it defaults to the
    *  ordinary case there, which is what such a backend could only have meant. */
   reason?: CompactionReason;
+  /** `summary` split into the sections the divider renders. Derived on the backend from
+   *  the very string on this frame, and by the same function the cold read uses, so the
+   *  divider a live client draws and the one a reload draws cannot disagree. Optional so
+   *  an older backend still renders — the divider falls back to `summary` then. */
+  sections?: SummarySection[];
 }
 /** This turn opened another conversation — today only a research thread, started
  *  by `research_start`. The new thread appears in the session list a moment

@@ -4,10 +4,13 @@ import { Icon, Text } from "~/ui";
 import type { ContextUsage, LastRequest } from "../model";
 import {
   contextRows,
+  foldMarker,
   type ContextDetail,
   type ContextRow,
+  type FoldMarker,
 } from "./contextRows";
 import { LastRequestPanel } from "./LastRequestPanel";
+import { StackedBar } from "./StackedBar";
 
 /** The same severity the ring carries, on the panel's headline figure. It differs from
  *  the ring's map in one place: at rest the ring is `dim` (a gauge with nothing to say
@@ -47,6 +50,7 @@ export function ContextBreakdown(props: {
   lastRequest?: LastRequest | null;
 }): JSX.Element {
   const rows = () => contextRows(props.usage);
+  const fold = () => foldMarker(props.usage);
   const percent = () => props.usage.fraction * 100;
   return (
     <>
@@ -73,7 +77,31 @@ export function ContextBreakdown(props: {
         </Text>
       </div>
 
-      <Bar rows={rows()} />
+      <Bar rows={rows()} fold={fold()} />
+
+      {/* What the mark on the bar means, in words — the mark alone says "something
+          happens here" without saying what, and a fold is not a thing to have to infer.
+          Three states, because they lead to different decisions: room left before the
+          fold, a fold that is about to fire, and a fold the operator has paused (where
+          the mark is the room they are choosing to spend). */}
+      <Show when={fold()}>
+        {(mark) => (
+          <Text variant="micro" tone="dim">
+            <Show
+              when={mark().active}
+              fallback={`Folding is off for this thread — it would fold at ${pct(mark().pct)}.`}
+            >
+              <Show
+                when={!mark().passed}
+                fallback={`Past the ${pct(mark().pct)} fold point — the next turn folds.`}
+              >
+                Folds at {pct(mark().pct)} — about{" "}
+                {compactCount(mark().headroomTokens, true)} tokens from here.
+              </Show>
+            </Show>
+          </Text>
+        )}
+      </Show>
 
       <div class="flex flex-col">
         <For each={rows()}>{(row) => <Row row={row} />}</For>
@@ -107,17 +135,44 @@ export function ContextBreakdown(props: {
  *  window: the filled run is the fraction the ring draws and the pale tail is the room
  *  left. A bar normalised to what's used would show a full-width strip on a 5%-full
  *  thread, which says the opposite of what the ring beside it says. */
-function Bar(props: { rows: ContextRow[] }): JSX.Element {
+function Bar(props: {
+  rows: ContextRow[];
+  /** Where this thread folds, when the backend reported a policy. */
+  fold: FoldMarker | null;
+}): JSX.Element {
   return (
-    <div class="flex h-1 w-full overflow-hidden rounded-ctl bg-line">
-      <For each={props.rows}>
-        {(row) => (
+    // `relative` so the fold mark can sit at its own fraction of the window; the fill
+    // itself keeps `overflow-hidden` so the rounded ends still clip it.
+    <div class="relative w-full">
+      <StackedBar
+        segments={props.rows.map((row) => ({
+          key: row.key,
+          share: row.share,
+          fill: row.fill,
+        }))}
+      />
+      <Show when={props.fold}>
+        {(mark) => (
+          // Taller than the bar and crossing it, so it reads against the fill and against
+          // the free tail alike — a notch *inside* the bar would have to be the panel's
+          // own background colour to be visible, and would vanish the moment the fill
+          // reached it. The bar is `h-1` (4px), so -3/10 straddles it evenly.
+          //
+          // `-translate-x-1/2` centres the mark *on* its fraction rather than starting it
+          // there: at 100% a left-edge-aligned mark falls entirely outside the track, and
+          // everywhere else it sits half its width late.
+          //
+          // Luminance carries active/paused, never hue: hue is severity here and a fold
+          // is not a severity.
           <div
-            class={`h-full ${row.fill}`}
-            style={{ width: `${row.share}%` }}
+            aria-hidden="true"
+            class={`absolute -top-[3px] h-[10px] w-px -translate-x-1/2 ${
+              mark().active ? "bg-bright" : "bg-dim"
+            }`}
+            style={{ left: `${mark().pct}%` }}
           />
         )}
-      </For>
+      </Show>
     </div>
   );
 }

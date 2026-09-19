@@ -10,6 +10,7 @@ import {
   Toggle,
   toast,
 } from "~/ui";
+import { inertBand } from "../contextBands";
 import { saveChatSettings, useChatSettings } from "../data";
 import {
   DEFAULT_SUBAGENT_LIMIT,
@@ -103,6 +104,18 @@ export function ChatSection(): JSX.Element {
   const [warnPct, setWarnPct] = createSignal("");
   const [alertPct, setAlertPct] = createSignal("");
   const [savingContext, setSavingContext] = createSignal(false);
+  // Read off what is *saved*, not off the inputs above: a half-typed "7" is not a band
+  // the operator has chosen, and a note that flickers while someone types is noise.
+  const inert = () => {
+    const s = chatSettings();
+    return s
+      ? inertBand({
+          foldEnabled: s.autoCompactEnabled,
+          foldThreshold: s.autoCompactThreshold,
+          alert: s.contextAlertThreshold,
+        })
+      : null;
+  };
   createEffect(() => {
     const s = chatSettings();
     if (!s) return;
@@ -461,6 +474,23 @@ export function ChatSection(): JSX.Element {
               {savingContext() ? "Saving…" : "Save"}
             </Button>
           </Row>
+          {/* The two dials above and the fold threshold below are independent by design —
+              a warning wants to be early and a fold wants to be late — but independent is not the
+              same as unrelated, and one arrangement of them is quietly inert: a band set
+              above the fold point is one a thread with folding on never reaches, because
+              the window is emptied before it gets there. Said here rather than on the
+              gauge, because this is the screen where both numbers are visible and both
+              can be changed. Stated, never corrected: which of the three to move is the
+              operator's call, and the defaults are left exactly as they set them. */}
+          <Show when={inert()}>
+            {(band) => (
+              <Text variant="micro" tone="dim">
+                Note: threads fold at {band().fold}% of the window, so the red
+                band at {band().at}% is only reached on a thread with
+                auto-compaction switched off.
+              </Text>
+            )}
+          </Show>
 
           <Rule />
 

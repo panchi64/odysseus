@@ -23,6 +23,7 @@ from .events import (
     DEFAULT_CONTEXT_THRESHOLDS,
     ContextThresholds,
     Event,
+    FoldPoint,
     MessageEdited,
     MessageHeld,
     MessageInjected,
@@ -116,6 +117,11 @@ class Run:
     # `context_window` because they are one measurement: a ceiling nobody set boundaries
     # against, and boundaries with no ceiling to apply them to, are equally inert.
     context_thresholds: ContextThresholds = DEFAULT_CONTEXT_THRESHOLDS
+    # Where this thread's fold will fire, and whether it is armed — set by the orchestrator
+    # from the same resolved policy the compaction trigger itself uses, so the mark the
+    # operator sees on the gauge is the number that will actually act on their thread.
+    # None when the turn ran with no compaction policy at all.
+    context_fold: FoldPoint | None = None
     # This run's wall-clock stopwatch, collecting a timing per model response as the
     # translator walks the graph. Lives on the Run rather than in `drive_turn` so it
     # survives a park/resume: an approval splits a turn into several segments, and a

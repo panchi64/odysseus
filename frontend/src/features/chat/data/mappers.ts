@@ -378,6 +378,10 @@ export function toMessage(dto: MessageDTO): ChatMessage {
     tokensBefore: dto.tokens_before ?? undefined,
     tokensAfter: dto.tokens_after ?? undefined,
     compactionReason: asCompactionReason(dto.compaction_reason),
+    // Length, not `??`: the backend defaults this to `[]` on *every* row, and an empty
+    // array is not nullish — so `?? undefined` would hang a useless empty list off every
+    // user and assistant turn. Absent-not-empty, the same rule the fields above follow.
+    summarySections: dto.sections?.length ? dto.sections : undefined,
   };
   if (dto.role !== "assistant") return base;
   // Cold history is still flat (no recorded emission order), so reconstruct the

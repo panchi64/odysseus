@@ -1,7 +1,9 @@
-import { type JSX } from "solid-js";
+import { Show, type JSX } from "solid-js";
 import { Disclosure, Divider, Stack, Text } from "~/ui";
 import { compactionLabel } from "../compactionLabel";
 import type { ChatMessage } from "../model";
+import { CompactionSummary } from "./CompactionSummary";
+import { FoldDelta } from "./FoldDelta";
 
 /** Where the thread's earlier turns were folded into a summary to free up context.
  *  A rule across the width rather than a bubble, because nobody said it — the
@@ -36,9 +38,34 @@ export function CompactionDivider(props: {
         instead. Your transcript keeps all of them.
       </Text>
       <Disclosure label="Summary" triggerClass="w-full">
-        <Text variant="body" tone="dim" class="whitespace-pre-wrap">
-          {m().content}
-        </Text>
+        {/* What the fold cost, to scale. Guarded on the *pair*, exactly as
+            `compactionLabelParts` guards the `~62k → ~4k` segment it draws — the label and
+            the picture of it must not disagree about whether there is anything to report.
+            `> 0` rather than presence, because the backend always sends both and zero
+            means "nothing to report" rather than a measured nothing. */}
+        <Show when={(m().tokensBefore ?? 0) > 0 || (m().tokensAfter ?? 0) > 0}>
+          <div class="pb-3">
+            <FoldDelta
+              before={m().tokensBefore ?? 0}
+              after={m().tokensAfter ?? 0}
+            />
+          </div>
+        </Show>
+        {/* The sections are the backend's parse of this very checkpoint, not a second
+            reading of it here — so what the operator opens is what the model was given.
+            The fallback is the pre-parse rendering, kept for a checkpoint folded before
+            the parse existed and for one whose text the summarizer drifted away from:
+            those degrade to plain text rather than to nothing. */}
+        <Show
+          when={m().summarySections?.length}
+          fallback={
+            <Text variant="body" tone="dim" class="whitespace-pre-wrap">
+              {m().content}
+            </Text>
+          }
+        >
+          <CompactionSummary sections={m().summarySections ?? []} />
+        </Show>
       </Disclosure>
     </Stack>
   );

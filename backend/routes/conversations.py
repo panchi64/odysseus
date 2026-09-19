@@ -21,11 +21,12 @@ from pydantic import BaseModel, Field
 
 from agent.summarize import compact_conversation
 from agent.title import title_from_history
+from core.compaction_sections import SummarySection
 from core.config import get_settings
 from core.exceptions import DegradedCapabilityError, NotFoundError
 from routes import deps
 from routes.deps import OPERATOR_ID
-from runs import ContextWindow, RunMetrics
+from runs import ContextWindow, FoldPoint, RunMetrics
 from services.approval_grants import COMMAND_SCOPED_TOOLS
 from services.context_budget import compose
 from services.conversation_view import MessageView
@@ -178,6 +179,13 @@ class MessageOut(BaseModel):
     # `None` on every other role, and on a checkpoint folded before the reason was
     # recorded — the divider states it as an extra segment and reads correctly without it.
     compaction_reason: str | None = None
+    # `role == "compaction"` only — the summary split into the sections the divider
+    # renders, parsed by the same `summary_sections` the live event uses so a reload draws
+    # the divider the operator watched arrive. Carries no fence markers and no model-facing
+    # preamble: those are addressed to the model, not to whoever is reading the thread.
+    # Empty on every other role, and on a checkpoint whose text parses into nothing —
+    # the client falls back to `content` then.
+    sections: list[SummarySection] = Field(default_factory=list)
 
 
 class ActiveRun(BaseModel):
@@ -336,6 +344,7 @@ def _message(view: MessageView, by_id: dict[str, SnapshotView]) -> MessageOut:
         tokens_before=view.tokens_before,
         tokens_after=view.tokens_after,
         compaction_reason=view.compaction_reason,
+        sections=view.sections,
     )
 
 
@@ -365,12 +374,20 @@ async def _detail(
     context: ContextWindow | None = None
     if used is not None:
         window = await deps.models(request).main_context_window(OPERATOR_ID)
-        # The operator's own boundaries, not the defaults: a reloaded thread must show
-        # the gauge in the colour the live turn left it, and reading the stored pair here
-        # is what keeps a cold load from quietly re-deriving severity against 75/90.
+        # The fold mark, resolved the way a turn would resolve it — the operator's stored
+        # threshold with *this thread's* on/off override folded in. Read here rather than
+        # left to the client because the client only knows the global setting, and a
+        # thread whose folding the operator switched off would otherwise show an armed
+        # mark that nothing is going to act on.
+        auto = await get_auto_compact(deps.settings_store(request), OPERATOR_ID)
+        override = await store.get_compaction_override(conversation_id)
         context = ContextWindow.from_used(
             used,
             window,
+            # The operator's own boundaries, not the defaults: a reloaded thread must show
+            # the gauge in the colour the live turn left it, and reading the stored pair
+            # here is what keeps a cold load from quietly re-deriving severity against
+            # 75/90.
             await get_context_thresholds(deps.settings_store(request), OPERATOR_ID),
             # A reload has no request to measure — neither the brief nor the tool schemas
             # reach the message history — so the split leans on what this thread's last
@@ -378,6 +395,10 @@ async def _detail(
             # describe the same request. Absent for a thread that hasn't run one since
             # this was recorded, which shows as no breakdown rather than a guessed one.
             compose(used, overhead, history),
+            FoldPoint.of(
+                auto.threshold,
+                active=resolve_compaction_enabled(override, auto.enabled),
+            ),
         )
     # The same figures the live stream reports, rebuilt from the same messages by the
     # same function — the counts and tokens off the active path, the wall-clock off the

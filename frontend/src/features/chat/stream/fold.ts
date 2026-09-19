@@ -630,6 +630,10 @@ export function createFolder(
           // can only have meant the ordinary one, and a divider is worse for having a
           // segment that appears and disappears with the backend version.
           compactionReason: ev.reason ?? "threshold",
+          // The backend derives these from the very `summary` on this frame, and the
+          // cold read parses the same stored string with the same function — so the
+          // divider seated here and the one a reload seats are the same divider.
+          summarySections: ev.sections ?? undefined,
         };
         // Settle the rail row the `compaction.started` opened, if this run opened one
         // (a fold from COMPACT NOW between turns has no run and no row). The settled

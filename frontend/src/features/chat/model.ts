@@ -3,7 +3,11 @@
  *  don't change when the mapping behind them does. */
 
 import type { SessionMode } from "~/lib/modes";
-import type { CompactionReason, ContextWindow } from "~/lib/stream";
+import type {
+  CompactionReason,
+  ContextWindow,
+  SummarySection,
+} from "~/lib/stream";
 
 /** Why a fold happened, as the wire spells it. Re-exported for the same reason
  *  `SessionMode` is: chat code reads its seam types from one place. */
@@ -562,6 +566,16 @@ export interface ChatMessage {
    *  before the backend recorded reasons has none, which is why the divider states it
    *  as an extra segment rather than building its label around it. */
   compactionReason?: CompactionReason;
+  /** Compaction dividers only: the summary already split into its sections, parsed by
+   *  the backend. `content` stays the stored text; this is what the divider renders.
+   *
+   *  Parsed there rather than here because the roster that decides where a section ends
+   *  is a security boundary — a heading the summarizer quoted out of a fetched page must
+   *  not be able to open one and carry what follows it out of the untrusted fence. The
+   *  live event and the cold read call the same function on the same string, so the two
+   *  cannot drift. Empty for a checkpoint whose text parses into nothing, and on an older
+   *  backend: the divider falls back to `content` then. */
+  summarySections?: SummarySection[];
 }
 
 /** The in-flight run driving a conversation, when one exists. Present on a cold
