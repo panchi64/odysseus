@@ -249,7 +249,7 @@ async def review_batch(
     # call: resolved once for the batch, from the same process-global primitive the tool
     # will build its profile out of, so the gate and the tool cannot disagree about whether
     # a command was held to what it declared.
-    confinement = await fence.fence_available(settings)
+    confinement = await fence.resolve_confinement(settings)
     outcomes = await gather_bounded(
         [
             review_call(

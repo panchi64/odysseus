@@ -10,9 +10,12 @@ wholesale safe here and nowhere else.
 Its own module because it needs none of the manager's state — a runtime name and
 the work root are the whole input — and because it answers a different question
 from the rest of the sandbox: not "what is this conversation doing" but "what is
-left over from a process that is gone". The plaintext workspaces that same crash
-stranded are *not* collected here: sealing them needs a vault that is still locked
-at boot, so the idle sweep picks those up at the first unlock instead.
+left over from a process that is gone". Both halves of that question live here,
+even though only one of them runs at boot: :func:`reconcile` clears the containers
+and networks, and :func:`orphan_fork_keys` names the delegated forks, which the
+manager's idle sweep collects because deleting one has to go through the tombstone
+protocol. An ordinary conversation's workspace is not leftover at all — it is that
+conversation's files, waiting for its next turn, and nothing collects it.
 
 Best-effort throughout, and deliberately so: a runtime that is down at boot must
 not stop the app from starting. Nothing else collects these, so what one pass
@@ -24,10 +27,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import shutil
+from collections.abc import Container
 from pathlib import Path
 
 from .base import SandboxError
 from .container import force_remove_container, run_subprocess
+from .fork import fork_marker
 from .names import DEFAULT_NAMES, ContainerNames
 from .sidecar import remove_network
 
@@ -140,3 +145,27 @@ def _remove_pool_dirs(work_root: Path) -> int:
         shutil.rmtree(path, ignore_errors=True)
         removed += 1
     return removed
+
+
+def orphan_fork_keys(work_root: Path, taken: Container[str]) -> list[str]:
+    """The delegated forks under ``work_root`` that nothing owns any more.
+
+    A fork is the one workspace directory a crash can strand that nobody will ever ask
+    for again: its files copy a parent workspace that still exists under its own key,
+    and its delegation ended when the process died. Every other directory here is an
+    ordinary conversation's files, which is not a leftover and must never be collected.
+
+    ``taken`` is whatever the caller still considers live — the session map and its
+    in-flight teardowns. Passed in rather than reached for, so this stays a pure reading
+    of a directory and the caller keeps the answer atomic against its own maps.
+    """
+    if not work_root.exists():
+        return []
+    return [
+        path.name
+        for path in sorted(work_root.iterdir())
+        if path.is_dir()
+        and path.name.startswith("s")  # `safe_key`'s prefix — never a scratch dir
+        and path.name not in taken
+        and fork_marker(path).exists()
+    ]

@@ -253,9 +253,9 @@ async def await_http_serving(
 # (see ``prepare_workspace``) so the very first command already finds them.
 # ``.tmp`` backs ``TMPDIR`` (a missing one makes ``mktemp`` fail and Python's
 # ``tempfile`` fall back to the in-memory ``/tmp`` tmpfs); ``.home`` backs ``HOME``
-# so tool caches/config keyed off ``$HOME`` have somewhere writable. Both are sealed
-# out (see ``Settings.sandbox_session_seal_excludes``), so they're scratch — kept
-# off the encrypted archive and recreated each run.
+# so tool caches/config keyed off ``$HOME`` have somewhere writable. Neither is worth
+# reporting (see ``Settings.sandbox_walk_excludes``), so they stay out of the model's
+# file block and out of a fork's manifest — scratch, and recreated each run.
 _TMP_SUBDIR = ".tmp"
 _HOME_SUBDIR = ".home"
 

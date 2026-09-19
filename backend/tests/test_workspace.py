@@ -361,7 +361,7 @@ class TestShellDeclaresAndEnforcesItsReach:
         async def available(settings):
             return HostConfinement(True)
 
-        monkeypatch.setattr(shell_module.fence, "fence_available", available)
+        monkeypatch.setattr(shell_module.fence, "resolve_confinement", available)
 
     async def test_the_declaration_is_offered_to_the_model_with_the_workspace_default(
         self, tmp_path
@@ -516,7 +516,7 @@ class TestAFencedCommandStillBehavesLikeAShell:
         confinement = await host_module._configure(settings)
         if not confinement.active:
             pytest.skip(f"no host sandbox primitive here: {confinement.reason}")
-        # The real `fence_available` reads a process-global that the suite deliberately
+        # The real `resolve_confinement` reads a process-global that the suite deliberately
         # leaves unresolved; the settings are the tool's own lookup, and both have to say
         # the same thing or the command would be judged fenced and run bare.
         monkeypatch.setattr(host_module, "_resolved", confinement)

@@ -20,7 +20,7 @@ from services.sandbox.egress_proxy import FORWARD_FILE, FORWARD_PORT
 
 from .conftest import egress_policy
 
-_EXCLUDES = Settings().sandbox_session_seal_excludes
+_EXCLUDES = Settings().sandbox_walk_excludes
 
 
 async def _vault(tmp_path) -> Vault:

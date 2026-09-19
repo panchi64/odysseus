@@ -200,7 +200,7 @@ async def test_a_live_turn_announces_both_seams_before_it_answers():
     async def skill_catalog_instructions(_ctx) -> str:
         return "Skills available: writing, research."
 
-    async def plan_context(_caps, _owner_id, _conversation_id) -> str:
+    async def plan_context(_req) -> str:
         return "Your current plan: 1. answer the question."
 
     orch = build_chat_orchestrator(

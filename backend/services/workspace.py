@@ -127,8 +127,8 @@ async def sandbox_workspace(
 
     ``holder`` is the run this workspace is for, and passing it is what keeps the
     live-session cap from displacing a container the run is still working in between two
-    of its tool calls — the seal drops `node_modules`, `.venv` and `.git`, so a shell that
-    just installed or cloned would find them gone on its next call.
+    of its tool calls. The files would survive that — a reap leaves them alone — but the
+    live process and system state around them would not.
 
     A key naming a *delegation* resolves to a fork of the workspace it delegates from,
     rather than to a session of its own. Read here rather than left to the caller for the

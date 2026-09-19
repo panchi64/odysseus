@@ -6,11 +6,13 @@ dependency it just installed — all against the same live process and filesyste
 without rebuilding. Nothing here is pre-created: a container is worth having only
 once a conversation is actually running code in it.
 
-Continuity survives a reap because the agent's files do. The workspace is a
-host-side directory bind-mounted into the container; on reap we seal it (see
-:mod:`services.sandbox.seal`) and remove the plaintext, then restore it the next
-time the conversation runs code. So files persist encrypted-at-rest across reaps;
-only the container's live process/system state is rebuilt.
+Continuity survives a reap because the agent's files are never touched by one. The
+workspace is a host-side directory bind-mounted into the container, and a reap takes
+down the container and leaves the directory exactly as it stands. What a reap frees is
+what a reap costs — memory, CPU, a network — and a directory is none of those. So a
+`.venv` the agent installed, a `dist/` it built and the `.git` of a repository it
+cloned are all still there on the next turn; only the live process and system state
+are rebuilt.
 
 There is one execution path and one fence. Every call ``exec``s into the live
 container, which sits on this conversation's own ``--internal`` network with an
@@ -52,9 +54,9 @@ from .container import (
     with_in_container_timeout,
 )
 from .fork import clone_workspace, fork_marker, manifest_of, merge_workspace
+from .legacy_seal import adopt_legacy_archive, partial_marker, retire_superseded_archive
 from .names import DEFAULT_NAMES, ContainerNames
 from .preview import PreviewHandle, launch_preview, stop_preview_container
-from .seal import partial_marker, restore_workspace, seal_workspace, walk_files
 from .sidecar import (
     create_internal_network,
     proxy_env,
@@ -62,6 +64,7 @@ from .sidecar import (
     start_egress_sidecar,
     stop_egress_sidecar,
 )
+from .walk import walk_files
 from .warmup import ImageWarmup
 
 logger = logging.getLogger(__name__)
@@ -152,10 +155,13 @@ class SandboxSession:
         self.key = key
         self._names = names
         self.workspace = workspace
+        #: Where this key's pre-existing sealed archive would be, if the installation
+        #: ever ran the build that wrote them. Read once and retired — see
+        #: :mod:`services.sandbox.legacy_seal`.
         self.sealed = sealed
-        # A fork taken for a delegated agent: a copy of a workspace that is already
-        # archived under its parent's key. It is discarded rather than sealed wherever
-        # an ordinary session would seal — see :meth:`shutdown`.
+        # A fork taken for a delegated agent: a copy of a workspace that still exists
+        # under its parent's key. It is deleted where an ordinary session's workspace
+        # is kept — see :meth:`shutdown`.
         self.ephemeral = ephemeral
         # The parent's files as they stood when this fork was taken, ``{relpath: sha256}``
         # — what :func:`services.sandbox.fork.merge_workspace` decides against. Empty on
@@ -175,25 +181,25 @@ class SandboxSession:
         self._proxy_image = proxy_image
         self._backend = backend
         self._vault = vault
-        self._excludes = tuple(excludes)
+        # What a walk of this workspace skips — reporting only, never deletion. See
+        # :mod:`services.sandbox.walk`.
+        self._walk_excludes = tuple(excludes)
         self._warmup = warmup
         self._runtime: str | None = None
         self._running = False
         self._preview: PreviewHandle | None = None
         self._last_used = time.monotonic()
         self._lock = asyncio.Lock()
-        # Guards the two multi-step disk transitions on this workspace against each
-        # other: the seal (`_seal_and_clear`, run off-thread) and the restore/repair
-        # (`_ensure_workspace`). They are reachable at the same instant because the
-        # file tools deliberately take no session lock — a run parked on an approval
-        # can be reaped and sealed while it still holds this session object, and its
-        # next write would then repair the very directory the seal thread is walking.
-        # Interleaved, the two leave a torn workspace with no fragment marker on it,
-        # which the orphan sweep would seal straight over the good archive. A thread
-        # lock rather than the asyncio one because both sides are synchronous and one
-        # of them does not run on the loop at all; it is uncontended except in exactly
-        # that race. Reentrant because `merge_fork` holds it across a restore that takes
-        # it too.
+        # Guards the multi-step disk transitions on this workspace against each other:
+        # materialising it (`_ensure_workspace`, which may still be adopting a
+        # sealing-era archive), a fork's walk-and-copy, and the merge back. They are
+        # reachable at the same instant because the file tools deliberately take no
+        # session lock — a run parked on an approval can be reaped while it still holds
+        # this session object, and its next write lands mid-merge. A thread lock rather
+        # than the asyncio one because every side is synchronous and some of them do not
+        # run on the loop at all; it is uncontended except in exactly that race.
+        # Reentrant because `merge_fork` holds it across a materialisation that takes it
+        # too.
         self._disk = threading.RLock()
         self._holders: list[LiveWork] = []
 
@@ -231,10 +237,9 @@ class SandboxSession:
 
         - a call is in flight, and killing the container mid-exec fails the tool call the
           operator is watching;
-        - a run that has not finished is between tool calls, and the seal drops
-          ``node_modules``, ``.venv`` and ``.git`` by design — so the restore it comes
-          back through hands that run a workspace missing exactly what it just spent
-          minutes building;
+        - a run that has not finished is between tool calls, and while its files would
+          survive the reap, the live process and system state around them would not —
+          an interpreter left running, a server it started, a shell's directory;
         - a preview is live, and reaping it drops the token the proxy resolves, turning a
           page the operator may be looking at into a 404.
 
@@ -331,8 +336,8 @@ class SandboxSession:
         )
 
     def read_file(self, relpath: str) -> bytes:
-        """Read a file the agent produced in this session's workspace, restoring
-        from the sealed copy if the session was reaped. Guards against escape."""
+        """Read a file the agent produced in this session's workspace, whether or not
+        its container is up. Guards against escape."""
         self._ensure_workspace()
         target = contained_path(self.workspace, relpath)
         if not target.is_file():
@@ -340,11 +345,11 @@ class SandboxSession:
         return target.read_bytes()
 
     def write_file(self, relpath: str, content: bytes) -> None:
-        """Stage a file *into* this session's workspace, restoring it from the sealed
-        copy first if the session was reaped. Writes the host-side bind-mount dir, so
-        the next code run sees the file without spinning the container up here, and it
-        survives a reap (it's inside the sealed workspace). Guards against escape —
-        the same invariant as :meth:`read_file`, in reverse."""
+        """Stage a file *into* this session's workspace, whether or not its container is
+        up. Writes the host-side bind-mount dir, so the next code run sees the file
+        without spinning the container up here, and it outlives a reap like everything
+        else in the workspace. Guards against escape — the same invariant as
+        :meth:`read_file`, in reverse."""
         self._ensure_workspace()
         target = contained_path(self.workspace, relpath)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -402,75 +407,38 @@ class SandboxSession:
         self._preview = None
 
     async def shutdown(self) -> None:
-        """Kill the container and seal the workspace (when the vault is unlocked)."""
+        """Take the containers down. The workspace stays exactly where it is.
+
+        This is the whole of a reap now. A conversation's files are not what a reap is
+        trying to reclaim — the container, its preview box, its sidecar and its network
+        are — so they are left on disk, which is also the only way a `.venv` the agent
+        installed or the `.git` of a repository it cloned survive to the next turn.
+
+        A fork is the one exception, and it is a deletion rather than a saving: its
+        files are a copy of a parent workspace that still exists under its own key, and
+        by now they have either been merged back or abandoned."""
         async with self._lock:
-            # Every box comes down before the archive goes on: each of them has this
-            # workspace bind-mounted at /work, and sealing under a live mount archives
-            # a torn tree and sends the box's later writes to a deleted inode.
             await self._stop_preview_locked()
             await self._release_mounts()
             self._running = False
             if self.ephemeral:
-                # A fork's files were either merged back by now or abandoned, and an
-                # archive of them would be a second at-rest copy of the parent's
-                # workspace under a key nothing will ever ask for again.
                 await asyncio.to_thread(self._drop_workspace)
-                return
-            if self.workspace.exists() and self._vault.is_unlocked:
-                # Off-thread: tar+gzip+AEAD of a workspace must not block the loop.
-                await asyncio.to_thread(self._seal_and_clear)
-            # Vault locked ⇒ leave the plaintext workspace; the manager defers
-            # reaping while locked, so a later (unlocked) reap seals it.
-
-    def _seal_and_clear(self) -> None:
-        """Archive the workspace and remove the plaintext — the only writer of the
-        sealed copy, and the only place that decides an existing archive may be
-        replaced.
-
-        The one directory that must never be archived is a fragment (see
-        :func:`~services.sandbox.seal.partial_marker`): it holds *less* than the archive
-        it came from, so sealing it would drop every file the interrupted step had not
-        reached yet, irrecoverably. There the archive wins and the fragment is simply
-        dropped. Anything else is the conversation's current state and is sealed exactly
-        as it stands — a workspace the agent was asked to empty included, since a
-        deletion the operator asked for has to stick.
-
-        Held under ``_disk`` for the whole archive-and-remove, so a file tool arriving
-        on this same session mid-seal waits it out rather than repairing the directory
-        underneath us (see ``_disk``)."""
-        with self._disk:
-            marker = partial_marker(self.workspace)
-            if self.sealed.exists() and marker.exists():
-                logger.info(
-                    "sandbox: %s is a fragment of its own sealed archive — keeping the "
-                    "archive and dropping the plaintext",
-                    self.workspace.name,
-                )
-            else:
-                self.sealed.parent.mkdir(parents=True, exist_ok=True)
-                self.sealed.write_bytes(
-                    seal_workspace(self.workspace, self._excludes, self._vault)
-                )
-            # Only now is the directory expendable: whatever survives the rmtree is a
-            # fragment of an archive that is already on disk.
-            marker.touch()
-            shutil.rmtree(self.workspace, ignore_errors=True)
-            marker.unlink(missing_ok=True)
 
     def _drop_workspace(self) -> None:
         """Remove a fork's plaintext, and the markers that describe it.
 
-        Under ``_disk`` like the seal it replaces: a file tool arriving on this session
-        mid-teardown must wait rather than repair the directory being removed."""
+        Under ``_disk``: a file tool arriving on this session mid-teardown must wait
+        rather than recreate the directory being removed."""
         with self._disk:
             shutil.rmtree(self.workspace, ignore_errors=True)
             fork_marker(self.workspace).unlink(missing_ok=True)
             partial_marker(self.workspace).unlink(missing_ok=True)
 
     async def discard(self) -> None:
-        """Stop and kill this session's containers **without sealing** — the
-        un-sealing counterpart to :meth:`shutdown`, run when a conversation is being
-        deleted and before a fork's files are read back into its parent. Kills every
+        """Stop and kill this session's containers, run when a conversation is being
+        deleted and before a fork's files are read back into its parent. Unlike
+        :meth:`shutdown` it never deletes a fork's workspace — the merge still has to
+        read it. Kills every
         container holding the workspace mount so what comes next — the manager's delete,
         or the merge's walk — has the directory to itself; it touches no disk itself, so
         disk cleanup has a single home (``SandboxSessionManager._purge_disk``)."""
@@ -509,15 +477,16 @@ class SandboxSession:
         self, *, max_file_bytes: int = 262_144, max_files: int = 2000
     ) -> dict[str, bytes]:
         """The workspace's text files (relpath → bytes) for a history snapshot — the
-        same files the seal keeps, minus binaries and oversized ones. Prunes the
-        excluded bloat (caches, virtualenvs, ``node_modules``, ``.git``), skips files
-        over ``max_file_bytes`` and anything that isn't valid UTF-8. Empty when the
-        workspace is cold (never run). Synchronous file IO — call off the event loop."""
+        same files every other walk reports, minus binaries and oversized ones. Prunes
+        the bloat (caches, virtualenvs, ``node_modules``, ``.git``), skips files over
+        ``max_file_bytes`` and anything that isn't valid UTF-8. Empty when the
+        conversation has never put anything in its workspace. Synchronous file IO —
+        call off the event loop."""
         root = self.workspace
         if not root.exists():
             return {}
         files: dict[str, bytes] = {}
-        for rel, full in walk_files(root, self._excludes):
+        for rel, full in walk_files(root, self._walk_excludes):
             if len(files) >= max_files:
                 return files
             try:
@@ -538,9 +507,8 @@ class SandboxSession:
 
     def ensure_workspace(self) -> Path:
         """The workspace directory, materialized and ready to read or write, **without
-        starting a container** — restoring it from the sealed archive first if the session
-        was reaped. This is the seam the file tools bind to: browsing, reading and editing
-        files costs no container start, only a cold session's tar restore.
+        starting a container**. This is the seam the file tools bind to: browsing,
+        reading and editing files costs no container start at all.
 
         Counts as activity (``touch``), so a session being worked on purely through file
         tools is not reaped out from under the run that is using it."""
@@ -553,10 +521,9 @@ class SandboxSession:
 
         Blocking IO; call it off the event loop. ``_disk`` is held for the whole
         materialise-copy-and-hash, exactly as :meth:`merge_fork` holds it for the walk:
-        a seal landing mid-copy rmtree's the very tree being read, which is either an
-        error that kills the delegation or — worse — a torn copy whose manifest would
-        record the tear as the fork point, so the merge back would read the parent's
-        surviving files as never having existed.
+        a second writer landing mid-copy leaves a torn copy whose manifest would record
+        the tear as the fork point, so the merge back would read the parent's surviving
+        files as never having existed.
 
         The manifest is hashed from the *copy*, which is the fork point by construction:
         re-reading this workspace afterwards would record a write it took since the clone
@@ -567,43 +534,46 @@ class SandboxSession:
             self._ensure_workspace()
             clone_workspace(self.workspace, child)
             self.touch()
-            return manifest_of(child, self._excludes)
+            return manifest_of(child, self._walk_excludes)
 
     def merge_fork(self, child: Path, manifest: Mapping[str, str]) -> MergeReport:
         """Land what a fork of this workspace changed, and report what could not.
 
         Blocking IO; call it off the event loop. ``_disk`` is held for the whole
-        walk-and-copy, with the workspace materialised *inside* that hold: a seal landing
-        mid-merge archives a torn tree, and one that finished first leaves the merge
-        recreating a few files where a whole workspace used to be — plaintext, unmarked,
-        and exactly the shape the orphan sweep seals back over the good archive."""
+        walk-and-copy, with the workspace materialised *inside* that hold: judging what
+        is on disk and then writing to it are one transaction, and a second writer
+        between the two would have the merge decide against a tree that no longer
+        stands."""
         with self._disk:
             self._ensure_workspace()
             return merge_workspace(
-                child=child, parent=self.workspace, manifest=manifest, excludes=self._excludes
+                child=child, parent=self.workspace, manifest=manifest, excludes=self._walk_excludes
             )
 
     def _ensure_workspace(self) -> None:
-        # Under `_disk`, so a seal in flight finishes before we judge what is on disk:
-        # the branch below throws a fragment away and restores over it, which against a
-        # half-done seal would be two writers on one directory. See `_disk`.
+        # Under `_disk` so the one-way adoption below cannot interleave with a merge
+        # holding the same lock — two writers on one directory. See `_disk`.
         with self._disk:
             marker = partial_marker(self.workspace)
             if marker.exists():
-                # A restore or a post-seal cleanup that never finished. The archive is
-                # the whole copy, so throw the fragment away and let the restore below
-                # run again rather than hand the agent half its files.
+                # A sealing-era restore that never finished: the directory holds less
+                # than the archive beside it, so throw the fragment away and let the
+                # adoption run again rather than hand the agent half its files.
                 shutil.rmtree(self.workspace, ignore_errors=True)
                 marker.unlink(missing_ok=True)
             if not self.workspace.exists():
-                if self.sealed.exists():
-                    if not self._vault.is_unlocked:
-                        raise SandboxError("cannot restore the sandbox workspace: vault is locked")
-                    restore_workspace(self.sealed.read_bytes(), self.workspace, self._vault)
-                else:
+                # Nothing writes an archive any more; one still sitting here was
+                # written by the build that sealed on reap, and this is where it is
+                # read back and retired. See :mod:`services.sandbox.legacy_seal`.
+                if not adopt_legacy_archive(self.sealed, self.workspace, self._vault):
                     self.workspace.mkdir(parents=True, exist_ok=True)
-            # The build-temp dir is dropped from the seal, so recreate it every time —
-            # a missing TMPDIR breaks mktemp and silently shrinks pip's scratch space.
+            else:
+                # Both on disk means an adoption died between its last two steps. The
+                # directory is the live copy, so the archive is residue.
+                retire_superseded_archive(self.sealed, self.workspace)
+            # The build-temp dir is not something a walk reports, and an adopted archive
+            # never carried it, so recreate it every time — a missing TMPDIR breaks
+            # mktemp and silently shrinks pip's scratch space.
             prepare_workspace(self.workspace)
 
     async def _ensure_up(self) -> None:

@@ -105,7 +105,7 @@ def pretend_fenced(monkeypatch) -> None:
     async def available(settings):
         return HostConfinement(True)
 
-    monkeypatch.setattr(gating.fence, "fence_available", available)
+    monkeypatch.setattr(gating.fence, "resolve_confinement", available)
 
 
 class TestTheDeterministicStageComesFirst:

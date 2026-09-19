@@ -67,6 +67,7 @@ from tools import (
 from tools.describe import category_names
 from tools.repo import repo_instructions
 from tools.tasks import tasks_context
+from tools.workspace_context import workspace_context
 
 logger = logging.getLogger(__name__)
 
@@ -265,7 +266,7 @@ async def _wire(app: FastAPI, settings: Settings, lifecycle: LifecycleRegistry) 
             data_dir=settings.data_dir,
             idle_ttl_s=settings.sandbox_session_idle_ttl_s,
             reap_interval_s=settings.sandbox_session_reap_interval_s,
-            excludes=settings.sandbox_session_seal_excludes,
+            excludes=settings.sandbox_walk_excludes,
             # The same stock python image the web fetcher's SSRF proxy runs in: both
             # sidecars are one stdlib script over a read-only mount, and a second image
             # to keep current would be a second thing to pull for no gain.
@@ -445,9 +446,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # reminder below is: the categories it belongs to ship with the harness core ones. It
     # returns "" outside a worktree mode, so a sandbox thread pays nothing for it.
     instruction_providers: list[InstructionProvider] = [repo_instructions]
-    # The task-list reminder is core, not a manifest's: the `tasks` category ships with the
-    # harness core categories, so its tail context has to be seeded here alongside them.
-    prompt_context_providers: list[PromptContextProvider] = [tasks_context]
+    # The task-list reminder and the workspace listing are core, not a manifest's: the
+    # `tasks` and `files` categories ship with the harness core categories, so their tail
+    # context has to be seeded here alongside them.
+    prompt_context_providers: list[PromptContextProvider] = [tasks_context, workspace_context]
     for manifest in enabled_manifests:
         for category, factory in manifest.toolsets:
             if category in tool_categories:

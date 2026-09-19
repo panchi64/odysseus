@@ -2,7 +2,8 @@
 
 The default is the container path (``Sandbox`` + ``ContainerSandbox``), reached
 through a per-conversation :class:`SandboxSessionManager` that keeps a container
-warm for iterative work and reaps it when idle. What that container may reach is
+warm for iterative work and reaps it when idle — a reap that takes the container
+down and leaves the conversation's files where they are. What that container may reach is
 decided at its network edge, not by its walls: an ``--internal`` network whose only
 exit is the allowlisting proxy in ``sidecar``.
 

@@ -248,7 +248,7 @@ async def test_without_a_fence_the_tools_refuse_and_say_what_is_missing(tmp_path
     async def no_primitive(_settings):
         return HostConfinement(False, "ripgrep (`rg`) is not installed")
 
-    monkeypatch.setattr("tools.shell.fence.fence_available", no_primitive)
+    monkeypatch.setattr("tools.shell.fence.resolve_confinement", no_primitive)
     shell = await _shell(tmp_path, confiner=None)
     refusal = await shell.call("run_command", command="echo should-not-run")
     assert "cannot be confined" in refusal
