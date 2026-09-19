@@ -20,6 +20,59 @@ export function pct(value: number, digits = 0): string {
   return `${value.toFixed(digits)}%`;
 }
 
+/** A zone designator at the end of an ISO-8601 string: `Z`, or `±HH:MM`/`±HHMM`. */
+const ZONED = /([Zz]|[+-]\d{2}:?\d{2})$/;
+
+/** An ISO-8601 instant from the backend, as epoch milliseconds — `NaN` if unparseable.
+ *
+ *  **A timestamp with no zone designator is UTC, not local.** The backend stamps every
+ *  datetime in UTC (`models/_fields.utcnow`), but SQLite has no datetime type, so a
+ *  tz-aware value round-trips through the DB as a *naive* one; `core/serde.as_utc`
+ *  re-stamps it on the way back out, and any route that reads a column without going
+ *  through it serializes `2026-09-19T13:57:41.480578` — correct UTC, no `Z`.
+ *
+ *  `Date.parse` reads exactly that form as **local time**. West of Greenwich that puts
+ *  every such timestamp in the future: on a UTC−4 host a thread created seconds ago
+ *  parses four hours ahead, so an elapsed clock clamps to zero and a relative stamp
+ *  reads "NOW" for four hours. Appending the `Z` the wire omitted is the whole fix.
+ *
+ *  Defensive on purpose rather than fixed once at the route that was caught doing it:
+ *  the naive form is what a column read produces *by default*, so the next route to
+ *  skip `as_utc` reintroduces it, silently and with no failing test. Normalizing here
+ *  means every formatter in this module is right regardless.
+ */
+export function parseInstant(iso: string): number {
+  if (!iso) return NaN;
+  // A date-only string (`2026-09-19`) is already defined as UTC by the spec — only
+  // the date-*time* form flips to local, so leave the short form alone.
+  const needsZone = iso.includes("T") && !ZONED.test(iso);
+  return Date.parse(needsZone ? `${iso}Z` : iso);
+}
+
+/** Mission elapsed time from milliseconds — fixed-width, zero-padded, every field
+ *  always present (`00:14:22`, `04:21:07`, `132:00:09`).
+ *
+ *  Deliberately NOT `duration()` below, whose contract is the opposite one: coarsest
+ *  useful unit, two units at most, human-readable. Both are right for their own job and
+ *  neither can do the other's. A mission clock is read by *position* — the operator
+ *  glances at the same three columns every time and sees which digits moved — so a
+ *  representation that drops a field once it is zero, or switches units as it grows,
+ *  destroys the only property that makes it scannable. It is also the one figure on
+ *  screen that ticks, and a string that changes width while it ticks makes everything
+ *  beside it jump.
+ *
+ *  Hours are not wrapped into days. A session running past 24h is a fact worth showing
+ *  as `27:14:02` rather than hiding behind a day counter the operator then has to add
+ *  back. Negative input clamps to zero — a clock that has not started reads `00:00:00`,
+ *  never a minus sign, and clock skew between the host and the backend is not a state
+ *  the interface should render as time travel. */
+export function met(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  return `${pad(hours, 2)}:${pad(minutes, 2)}:${pad(total % 60, 2)}`;
+}
+
 /** A duration from milliseconds, at the coarsest unit that still says something
  *  (e.g. `840ms`, `20.5s`, `39m44s`, `2h13m`).
  *
@@ -74,7 +127,7 @@ export function coord(lat: number, lon: number): string {
 
 /** ISO timestamp -> compact UTC readout (e.g. 2026-06-07 14:32:05Z). */
 export function timestamp(iso: string): string {
-  const d = new Date(iso);
+  const d = new Date(parseInstant(iso));
   if (Number.isNaN(d.getTime())) return iso;
   const p = (n: number, w = 2) => n.toString().padStart(w, "0");
   return (
@@ -85,7 +138,7 @@ export function timestamp(iso: string): string {
 
 /** Short date (e.g. 2026-06-07). */
 export function date(iso: string): string {
-  const d = new Date(iso);
+  const d = new Date(parseInstant(iso));
   if (Number.isNaN(d.getTime())) return iso;
   const p = (n: number) => n.toString().padStart(2, "0");
   return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}`;
@@ -145,7 +198,7 @@ function ordinal(day: number): string {
  *  once and then stays true. It is still mono (§2 — a timestamp is emitted, not
  *  written), which is what keeps a long stamp ambient at `micro`. */
 export function longTimestamp(iso: string): string {
-  const d = new Date(iso);
+  const d = new Date(parseInstant(iso));
   if (Number.isNaN(d.getTime())) return iso;
   const hours24 = d.getHours();
   // Midnight and noon are the two the modulo gets wrong — both land on 0, and a stamp
@@ -162,7 +215,7 @@ export function longTimestamp(iso: string): string {
 
 /** Coarse relative time (e.g. 3M AGO, 2H AGO, 5D AGO). Uppercase for labels. */
 export function relativeTime(iso: string, now: Date = new Date()): string {
-  const then = new Date(iso).getTime();
+  const then = parseInstant(iso);
   if (Number.isNaN(then)) return iso;
   const secs = Math.round((now.getTime() - then) / 1000);
   if (secs < 60) return "NOW";

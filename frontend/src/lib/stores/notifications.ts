@@ -17,6 +17,7 @@
  */
 import { createSignal } from "solid-js";
 import { api } from "~/lib/api";
+import { parseInstant } from "~/lib/format";
 import {
   streamNotifications,
   type NotificationStreamState,
@@ -106,7 +107,7 @@ function upsert(
   const idx = prev.findIndex((n) => n.id === notification.id);
   if (idx === -1) {
     const at = prev.findIndex(
-      (n) => new Date(n.createdAt) <= new Date(notification.createdAt),
+      (n) => parseInstant(n.createdAt) <= parseInstant(notification.createdAt),
     );
     const next = prev.slice();
     next.splice(at === -1 ? next.length : at, 0, notification);

@@ -95,6 +95,7 @@ export function toSummary(dto: ConversationSummaryDTO): ChatSummary {
     id: dto.id,
     title: deriveTitle(dto),
     updatedAt: dto.updated_at,
+    createdAt: dto.created_at,
     messageCount: dto.message_count,
     preview: dto.preview ?? undefined,
     model: dto.model ?? undefined,

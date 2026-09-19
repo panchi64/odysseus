@@ -1,3 +1,4 @@
+import { parseInstant } from "~/lib/format";
 import { sessionModeSpec, type SessionMode } from "~/lib/modes";
 import type { ChatSummary } from "./model";
 
@@ -229,7 +230,7 @@ function startOfDay(d: Date, daysBack = 0): number {
  *  operator thinks in days; past that they think in months, so that is what the heading
  *  becomes. */
 function recencyLabel(updatedAt: string, now: Date): string {
-  const t = new Date(updatedAt).getTime();
+  const t = parseInstant(updatedAt);
   // An unparseable stamp sorts with the oldest rather than crashing the rail. It
   // cannot be trusted into a bucket that claims to know when it was.
   if (Number.isNaN(t)) return OLDER_GROUP;

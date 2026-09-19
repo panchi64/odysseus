@@ -607,6 +607,10 @@ export interface ChatSummary {
   id: string;
   title: string;
   updatedAt: string;
+  /** When the thread was opened, ISO-8601 — the session clock's input (§10.16).
+   *  Distinct from `updatedAt`, which moves with every turn: the mission clock
+   *  measures how long this thread has been open, not how recently it spoke. */
+  createdAt: string;
   messageCount: number;
   /** Last-message snippet for preview cards. */
   preview?: string;

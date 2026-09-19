@@ -1,9 +1,13 @@
 import { For, Show, createMemo, createSignal, type JSX } from "solid-js";
 import { useNavigate } from "@solidjs/router";
 import {
+  AnnunciatorGrid,
   Composer,
+  ConsoleGroup,
+  DeepField,
   EmptyState,
   ListRow,
+  MetClock,
   PageHeader,
   Panel,
   Resource,
@@ -38,15 +42,29 @@ import { createComposerCommands } from "~/features/chat/commands/useComposerComm
 import { isPermissionLevel, type PermissionLevel } from "~/features/chat/model";
 import { activeSessionMode, codeProjectId } from "~/lib/stores/sessionMode";
 import { toast } from "~/ui";
+import { settled } from "~/lib/resource";
 
 /** Overall status for the header flag. Any down capability is an alert; a
  *  degraded *critical* capability is a warning. Non-critical degradations
- *  (e.g. keyword-only recall) stay off the top-level flag but still show as
- *  dots in the strip — the backend's `critical` flag is the severity policy. */
+ *  (e.g. keyword-only recall) stay off the top-level flag but still light their
+ *  own cell on the annunciator grid — the backend's `critical` flag is the
+ *  severity policy, and this flag is the roll-up of it, not a second one. */
 function computeOverallStatus(caps: CapabilityHealth[]): Status {
   if (caps.some((c) => c.status === "alert")) return "alert";
   if (caps.some((c) => c.critical && c.status === "warn")) return "warn";
   return "nominal";
+}
+
+/** The annunciator panel's own readout: how many cells are lit, or that none are.
+ *
+ *  Phrased as a count of what is *wrong* rather than of what is fine, because that is
+ *  the question the panel exists to answer — and "All nominal" is the one case where
+ *  a word beats a number, since zero of something bad is not a quantity anyone reads. */
+function annunciatorSummary(caps: CapabilityHealth[]): string {
+  const lit = caps.filter(
+    (c) => c.status === "warn" || c.status === "alert",
+  ).length;
+  return lit ? `${lit} annunciated` : "All nominal";
 }
 
 const RECENT_LIMIT = 6;
@@ -59,10 +77,14 @@ const RUN_STATUS_TONE: Record<ActiveRun["status"], Status> = {
   awaiting_input: "warn",
 };
 
-/** Home overview as a launchpad: a centered composer to start work, recent
- *  threads to resume it, in-flight runs, and a subtle system strip. Every panel
- *  reflects real backend state — the composer/threads via the chat seam, the
- *  facts band + capability health via `/overview`, the in-flight list via `/runs`. */
+/** Home overview as a launchpad: a centered composer to start work, recent threads to
+ *  resume it, the event sequencer, the caution & warning panel, and a subtle facts
+ *  strip. Every panel reflects real backend state — the composer/threads via the chat
+ *  seam, the facts band + capability health via `/overview`, the sequencer via `/runs`.
+ *
+ *  The composer's region is the screen's **licensed moment** (§11.1) and the only one:
+ *  it is the one part of the launchpad with nothing in it but the thing the operator
+ *  came to use, so the deep field goes there and nowhere else on the page. */
 export function DashboardScreen(): JSX.Element {
   const navigate = useNavigate();
   const { data: overview, refetch: refetchOverview } = useOverview();
@@ -77,6 +99,11 @@ export function DashboardScreen(): JSX.Element {
     return list ? entrySessionId(list) : null;
   });
   const recent = createMemo(() => sessions()?.slice(0, RECENT_LIMIT) ?? []);
+  // The sequencer's header count. `settled` reads the resource WITHOUT suspending —
+  // this is rendered outside the `Resource` boundary that guards the list itself, and
+  // `/runs` re-polls every 15s, so a tracked `runs()` here would throw the whole route
+  // to the shell's fallback on every poll.
+  const activeCount = () => settled(runs)?.length ?? 0;
 
   const overallStatus = (): Status => {
     const o = overview();
@@ -188,9 +215,18 @@ export function DashboardScreen(): JSX.Element {
 
       {/* Composer — the focal point, vertically centered in the free space. It
           is the only card on this screen that lights its accent on focus, which
-          is what makes "start typing" the obvious move on arrival (§6.2). */}
-      <div class="flex min-h-0 flex-1 items-center justify-center py-8">
-        <div class="w-full max-w-3xl">
+          is what makes "start typing" the obvious move on arrival (§6.2).
+
+          This region is also the launchpad's **licensed moment** (§11.1): the one
+          place on the screen with nothing but the composer in it, so the deep field
+          sits behind it and nowhere else. `overflow-hidden` crops the field to the
+          region — the composer's bloom is wider than this box, so the field is on a
+          sibling layer rather than a parent, and the bloom is left to spill. */}
+      <div class="relative flex min-h-0 flex-1 items-center justify-center py-8">
+        <div class="pointer-events-none absolute inset-0 overflow-hidden">
+          <DeepField />
+        </div>
+        <div class="relative w-full max-w-3xl">
           <Composer
             size="lg"
             title="New conversation"
@@ -241,8 +277,24 @@ export function DashboardScreen(): JSX.Element {
             </Show>
           </Panel>
 
-          {/* In flight — most subtle: real runs not yet terminal. */}
-          <Panel label="In flight" bare class="lg:col-span-1">
+          {/* The event sequencer (§10.14): runs as numbered mission events against
+              the clock, rather than an undifferentiated list. Each row is designated
+              by its run id — there is deliberately no SEQ ordinal, because the
+              backend assigns none and an array index would be this layer inventing
+              state it does not own. */}
+          <ConsoleGroup
+            label="Sequence"
+            class="lg:col-span-1"
+            right={
+              <Text variant="plate" tone="dim">
+                {/* `settled`, never `runs()`: a tracked read of a refetching resource
+                    suspends the nearest boundary, which here is the shell's around the
+                    whole route — and this list re-polls every 15s. Same rule `Resource`
+                    itself follows for the body below. */}
+                {activeCount() ? `${activeCount()} active` : "—"}
+              </Text>
+            }
+          >
             <Resource
               data={runs}
               emptyMessage="No active runs"
@@ -258,7 +310,21 @@ export function DashboardScreen(): JSX.Element {
                       <ListRow
                         label={
                           <span class="flex min-w-0 items-center gap-2">
-                            <Text variant="label" tone="dim">
+                            {/* A queued run has no start time yet, so its clock
+                                reads `--:--:--`. That is the honest state: it is
+                                waiting, not running fast. */}
+                            <MetClock
+                              startedAt={run.startedAt}
+                              endedAt={run.endedAt}
+                              variant="micro"
+                              prefix={false}
+                              class="shrink-0"
+                            />
+                            {/* The run's own tag (CHAT / AGENT). It is the only
+                                thing distinguishing a stateless agent run from a
+                                chat one, and a stateless run has no conversation to
+                                click through to either. */}
+                            <Text variant="plate" tone="dim" class="shrink-0">
                               {run.kind}
                             </Text>
                             <Text variant="micro" tone="dim" class="truncate">
@@ -282,24 +348,50 @@ export function DashboardScreen(): JSX.Element {
                 </For>
               )}
             </Resource>
-          </Panel>
+          </ConsoleGroup>
         </div>
 
-        {/* System strip — most subtle; compact, marquees only if it overflows. */}
+        {/* Both panels below read `/overview`, so they share ONE `Resource`. Two of
+            them over one resource renders its loading arm twice and, on failure, two
+            stacked error rows with two retry buttons for a single fetch. */}
         <Resource
           data={overview}
           onRetry={refetchOverview}
           errorMessage="Telemetry unavailable"
         >
           {(o) => (
-            <SystemStrip
-              band={overviewBand(
-                o(),
-                selectedModelLabel(),
-                effectiveContextWindow(),
-              )}
-              capabilities={o().capabilities}
-            />
+            <>
+              {/* Caution & warning (§10.15) — the capability health that used to be a
+                  row of equally-bright dots on the system strip. */}
+              <ConsoleGroup
+                label="Caution & warning"
+                right={
+                  <Text variant="plate" tone="dim">
+                    {annunciatorSummary(o().capabilities)}
+                  </Text>
+                }
+              >
+                <AnnunciatorGrid
+                  cells={o().capabilities.map((c) => ({
+                    label: c.label,
+                    status: c.status,
+                    detail: c.detail,
+                    href: c.remediationHref,
+                  }))}
+                />
+              </ConsoleGroup>
+
+              {/* System strip — most subtle; compact, marquees only if it overflows.
+                  Facts only now: anything that can be *wrong* is on the annunciator
+                  grid above, where it can be seen rather than skimmed past. */}
+              <SystemStrip
+                band={overviewBand(
+                  o(),
+                  selectedModelLabel(),
+                  effectiveContextWindow(),
+                )}
+              />
+            </>
           )}
         </Resource>
       </div>

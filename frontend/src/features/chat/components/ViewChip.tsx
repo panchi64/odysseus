@@ -1,5 +1,6 @@
 import { Show, type JSX } from "solid-js";
 import { Icon, StatusFlag, Text, cx, type IconName } from "~/ui";
+import { parseInstant } from "~/lib/format";
 import { detectContentKind, type ViewItem } from "../viewport/viewItems";
 
 /** Fallback kind word derived from `icon` alone, for callers that only have a
@@ -39,7 +40,7 @@ export function viewItemVersionLabel(item: ViewItem): string | undefined {
 export function viewItemTimeLabel(item: ViewItem): string | undefined {
   const iso = item.snapshot?.createdAt;
   if (!iso) return undefined;
-  const d = new Date(iso);
+  const d = new Date(parseInstant(iso));
   if (Number.isNaN(d.getTime())) return undefined;
   const p = (n: number) => n.toString().padStart(2, "0");
   return `${p(d.getHours())}:${p(d.getMinutes())}`;

@@ -14,6 +14,7 @@ import {
   Tooltip,
   type Status,
 } from "~/ui";
+import { parseInstant } from "~/lib/format";
 import { TRANSPORT_HINT, TRUST_HINT } from "../hints";
 import type { McpServer, McpStatus } from "../model";
 
@@ -26,7 +27,7 @@ const mcpStatusFlag: Record<McpStatus, Status> = {
 /** Format an ISO timestamp to a short readable label. */
 function formatErrorTime(iso: string): string {
   try {
-    return new Date(iso).toLocaleString(undefined, {
+    return new Date(parseInstant(iso)).toLocaleString(undefined, {
       month: "short",
       day: "numeric",
       hour: "2-digit",

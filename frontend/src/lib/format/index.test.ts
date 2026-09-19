@@ -1,5 +1,17 @@
+// Pin the suite's timezone. `bun test` runs at UTC by default, which is the one zone
+// where every local/UTC confusion in this module looks correct — `parseInstant`'s
+// regression test cannot fail there, and the local-time fixtures below pass for the
+// wrong reason. Pinning to a fixed offset zone makes both real, and makes the whole
+// file deterministic rather than dependent on whichever zone the runner picked.
+//
+// It does NOT matter that `import` declarations are hoisted above this line and so run
+// first: the engine resolves the zone lazily, per `Date` operation, not once at module
+// evaluation. What would break the pin is a `Date` value *computed* at import time and
+// reused — there is none here, and the fixtures below build their dates inside `it`.
+process.env.TZ = "America/New_York";
+
 import { describe, expect, it } from "bun:test";
-import { longTimestamp } from "./index";
+import { longTimestamp, met, parseInstant } from "./index";
 
 /** Built from local-time parts on purpose. `longTimestamp` reads the operator's clock
  *  (see its docstring), so a fixture written as a UTC string would shift the expected
@@ -61,5 +73,85 @@ describe("longTimestamp", () => {
     // value, which is at least diagnosable, instead of "Invalid Date".
     expect(longTimestamp("not a date")).toBe("not a date");
     expect(longTimestamp("")).toBe("");
+  });
+});
+
+describe("met", () => {
+  const SEC = 1000;
+  const MIN = 60 * SEC;
+  const HOUR = 60 * MIN;
+
+  it("always renders all three fields, zero-padded", () => {
+    expect(met(0)).toBe("00:00:00");
+    expect(met(9 * SEC)).toBe("00:00:09");
+    expect(met(9 * MIN + 9 * SEC)).toBe("00:09:09");
+    expect(met(4 * HOUR + 21 * MIN + 7 * SEC)).toBe("04:21:07");
+  });
+
+  it("keeps a constant width as it ticks, which is the point", () => {
+    // The clock is read by position. Every value under 100 hours must measure the
+    // same, or the figures beside it jump once a second.
+    const widths = new Set(
+      [0, SEC, MIN, HOUR, 59 * MIN + 59 * SEC, 99 * HOUR].map(
+        (ms) => met(ms).length,
+      ),
+    );
+    expect(widths).toEqual(new Set([8]));
+  });
+
+  it("does not wrap hours into days", () => {
+    // A session running past 24h says so, rather than hiding behind a day counter
+    // the operator has to add back.
+    expect(met(27 * HOUR + 14 * MIN + 2 * SEC)).toBe("27:14:02");
+    expect(met(132 * HOUR + 9 * SEC)).toBe("132:00:09");
+  });
+
+  it("truncates rather than rounds, so a field never reads ahead of itself", () => {
+    expect(met(1999)).toBe("00:00:01");
+    expect(met(59 * MIN + 59_999)).toBe("00:59:59");
+  });
+
+  it("clamps a negative elapsed to zero", () => {
+    // Clock skew between host and backend is not something to render as time travel.
+    expect(met(-1)).toBe("00:00:00");
+    expect(met(-5 * HOUR)).toBe("00:00:00");
+  });
+});
+
+describe("parseInstant", () => {
+  it("reads a zone-less backend timestamp as UTC, not local", () => {
+    // The regression this exists for: SQLite strips the tzinfo, a route that misses
+    // `as_utc` ships `2026-09-19T13:57:41.480578`, and `Date.parse` calls that local.
+    // West of Greenwich the bare parse lands in the future and every elapsed clock
+    // pins to zero.
+    //
+    // Asserted against `Date.UTC`, which takes no timezone from the host. Comparing
+    // against `Date.parse("…Z")` would have been the natural spelling and is the wrong
+    // one: on a machine running UTC the buggy and correct answers are identical, so the
+    // fixture could only fail where the bug happened to reproduce.
+    expect(parseInstant("2026-09-19T13:57:41.480578")).toBe(
+      Date.UTC(2026, 8, 19, 13, 57, 41, 480),
+    );
+    expect(parseInstant("2026-09-19T13:57:41")).toBe(
+      Date.UTC(2026, 8, 19, 13, 57, 41),
+    );
+  });
+
+  it("leaves a timestamp that already carries a zone alone", () => {
+    const utc = Date.parse("2026-09-19T13:57:41Z");
+    expect(parseInstant("2026-09-19T13:57:41Z")).toBe(utc);
+    expect(parseInstant("2026-09-19T13:57:41z")).toBe(utc);
+    expect(parseInstant("2026-09-19T09:57:41-04:00")).toBe(utc);
+    expect(parseInstant("2026-09-19T09:57:41-0400")).toBe(utc);
+    expect(parseInstant("2026-09-19T15:57:41+02:00")).toBe(utc);
+  });
+
+  it("leaves a date-only string alone — the spec already calls that UTC", () => {
+    expect(parseInstant("2026-09-19")).toBe(Date.parse("2026-09-19"));
+  });
+
+  it("hands back NaN for junk rather than a wrong instant", () => {
+    expect(Number.isNaN(parseInstant("not a date"))).toBe(true);
+    expect(Number.isNaN(parseInstant(""))).toBe(true);
   });
 });

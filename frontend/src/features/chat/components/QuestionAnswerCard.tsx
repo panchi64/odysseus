@@ -1,5 +1,5 @@
 import { For, Show, type JSX } from "solid-js";
-import { Stack, Text } from "~/ui";
+import { ConsoleGroup, Stack, Text } from "~/ui";
 import type { AnsweredQuestion } from "../model";
 
 /** The row's index in the machine's own voice — `01`, `02`. Padded so a card with ten
@@ -51,21 +51,24 @@ export function QuestionAnswerCard(props: {
   answers: AnsweredQuestion[];
 }): JSX.Element {
   return (
-    <div class="border border-line bg-surface">
-      {/* The band's header: the machine label left, and the one diegetic figure this
-          panel spends (§11) at its right edge — never between a label and its value. */}
-      <div class="flex items-center justify-between gap-2 border-b border-line px-3 py-1.5">
-        <Text variant="meta" tone="dim">
-          Asked you
-        </Text>
+    // `ConsoleGroup` (§10.14), not a hand-rolled frame. This band predates it and was
+    // the same skeleton spelled out inline — frame, header rule, `divide-y` rows — which
+    // is the shape the shell was extracted for. Its legend is `plate` rather than `meta`
+    // now, per §4: "Asked you" names the region, it does not report a state.
+    <ConsoleGroup
+      label="Asked you"
+      flush
+      right={
+        // The one diegetic figure this panel spends (§11), at the band's edge.
         <Text variant="micro" tone="dim" class="tabular-nums">
           {props.answers.length} ANSWERED
         </Text>
-      </div>
+      }
+    >
       <div class="divide-y divide-line">
         <For each={props.answers}>
           {(answer, index) => (
-            <div class="flex gap-3 px-3 py-2.5">
+            <div class="flex gap-3 px-2 py-2.5">
               <Text
                 variant="micro"
                 tone="dim"
@@ -115,6 +118,6 @@ export function QuestionAnswerCard(props: {
           )}
         </For>
       </div>
-    </div>
+    </ConsoleGroup>
   );
 }

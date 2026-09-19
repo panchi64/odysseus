@@ -106,6 +106,20 @@ export {
   type InstrumentBandProps,
   type BandCell,
 } from "./components/InstrumentBand";
+// The mission-control register (§10.14–10.16, §11.1). A console group is the frame
+// the other two sit in; the deep field is the one expressive device per screen, and
+// belongs only in a region with nothing to compete with.
+export {
+  ConsoleGroup,
+  type ConsoleGroupProps,
+} from "./components/ConsoleGroup";
+export {
+  AnnunciatorGrid,
+  type AnnunciatorGridProps,
+  type AnnunciatorCell,
+} from "./components/AnnunciatorGrid";
+export { MetClock, type MetClockProps } from "./components/MetClock";
+export { DeepField, type DeepFieldProps } from "./components/DeepField";
 export { Tile, type TileProps } from "./components/Tile";
 export { Chip, type ChipProps } from "./components/Chip";
 export {

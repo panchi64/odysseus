@@ -4,6 +4,7 @@ import {
   Frames,
   Icon,
   Menu,
+  MetClock,
   Text,
   TypewriterText,
   type MenuItem,
@@ -41,6 +42,9 @@ export interface ChatRoomHeaderProps {
   working: () => boolean;
   /** What this thread is running on, or null when there is nothing to name. */
   model: () => string | null;
+  /** When the thread was opened, ISO-8601 — the session clock (§10.16). Absent for a
+   *  staged thread, which has not been created yet and so has nothing to count from. */
+  createdAt: () => string | undefined;
   conversationId: () => string | null;
   streaming: () => boolean;
   /** Length of the transcript, which is what makes compact and copy available. */
@@ -89,12 +93,31 @@ export function ChatRoomHeader(props: ChatRoomHeaderProps): JSX.Element {
             so it follows the title; the model is true of the whole thread whether or
             not it has been named, so it leads. The two are near-exclusive anyway —
             the hint appears only for a staged worktree thread. */}
-        <Show when={props.model()}>
-          {(model) => (
-            <Text variant="micro" tone="dim" class="truncate">
-              {model()}
-            </Text>
-          )}
+        <Show when={props.model() ?? props.createdAt()}>
+          {/* The mission clock rides the eyebrow beside the model because the two
+              answer the same kind of question — what is true of this thread as a
+              whole, rather than of any turn in it — and because §11 wants its one
+              diegetic detail at a region's edge rather than in the reading path.
+              It is the thread's own clock: how long this conversation has been
+              open, not how recently it spoke. */}
+          <span class="flex min-w-0 items-center gap-2">
+            <Show when={props.model()}>
+              {(model) => (
+                <Text variant="micro" tone="dim" class="truncate">
+                  {model()}
+                </Text>
+              )}
+            </Show>
+            <Show when={props.createdAt()}>
+              {(createdAt) => (
+                <MetClock
+                  startedAt={createdAt()}
+                  variant="micro"
+                  class="shrink-0"
+                />
+              )}
+            </Show>
+          </span>
         </Show>
         <span class="flex min-w-0 items-center gap-1.5">
           <Show

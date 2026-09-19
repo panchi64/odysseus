@@ -74,7 +74,7 @@ export const ACCENT_DEFAULTS: Record<ThemeMode, Record<AccentToken, string>> = {
     "accent-info": "#5aa2ff",
   },
   paper: {
-    accent: "#0077b6",
+    accent: "#0b3d91",
     "accent-nominal": "#0e7a46",
     "accent-warn": "#9a6510",
     "accent-alert": "#c0342b",

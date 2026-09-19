@@ -1,6 +1,7 @@
 /** Schedule-builder helpers shared by the create/edit form and the task list's
  *  human-readable schedule summary — extracted so the value<->seconds mapping
  *  and cron-shape hint live in exactly one place. */
+import { parseInstant } from "~/lib/format";
 import type { TaskSchedule } from "./model";
 
 export type IntervalUnit = "seconds" | "minutes" | "hours" | "days";
@@ -29,7 +30,11 @@ export function secondsToValueUnit(seconds: number): {
 /** `datetime-local` <-> ISO. `datetime-local` has no timezone, so it's treated
  *  as the operator's local time (matching the native picker's own semantics). */
 export function isoToLocalInput(iso: string): string {
-  const d = new Date(iso);
+  // The ISO side is a backend stamp, so it goes through `parseInstant` — read as
+  // local, a zone-less one would put the picker hours off. The *other* direction
+  // stays a bare `new Date` (`TaskFormModal`), because a `datetime-local` value
+  // genuinely is wall-clock in the operator's zone.
+  const d = new Date(parseInstant(iso));
   if (Number.isNaN(d.getTime())) return "";
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
@@ -45,7 +50,7 @@ export function humanizeSchedule(schedule: TaskSchedule): string {
   switch (schedule.type) {
     case "once":
       return schedule.runAt
-        ? new Date(schedule.runAt).toLocaleString()
+        ? new Date(parseInstant(schedule.runAt)).toLocaleString()
         : "once";
     case "interval": {
       if (!schedule.everySeconds) return "interval";

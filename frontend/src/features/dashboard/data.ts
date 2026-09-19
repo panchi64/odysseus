@@ -39,6 +39,12 @@ interface RunDTO {
   id: string;
   kind: string;
   status: string;
+  // Snake_case on the wire because, unlike the two below, these carry no
+  // serialization alias on `RunView` (`backend/routes/runs.py`). Worth knowing
+  // before assuming one convention across this DTO.
+  created_at: string;
+  started_at?: string | null;
+  ended_at?: string | null;
   conversationId?: string | null;
   conversationTitle?: string | null;
 }
@@ -85,6 +91,11 @@ function toActiveRun(dto: RunDTO): ActiveRun {
     label: dto.conversationTitle ?? `${dto.kind} run`,
     status,
     detail: RUN_STATUS_LABEL[dto.status] ?? dto.status.toUpperCase(),
+    // A queued run has been created but not started; its clock reads `--:--:--`
+    // until it does, which is the honest reading. Falling back to `created_at`
+    // here would show queue time as though it were run time.
+    startedAt: dto.started_at ?? undefined,
+    endedAt: dto.ended_at ?? undefined,
     conversationId: dto.conversationId ?? undefined,
   };
 }
