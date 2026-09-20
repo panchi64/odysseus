@@ -1,6 +1,7 @@
 import { createSignal, For, type JSX } from "solid-js";
 import { useLocation } from "@solidjs/router";
-import { Button, ListRow, Text, Tooltip, cx } from "~/ui";
+import { Button, ListRow, Text, Tooltip, cx, toast } from "~/ui";
+import { createInFlight } from "~/lib/inFlight";
 import { useSession } from "~/lib/stores/session";
 import { useSettingsRoute } from "~/app/settings-dialog";
 import { RecentsRail } from "~/features/chat/components/RecentsRail";
@@ -62,6 +63,31 @@ export function Sidebar(): JSX.Element {
   const [commsOverride, setCommsOverride] = createSignal<boolean>();
   const commsOpen = (): boolean =>
     commsOverride() ?? activeArea()?.id === comms.id;
+
+  /** LOCK, while the backend is still being told.
+   *
+   *  The call is a round trip and the screen used to do nothing at all across it: the
+   *  button stayed live, nothing moved, and on a backend that hangs the operator gets
+   *  up and leaves a workspace that still looks — and is — unlocked. The throbber is
+   *  the minimum, and the failure is said out loud, because "it didn't lock" is the
+   *  one outcome here that no amount of the interface looking calm can be allowed to
+   *  hide. */
+  const locking = createInFlight<"lock">();
+  const onLock = (): void => {
+    void locking.run("lock", async () => {
+      try {
+        await session.lock();
+      } catch (err) {
+        // This session ended either way, which is why the screen still goes to the
+        // gate — but the vault key is the backend's, and it never said it dropped it.
+        toast.error(
+          `This session ended, but the vault did NOT lock — the backend never confirmed it. ${
+            err instanceof Error ? err.message : "Try again."
+          }`,
+        );
+      }
+    });
+  };
 
   return (
     <nav class="flex h-full min-h-0 flex-col bg-surface">
@@ -164,9 +190,10 @@ export function Sidebar(): JSX.Element {
             variant="ghost"
             size="sm"
             leading="lock"
-            onClick={() => void session.lock()}
+            pending={locking.has("lock")}
+            onClick={onLock}
           >
-            Lock
+            {locking.has("lock") ? "Locking…" : "Lock"}
           </Button>
         </div>
       </div>

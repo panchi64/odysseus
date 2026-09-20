@@ -545,6 +545,17 @@ export async function setRoleBinding(
   }
 }
 
+/** Whether two picks name the same model on the same endpoint. Compared by value,
+ *  not identity: the echo is re-seated from the role bindings on every reconcile, so
+ *  the object holding a selection is routinely replaced by an equal one. */
+function sameSelection(
+  a: ModelSelection | null,
+  b: ModelSelection | null,
+): boolean {
+  if (!a || !b) return a === b;
+  return a.endpointId === b.endpointId && a.model === b.model;
+}
+
 /** Persist the chat model by writing the backend `main` binding (single endpoint +
  *  pinned model), moving the local echo optimistically and reconciling from the
  *  backend after — rolling the echo back if the write fails. `main` is
@@ -560,7 +571,13 @@ export async function setSelectedModel(
     await putRoleBinding("main", [sel.endpointId], sel.model);
     store.refreshRoles(); // reconcile with the persisted binding
   } catch (e) {
-    store.setSelection(previous); // rollback
+    // Roll back only while the echo is still showing *this* call's pick. A slow
+    // write that fails is not evidence about whatever the operator picked after it:
+    // restoring `previous` unconditionally would undo a later pick that the backend
+    // accepted, putting the picker on a model nobody chose and nothing persisted —
+    // the one wrong answer worse than leaving the failed one on screen. When a newer
+    // pick owns the echo, the `refreshRoles` below is what confirms it.
+    if (sameSelection(store.selection(), sel)) store.setSelection(previous);
     store.refreshRoles();
     throw e;
   }
