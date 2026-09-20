@@ -103,7 +103,7 @@ export function McpServerCard(props: McpServerCardProps): JSX.Element {
               size="sm"
               variant="ghost"
               leading="refresh"
-              disabled={props.busy}
+              pending={props.busy}
               onClick={() => props.onRetry(props.server)}
             >
               {props.busy ? "Connecting…" : "Retry"}

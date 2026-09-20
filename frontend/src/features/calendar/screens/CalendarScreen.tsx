@@ -19,6 +19,7 @@ import {
   toast,
 } from "~/ui";
 import { date, parseInstant } from "~/lib/format";
+import { createInFlight } from "~/lib/inFlight";
 import {
   useCalendars,
   useCalendarEvents,
@@ -156,7 +157,14 @@ export function CalendarScreen(): JSX.Element {
 
   // Sync state
   const [syncing, setSyncing] = createSignal(false);
-  const [parsing, setParsing] = createSignal(false);
+
+  // Both of these write events, and both are reachable twice before the first write
+  // lands — Enter in the quick-add field, a second click on a slow Create. The claim is
+  // keyed by what is being written (the phrase, the event being amended or "new") so a
+  // repeat of the *same* request is what gets refused; there is one bar and one modal,
+  // so `any()` is what the control reads.
+  const quickAdding = createInFlight();
+  const savingEvent = createInFlight();
 
   // One form for both create and edit — the two differ only in what seeds the fields and
   // where the save goes, so a second modal would be the same inputs drifting apart.
@@ -345,27 +353,33 @@ export function CalendarScreen(): JSX.Element {
     };
     const target = editing();
 
-    try {
-      if (target) {
-        await updateEvent(target, { ...fields, calendarId: calId });
-      } else {
-        await createEvent({ ...fields, calendarId: calId });
+    // The modal stays open until the write answers, which is the whole reason the guard
+    // is here rather than on the button alone: for as long as it is open the Create
+    // control is still under the pointer, and two presses on a slow link were two
+    // identical events.
+    await savingEvent.run(target?.id ?? "new", async () => {
+      try {
+        if (target) {
+          await updateEvent(target, { ...fields, calendarId: calId });
+        } else {
+          await createEvent({ ...fields, calendarId: calId });
+        }
+      } catch (err) {
+        toast.error(
+          err instanceof Error
+            ? err.message
+            : target
+              ? "Could not save event"
+              : "Could not create event",
+        );
+        return;
       }
-    } catch (err) {
-      toast.error(
-        err instanceof Error
-          ? err.message
-          : target
-            ? "Could not save event"
-            : "Could not create event",
-      );
-      return;
-    }
 
-    setNewEventOpen(false);
-    setSelectedEvent(null);
-    toast.success(`Event "${title}" ${target ? "updated" : "created"}`);
-    resetEventForm();
+      setNewEventOpen(false);
+      setSelectedEvent(null);
+      toast.success(`Event "${title}" ${target ? "updated" : "created"}`);
+      resetEventForm();
+    });
   }
 
   // Quick add: the backend parses the phrase into a draft, which is created straight away.
@@ -380,19 +394,21 @@ export function CalendarScreen(): JSX.Element {
       toast.error("No calendar to add to");
       return;
     }
-    setParsing(true);
-    try {
-      const draft = await parseEventPhrase(phrase);
-      await createEvent({ ...draft, calendarId: calId });
-      setQuickAdd("");
-      toast.success(`Event "${draft.title}" created`);
-    } catch (err) {
-      toast.error(
-        err instanceof Error ? err.message : "Could not read that phrase",
-      );
-    } finally {
-      setParsing(false);
-    }
+    // Guarded here rather than on the Add button, because Enter in the field is a second
+    // entry point into the same two writes — a phrase sent twice is one parse call and
+    // one POST too many, and the duplicate lands on the operator's real calendar.
+    await quickAdding.run(phrase, async () => {
+      try {
+        const draft = await parseEventPhrase(phrase);
+        await createEvent({ ...draft, calendarId: calId });
+        setQuickAdd("");
+        toast.success(`Event "${draft.title}" created`);
+      } catch (err) {
+        toast.error(
+          err instanceof Error ? err.message : "Could not read that phrase",
+        );
+      }
+    });
   }
 
   // Initialise newCalendarId when calendars resolve.
@@ -561,10 +577,10 @@ export function CalendarScreen(): JSX.Element {
               variant="default"
               size="sm"
               leading="plus"
-              disabled={parsing()}
+              pending={quickAdding.any()}
               onClick={handleQuickAdd}
             >
-              {parsing() ? "Reading…" : "Add"}
+              {quickAdding.any() ? "Reading…" : "Add"}
             </Button>
           </Row>
 
@@ -788,6 +804,7 @@ export function CalendarScreen(): JSX.Element {
             <Button
               variant="primary"
               leading={editing() ? "check" : "plus"}
+              pending={savingEvent.any()}
               onClick={handleSaveEvent}
             >
               {editing() ? "Save" : "Create"}
