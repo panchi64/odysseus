@@ -2,7 +2,7 @@
  * What the backend actually sends — the snake_case shapes, and nothing that interprets
  * them.
  *
- * Kept apart from `mappers.ts` for one reason: these declarations change when the
+ * Kept apart from the mappers for one reason: these declarations change when the
  * *backend* changes, and the mappers change when the *screen* needs something different
  * from the same payload. A file holding both would be edited from two directions at once,
  * and a reader trying to answer "what does the wire look like" would have to read past the

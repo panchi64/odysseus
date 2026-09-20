@@ -16,7 +16,7 @@
  */
 
 import { produce, type SetStoreFunction } from "solid-js/store";
-import { toActiveRun } from "../data/mappers";
+import { toActiveRun } from "../data/summaries";
 import type { ConversationDetailDTO } from "../data/wire";
 import type { ChatMessage } from "../model";
 

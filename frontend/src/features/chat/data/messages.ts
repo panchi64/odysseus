@@ -1,0 +1,162 @@
+/**
+ * A persisted turn, read as the transcript's own vocabulary.
+ *
+ * The cold conversation load's half of the pair — `toMessage` reconstructs an assistant
+ * turn's blocks from flat history, where the live stream is handed them in true emission
+ * order. Everything it reaches for (a host command, a version chip, a citation) comes
+ * from the module that owns that shape, so the two readers of a payload cannot disagree
+ * about what it means.
+ *
+ * Pure: nothing here touches a store, a resource or the network. Ordering, deduping and
+ * placement beyond a single turn belong to whoever is folding.
+ */
+
+import { asCompactionReason } from "../compactionReason";
+import { describeToolArgs, describeToolResult } from "../toolSummary";
+import type {
+  AssistantBlock,
+  ChatMessage,
+  Citation,
+  ToolImage,
+  ToolInvocation,
+} from "../model";
+import { isTerminalTool } from "../toolPresentation";
+import type { MessageDTO, ToolCallDTO, ToolImageDTO } from "./wire";
+import { citationsFromToolResult } from "./citations";
+import { commandBoundary, toHostCommand } from "./hostCommands";
+import { toVersionChipBlock } from "./viewSnapshots";
+
+/** Format tool args as a compact `k=v` summary for the call card. */
+export function formatArgs(args: Record<string, unknown>): string {
+  return Object.entries(args)
+    .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`)
+    .join(", ");
+}
+
+export function stringifyResult(result: unknown): string | undefined {
+  if (result == null) return undefined;
+  return typeof result === "string" ? result : JSON.stringify(result, null, 2);
+}
+
+/** The wire's snake_case image list as the model's, or undefined when a call returned
+ *  none — the same mapping for the live event and the cold DTO, since a screenshot has
+ *  to look identical whether the operator watched it happen or reloaded into it. */
+export function toolImages(
+  images: ToolImageDTO[] | undefined,
+): ToolImage[] | undefined {
+  if (!images?.length) return undefined;
+  return images.map((i) => ({ mediaType: i.media_type, data: i.data }));
+}
+
+export function toTool(dto: ToolCallDTO): ToolInvocation {
+  return {
+    id: dto.id,
+    name: dto.name,
+    args: formatArgs(dto.args),
+    detail: describeToolArgs(dto.name, dto.args),
+    status: dto.status,
+    // Only a call that succeeded has an outcome to report; a failure's story is
+    // its error, which the card shows in full.
+    outcome:
+      dto.status === "ok"
+        ? describeToolResult(dto.name, dto.result)
+        : undefined,
+    result: stringifyResult(dto.result),
+    error: dto.error ?? undefined,
+    images: toolImages(dto.images),
+    // A backgrounded command is still a command run on the operator's machine, and it
+    // renders as an ordinary card rather than as a terminal — so this is the only place
+    // its declaration and fence would otherwise be dropped.
+    boundary: commandBoundary(dto.result),
+  };
+}
+
+export function toMessage(dto: MessageDTO): ChatMessage {
+  const base: ChatMessage = {
+    id: dto.id,
+    role: dto.role,
+    content: dto.content,
+    createdAt: dto.created_at ?? new Date().toISOString(),
+    versionIndex: dto.version_index,
+    versionCount: dto.version_count,
+    pinned: dto.pinned,
+    attachmentIds: dto.attachment_ids,
+    fileRefs: dto.file_refs,
+    foldedMessages: dto.messages_compacted ?? undefined,
+    tokensBefore: dto.tokens_before ?? undefined,
+    tokensAfter: dto.tokens_after ?? undefined,
+    compactionReason: asCompactionReason(dto.compaction_reason),
+    // Length, not `??`: the backend defaults this to `[]` on *every* row, and an empty
+    // array is not nullish — so `?? undefined` would hang a useless empty list off every
+    // user and assistant turn. Absent-not-empty, the same rule the fields above follow.
+    summarySections: dto.sections?.length ? dto.sections : undefined,
+  };
+  if (dto.role !== "assistant") return base;
+  // Cold history is still flat (no recorded emission order), so reconstruct the
+  // turn's blocks in the legacy lane order — reasoning, the tool/host calls, the
+  // version chips, then the answer. (Once the backend persists ordered blocks, map
+  // them straight through here; the live stream already carries true order.)
+  const blocks: AssistantBlock[] = [];
+  const citations: Citation[] = [];
+  if (dto.reasoning)
+    blocks.push({
+      kind: "thinking",
+      id: `${dto.id}-reasoning`,
+      text: dto.reasoning,
+    });
+  for (const t of dto.tools) {
+    // The same question the live fold asks, off the same table — so a reload cannot
+    // turn a terminal back into a generic tool card.
+    if (isTerminalTool(t.name))
+      blocks.push({
+        kind: "host_command",
+        id: `${dto.id}-${t.id}`,
+        command: toHostCommand(t),
+      });
+    else
+      blocks.push({ kind: "tool", id: `${dto.id}-${t.id}`, tool: toTool(t) });
+    // A settled `ask_user` carries what it asked and what it was told. Rebuilt as the
+    // same answered question block the live `question.answered` fold produces, so a
+    // reload renders the exchange rather than leaving it as prose inside a tool row.
+    // Placed after its own call for the same reason the live one sits on the turn it
+    // belongs to.
+    if (t.answers?.length)
+      blocks.push({
+        kind: "question",
+        id: `${dto.id}-${t.id}-answers`,
+        question: {
+          toolCallId: t.id,
+          questions: [],
+          answers: t.answers.map((a) => ({
+            question: a.question,
+            selections: a.selections ?? [],
+            text: a.text ?? undefined,
+          })),
+        },
+      });
+    for (const c of citationsFromToolResult(t.name, t.result))
+      if (!citations.some((existing) => existing.url === c.url))
+        citations.push(c);
+  }
+  for (const v of dto.versions ?? [])
+    blocks.push(
+      toVersionChipBlock(dto.id, {
+        snapshotId: v.snapshot_id,
+        title: v.title ?? undefined,
+        previewKind: v.preview_kind,
+      }),
+    );
+  if (dto.content)
+    blocks.push({ kind: "text", id: `${dto.id}-text`, text: dto.content });
+  // The answer lives in the text block(s); keep `content` empty for assistant
+  // turns so it isn't a second, divergent copy of the same text.
+  return {
+    ...base,
+    content: "",
+    blocks,
+    citations: citations.length ? citations : undefined,
+    blocked: dto.blocked_reason != null,
+    blockedDetail: dto.blocked_reason ?? undefined,
+    model: dto.model ?? undefined,
+  };
+}
