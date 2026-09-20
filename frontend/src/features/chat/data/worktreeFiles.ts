@@ -17,7 +17,7 @@
  * holds it.
  */
 
-import { api } from "~/lib/api";
+import { api, isApiError } from "~/lib/api";
 
 /** Which filesystem answered a listing. */
 export type WorktreeRoot = "worktree" | "project";
@@ -71,19 +71,41 @@ export function worktreeFilePath(
   return `/projects/${projectId}/file?${query}`;
 }
 
-/** One file's text. The backend caps what it will send and reports the cut in a header,
- *  so a viewer showing the first two megabytes of a file can say so instead of looking
- *  like a viewer showing the file. */
+/** What the viewer needs to render one file — or to say why it cannot. */
+export interface WorktreeFileText {
+  text: string;
+  /** The backend cut the file at its ceiling and said so in a header, so a viewer
+   *  showing the first part of a file can say so instead of looking like a viewer
+   *  showing the file. */
+  truncated: boolean;
+  /** The listing offers it and the read route refuses it. **This resolves rather than
+   *  rejecting**, because it is an ordinary outcome rather than a failure: the two
+   *  disagree by design. `list_files` reports what git reports, and the read goes
+   *  through the containment check — so a symlink pointing out of the tree is listed
+   *  and is never opened. Rejecting left the pane on its loading state forever, which
+   *  told the operator nothing and looked like a hang. */
+  unreadable: boolean;
+}
+
 export async function fetchWorktreeFileText(
   projectId: string,
   conversationId: string,
   path: string,
-): Promise<{ text: string; truncated: boolean }> {
-  const res = await api.getResponse(
-    worktreeFilePath(projectId, conversationId, path),
-  );
-  return {
-    text: await res.text(),
-    truncated: res.headers.get("x-content-truncated") === "true",
-  };
+): Promise<WorktreeFileText> {
+  try {
+    const res = await api.getResponse(
+      worktreeFilePath(projectId, conversationId, path),
+    );
+    return {
+      text: await res.text(),
+      truncated: res.headers.get("x-content-truncated") === "true",
+      unreadable: false,
+    };
+  } catch (err) {
+    // Only the refusal. Anything else is a genuine failure and belongs in the
+    // resource's error arm, where it gets a retry rather than a sentence.
+    if (isApiError(err) && err.status === 404)
+      return { text: "", truncated: false, unreadable: true };
+    throw err;
+  }
 }

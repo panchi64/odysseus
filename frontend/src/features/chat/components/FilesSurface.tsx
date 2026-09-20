@@ -87,7 +87,15 @@ export function FilesSurface(props: {
 
   // Default to the first file the operator is likely to want: the first *changed* one
   // when the thread has changed anything, since that is what they came to look at.
+  //
+  // **Only where a file is on screen anyway.** Narrow, the pane shows the tree *or* a
+  // file, and clearing the selection is how the operator gets back to the tree — so an
+  // auto-select that fires whenever the selection is empty re-picks a file the instant
+  // the back control clears one, and the control does nothing. Side by side there is a
+  // viewer either way and a default is a courtesy; narrow, the list is the right
+  // landing and the operator opens what they want from it.
   createEffect(() => {
+    if (!sideBySide()) return;
     const rows = listing();
     if (!rows || rows.paths.length === 0) return;
     if (selectedPath() !== null) return;
@@ -169,12 +177,26 @@ export function FilesSurface(props: {
             file would blank the pane rather than hold the current file until
             the new one lands. */}
         <Show when={settled(text) !== undefined} fallback={<LoadingText />}>
-          <CodeBlock
-            code={settled(text)?.text ?? ""}
-            lang={extensionOf(selectedPath()) ?? undefined}
-            fontStep={props.fontStep}
-            softWrap={props.softWrap}
-          />
+          <Show
+            when={!settled(text)?.unreadable}
+            fallback={
+              // The listing and the read disagree by design — git lists a symlink
+              // pointing out of the tree and the containment check refuses to open it.
+              // Said in a sentence rather than left as a spinner.
+              <div class="px-3 py-2">
+                <Text variant="micro" tone="dim">
+                  This file is in the listing but cannot be opened from here.
+                </Text>
+              </div>
+            }
+          >
+            <CodeBlock
+              code={settled(text)?.text ?? ""}
+              lang={extensionOf(selectedPath()) ?? undefined}
+              fontStep={props.fontStep}
+              softWrap={props.softWrap}
+            />
+          </Show>
           <Show when={settled(text)?.truncated}>
             {/* The backend cut the file at its ceiling and said so in a header. A
                 viewer showing the first part of a file has to repeat that, or it
