@@ -288,6 +288,7 @@ export function ChatRoomScreen(): JSX.Element {
   // it closes. It is a concern of its own, so it lives in one.
   const viewport = useChatViewport(currentId, {
     ...stream,
+    mode,
     branch: branch.latest,
     refetchBranch: branch.refetch,
     subagents: subagents.latest,

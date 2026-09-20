@@ -62,6 +62,11 @@ export interface MessageItemProps {
   /** Fold the thread and then resume it — offered beside Continue on the one stop
    *  Continue cannot clear, a request the provider refused as too large. */
   onCompactAndRetry?: () => void;
+  /** A fold is already running on this thread. The room owns the flag — a turn cannot
+   *  know it — and it has to reach the button, because a second press is not a harmless
+   *  no-op: the fold declines (the thread is claimed) and the continue fires anyway,
+   *  re-sending the same oversized request that stopped the turn in the first place. */
+  compacting?: boolean;
   /** The conversation's consolidated View list — read-only here, so inline
    *  transcript chips (`TurnBlocks`) can show the same version/time/NEW
    *  metadata `ViewTimelineRail` shows for the same item. */
@@ -109,6 +114,7 @@ export function MessageItem(props: MessageItemProps): JSX.Element {
               onReattach={props.onReattach}
               onContinue={props.onContinue}
               onCompactAndRetry={props.onCompactAndRetry}
+              compacting={props.compacting}
               viewItems={props.viewItems}
               seenKey={props.seenKey}
             />
@@ -133,6 +139,7 @@ export function MessageItem(props: MessageItemProps): JSX.Element {
               onHoldQueued={props.onHoldQueued}
               onContinue={props.onContinue}
               onCompactAndRetry={props.onCompactAndRetry}
+              compacting={props.compacting}
             />
           </Match>
         </Switch>
@@ -218,6 +225,7 @@ function BlockedFooter(props: {
   detail: string | undefined;
   onContinue?: () => void;
   onCompactAndRetry?: () => void;
+  compacting?: boolean;
 }): JSX.Element {
   const overflowed = () => props.detail === CONTEXT_OVERFLOW_DETAIL;
   return (
@@ -227,10 +235,15 @@ function BlockedFooter(props: {
         Stopped: {props.detail ?? "a run limit was reached"}
       </Text>
       <Show when={overflowed() && props.onCompactAndRetry}>
+        {/* The one control here that has to say it is working. The fold inside it holds
+            a summarizer call, and the pair is not idempotent: a second press finds the
+            thread already claimed, so the fold returns at once and the continue fires
+            immediately — re-sending the request that was refused as too large. */}
         <Button
           variant="ghost"
           size="sm"
           leading="layers"
+          pending={props.compacting}
           onClick={() => props.onCompactAndRetry?.()}
         >
           Compact and retry
@@ -361,6 +374,7 @@ function UserTurn(props: {
   onHoldQueued?: (held: boolean) => void;
   onContinue?: () => void;
   onCompactAndRetry?: () => void;
+  compacting?: boolean;
 }): JSX.Element {
   const m = () => props.message;
   // The hold/draft protocol is shared with the dock's own list of queued messages —
@@ -498,6 +512,7 @@ function UserTurn(props: {
                 detail={m().blockedDetail}
                 onContinue={props.onContinue}
                 onCompactAndRetry={props.onCompactAndRetry}
+                compacting={props.compacting}
               />
             </Show>
           </>
@@ -593,6 +608,7 @@ function AssistantTurn(props: {
   onReattach?: MessageItemProps["onReattach"];
   onContinue?: MessageItemProps["onContinue"];
   onCompactAndRetry?: MessageItemProps["onCompactAndRetry"];
+  compacting?: MessageItemProps["compacting"];
   viewItems?: MessageItemProps["viewItems"];
   seenKey?: MessageItemProps["seenKey"];
 }): JSX.Element {
@@ -677,6 +693,7 @@ function AssistantTurn(props: {
             detail={m().blockedDetail}
             onContinue={props.onContinue}
             onCompactAndRetry={props.onCompactAndRetry}
+            compacting={props.compacting}
           />
         </Show>
         <Show when={m().detached}>

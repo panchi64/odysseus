@@ -42,6 +42,7 @@ import type {
 } from "./model";
 import type { BranchState, Subagent } from "./data";
 import type { TaskItem } from "~/lib/stream/events";
+import { sessionModeSpec, type SessionMode } from "~/lib/modes";
 import {
   emptyLayout,
   focusInStack,
@@ -88,6 +89,11 @@ import {
  *  panel can be reasoned about without the whole streaming controller. */
 export interface ViewportSource {
   messages: ChatMessage[];
+  /** What kind of work this thread is. Passed in rather than read from the app store,
+   *  because the pane belongs to a room and the room already resolved it — a second
+   *  read of the global would be a second answer to the same question, and would be the
+   *  wrong one in any pane whose thread is not the window's current mode. */
+  mode: Accessor<SessionMode>;
   snapshots: Accessor<ViewSnapshotRef[]>;
   tasks: Accessor<TaskItem[]>;
   plan: Accessor<PlanDocument | null>;
@@ -134,9 +140,9 @@ export interface ChatViewport {
    *  **Fetched, not derived**: unlike `sources` and `commands` this is not in the
    *  transcript at all. Empty for every thread that has no reading, which is most. */
   claims: Accessor<ClaimInventory>;
-  /** Whether offering to read this thread's claims is worth doing — it has sources and
-   *  nothing has read them yet. The backend runs its own trigger either way, so this
-   *  decides only whether the control is shown. */
+  /** Whether offering to read this thread's claims is worth doing — its mode runs the
+   *  pass at all, it has sources, and nothing has read them yet. The backend runs its
+   *  own trigger either way, so this decides only whether the control is shown. */
   canExtractClaims: () => boolean;
   extractClaims: () => void;
   extractingClaims: Accessor<boolean>;
@@ -251,9 +257,14 @@ export function useChatViewport(
     currentId,
     () => source.messages.length,
   );
-  // Offered only where there is something to read *against*: a thread with sources and
-  // no reading. Asking on a thread with neither would be offering a check on nothing.
+  // Offered only where asking can produce an answer: a mode that reads its answers back
+  // against their sources, a thread with sources to read them against, and no reading
+  // yet. The mode test is the backend's rule, not a refinement of ours — the route does
+  // no model call for a mode that does not declare the pass, so on a normal or code
+  // thread that happened to run a web search the button would answer with the same empty
+  // list it started from and never go away.
   const canExtractClaims = (): boolean =>
+    sessionModeSpec(source.mode()).attributesClaims &&
     sourceInventory().items.length > 0 &&
     claimsState.claims().items.length === 0;
   const sources = createSurfaceSources({

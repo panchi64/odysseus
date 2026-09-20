@@ -254,8 +254,12 @@ export function ChatRoomHeader(props: ChatRoomHeaderProps): JSX.Element {
                 onSelect: props.actions.retitle,
               },
               {
-                label: props.compacting() ? "Folding…" : "Compact now",
+                label: "Compact now",
                 icon: "layers",
+                // The row's own throbber, rather than a swapped label: the menu has
+                // closed by the time a fold is under way, so this is what the operator
+                // sees if they open it again to check.
+                pending: props.compacting(),
                 // Whether a fold would take anything is the *backend's* arithmetic:
                 // it retains the last N turns word for word, and N is an operator
                 // setting this row cannot see. This used to guess at it with a
@@ -264,10 +268,8 @@ export function ChatRoomHeader(props: ChatRoomHeaderProps): JSX.Element {
                 // left it lit on threads that could only ever be refused. So the row
                 // asks about the one thing the room does know, and the backend says
                 // in its own words when it declines.
-                disabled:
-                  !props.conversationId() ||
-                  props.messageCount() === 0 ||
-                  props.compacting(),
+                disabled: !props.conversationId() || props.messageCount() === 0,
+                hint: "There are no turns in this thread to fold yet.",
                 onSelect: props.actions.compact,
               },
               {

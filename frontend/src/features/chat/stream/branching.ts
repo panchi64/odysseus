@@ -20,8 +20,9 @@
  */
 
 import { reconcile, type SetStoreFunction } from "solid-js/store";
-import { createSignal, type Setter } from "solid-js";
+import { type Setter } from "solid-js";
 import { api, isApiError } from "~/lib/api";
+import { createInFlight } from "~/lib/inFlight";
 import { effectiveSelection, type ModelSelection } from "~/lib/stores/models";
 import { toast } from "~/ui";
 import { toMessage } from "../data/messages";
@@ -83,7 +84,25 @@ export function createBranchingOps(ctx: BranchingContext) {
   const reseat = (detail: ConversationDetailDTO) =>
     reseatFromDetail(ctx, detail);
 
-  /** The threads a hand-started fold is running against, by id.
+  /**
+   * Reseat, but only while the room is still on the thread the op was aimed at.
+   *
+   * A reseat is a whole-store replacement, so it has to be aimed. Every op here holds at
+   * least one round trip, and the ones that stop a live run first hold a cancel as well
+   * — long enough for the operator to pick another thread from the rail. Reseating then
+   * writes the answering thread's transcript, its window reading and its snapshots over
+   * whichever thread is now on screen, which reads as the room silently swapping its
+   * contents. The backend still did the work; the thread that was left reads it back
+   * when it is opened again.
+   */
+  const reseatIfCurrent = (
+    conversationId: string,
+    detail: ConversationDetailDTO,
+  ): void => {
+    if (ctx.conversationId() === conversationId) reseat(detail);
+  };
+
+  /** The threads a hand-started fold is running against.
    *
    *  Every other op here either streams (so the transcript animates) or returns in a
    *  round trip. A fold does neither: it holds a summarizer call inside it — seconds on
@@ -91,22 +110,11 @@ export function createBranchingOps(ctx: BranchingContext) {
    *  changed. Without this the operator picks "Compact now", the menu closes, and the
    *  product looks like it dropped the request.
    *
-   *  A **set of ids**, not one id and not a boolean, for the same reason the retitle
-   *  throbber is one (`conversationActions.ts`): this controller outlives every thread
-   *  it binds to, so the fold belongs to a conversation rather than to the stream. A
-   *  single slot would let a fold on one thread silently refuse a fold on another — and
-   *  then clear that other one's flag when the first finished. */
-  const [compactingIds, setCompactingIds] = createSignal<ReadonlySet<string>>(
-    new Set(),
-  );
-  const markCompacting = (conversationId: string, active: boolean): void => {
-    setCompactingIds((prev) => {
-      const next = new Set(prev);
-      if (active) next.add(conversationId);
-      else next.delete(conversationId);
-      return next;
-    });
-  };
+   *  Keyed by conversation, because this controller outlives every thread it binds to,
+   *  so the fold belongs to a conversation rather than to the stream. That is the shape
+   *  `createInFlight` exists for, and it also owns the claim-before-the-first-await
+   *  ordering the fold depends on. */
+  const compacting = createInFlight<string>();
 
   /** A 409 means the backend already has a run on this thread. Surface the one that is
    *  actually in flight instead of leaving the operator's action to vanish. */
@@ -230,7 +238,10 @@ export function createBranchingOps(ctx: BranchingContext) {
         `/conversations/${conversationId}/messages/${messageId}/version`,
         { index },
       );
-      reseat(detail);
+      // Aimed, because the cancel above can hold this for as long as a run takes to
+      // stop. `onTurnComplete` stays unconditional: it refreshes the rail, which is
+      // about the thread that answered rather than the one on screen.
+      reseatIfCurrent(conversationId, detail);
       ctx.onTurnComplete?.();
     } catch (err) {
       toastError(err, "Unable to switch versions.");
@@ -247,8 +258,11 @@ export function createBranchingOps(ctx: BranchingContext) {
         `/conversations/${conversationId}/messages/${messageId}/rewind`,
         {},
       );
-      reseat(detail);
+      reseatIfCurrent(conversationId, detail);
       ctx.onTurnComplete?.();
+      // The toast is unconditional for the same reason the refresh is: the rewind
+      // happened, and the operator asked for it, whichever thread they are looking at
+      // by the time it lands.
       toast.success("Rewound — your next message starts a new branch");
     } catch (err) {
       toastError(err, "Unable to rewind the conversation.");
@@ -261,32 +275,26 @@ export function createBranchingOps(ctx: BranchingContext) {
    *  actions, so the new divider renders from exactly the shape a cold read gives. */
   async function compactNow(): Promise<void> {
     const conversationId = ctx.conversationId();
-    // Claimed synchronously, *before* the cancel below: a guard taken after an await is
-    // not a guard. Two presses during a live run would both read an unclaimed thread,
-    // both wait out the cancel and both POST, and the second would meet the first one's
-    // conversation claim as a busy error for a fold asked for once.
-    if (conversationId === null || compactingIds().has(conversationId)) return;
-    markCompacting(conversationId, true);
-    try {
-      // The cancel is inside the claim for the same reason: a fold that stops a live run
-      // is already under way as far as the operator is concerned.
-      if (ctx.sending()) await ctx.cancel();
-      const detail = await api.post<ConversationDetailDTO>(
-        `/conversations/${conversationId}/compact`,
-        {},
-      );
-      // A fold is the one op here slow enough for the operator to leave mid-flight, and
-      // a reseat is a whole-store replacement — so it has to be aimed. Reseating a
-      // thread the room has moved off would write its transcript, its window reading and
-      // its snapshots over whichever thread is now on screen. The fold still landed; the
-      // thread that was left reads it back when it is opened again.
-      if (ctx.conversationId() === conversationId) reseat(detail);
-      toast.success("Earlier turns folded into a summary");
-    } catch (err) {
-      toastError(err, "Unable to compact this conversation.");
-    } finally {
-      markCompacting(conversationId, false);
-    }
+    if (conversationId === null) return;
+    // The claim covers the cancel below as well as the POST, and is taken before either:
+    // a guard read after an await is not a guard. Two presses during a live run would
+    // both see an unclaimed thread, both wait out the cancel and both POST, and the
+    // second would meet the first one's conversation claim as a busy error for a fold
+    // asked for once. The failure is reported inside the task so `run` resolves rather
+    // than rejecting — every caller of a fold treats it as fire-and-forget.
+    await compacting.run(conversationId, async () => {
+      try {
+        if (ctx.sending()) await ctx.cancel();
+        const detail = await api.post<ConversationDetailDTO>(
+          `/conversations/${conversationId}/compact`,
+          {},
+        );
+        reseatIfCurrent(conversationId, detail);
+        toast.success("Earlier turns folded into a summary");
+      } catch (err) {
+        toastError(err, "Unable to compact this conversation.");
+      }
+    });
   }
 
   /** Delete a turn and everything after it; reseat from the returned active path
@@ -303,7 +311,7 @@ export function createBranchingOps(ctx: BranchingContext) {
       const detail = await api.del<ConversationDetailDTO>(
         `/conversations/${conversationId}/messages/${messageId}${q}`,
       );
-      reseat(detail);
+      reseatIfCurrent(conversationId, detail);
       ctx.onTurnComplete?.();
     } catch (err) {
       toastError(err, "Unable to delete the message.");
@@ -362,7 +370,9 @@ export function createBranchingOps(ctx: BranchingContext) {
     switchVersion,
     rewind,
     compactNow,
-    compactingIds,
+    /** True while a hand-started fold is running against that conversation. The stream
+     *  turns it into the room's own boolean by pairing it with the reactive bound id. */
+    isCompacting: compacting.has,
     removeMessage,
     toggleMessagePin,
     toggleSnapshotKeeper,

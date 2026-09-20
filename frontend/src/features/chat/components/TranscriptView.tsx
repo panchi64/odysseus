@@ -97,6 +97,7 @@ export function TranscriptView(props: TranscriptViewProps): JSX.Element {
                     onCompactAndRetry={() =>
                       void props.stream.compactAndContinue(message.id)
                     }
+                    compacting={props.stream.compacting()}
                     onEditMessage={(id, text) =>
                       void props.stream.edit(id, text)
                     }

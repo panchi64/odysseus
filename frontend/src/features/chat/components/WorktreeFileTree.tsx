@@ -8,6 +8,7 @@ import {
 } from "~/ui";
 import type { FileChange } from "../data";
 import type { WorktreeListing } from "../data/worktreeFiles";
+import { settled } from "~/lib/resource";
 import { groupByDirectory, type FileTreeRow } from "./fileTreeRows";
 
 /** What the thread's branch did to a path, for the one marker a row carries.
@@ -58,22 +59,31 @@ export function WorktreeFileTree(props: {
   /** Lay out as a fixed side column with a rule, rather than filling. */
   inline?: boolean;
 }): JSX.Element {
+  // `settled`, never `props.listing()`. The listing's key carries the branch's
+  // `lastCommitAt`/`filesChanged`, so the agent re-keys it on every commit it makes —
+  // and a bare resource read inside a tracked scope registers with the nearest Suspense,
+  // which is somewhere above this pane. The tree the operator is reading would drop
+  // behind that fallback each time the thread touched a file. `settled` keeps the last
+  // listing on screen while the next one is fetched, and `ResourceView` below still owns
+  // the first-load and error arms in its own box.
+  const current = (): WorktreeListing | undefined => settled(props.listing);
+
   // Derived once and read three times — the rows, the emptiness check the resource view
   // makes, and the trailing group. Recomputing them per read turned the containment test
   // below into a scan of the whole listing per changed file.
-  const present = createMemo(() => new Set(props.listing()?.paths ?? []));
+  const present = createMemo(() => new Set(current()?.paths ?? []));
 
   /** Paths the diff names but the listing does not contain: a deletion has no file left
    *  to list, and a rename's old path is gone by definition. Dropping them would drop
    *  the rows the merge gate ranks highest — a deletion is never `normal`. */
   const missing = createMemo(() =>
-    props.listing()?.root === "worktree"
+    current()?.root === "worktree"
       ? [...props.changes.keys()].filter((p) => !present().has(p))
       : [],
   );
 
   const rows = createMemo((): FileTreeRow[] => {
-    const paths = props.listing()?.paths ?? [];
+    const paths = current()?.paths ?? [];
     const shown = props.editedOnly
       ? paths.filter((p) => props.changes.has(p))
       : paths;
