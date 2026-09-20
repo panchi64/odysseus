@@ -71,6 +71,24 @@ function display(value: unknown): string | undefined {
   return line ? clamp(line, MAX_DETAIL) : undefined;
 }
 
+/** The argument the backend injects to carry the model's own reason for a call.
+ *
+ *  Named once here because three places need to agree about it and none of them
+ *  should be the one that knows: the row that promotes it, the expanded dump that
+ *  must not print it twice, and the summary that puts it in a fold's headline. */
+export const NARRATION_ARG = "narration";
+
+/** Why the model says it is making this call. One sentence, or nothing.
+ *
+ *  Clamped like any other detail: it arrives as free text from a model, and a row
+ *  is a row however long the sentence turned out to be. */
+export function toolNarration(
+  args: Record<string, unknown>,
+): string | undefined {
+  const value = args[NARRATION_ARG];
+  return typeof value === "string" ? display(value) : undefined;
+}
+
 /** The one argument that says what this call is about — "backend/app.py" for a
  *  read, the command for a shell run, the query for a search. */
 export function describeToolArgs(

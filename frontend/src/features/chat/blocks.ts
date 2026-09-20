@@ -50,16 +50,24 @@ export function hasReasoning(blocks: AssistantBlock[] | undefined): boolean {
   return (blocks ?? []).some((b) => b.kind === "thinking");
 }
 
+/** The kinds that are *process* — the turn's account of what it did on the way to an
+ *  answer, as opposed to the answer itself or a control the operator acts on.
+ *
+ *  This is what the work log is a log *of*, and drawing the line by kind rather than by
+ *  whether a particular row happens to be foldable is what keeps one turn to one log.
+ *  A failed call and a running one are still work; they are work that has to stay
+ *  visible, which is a different question (`pinsRunInline`). */
+const WORK: ReadonlySet<BlockKind> = new Set([
+  "thinking",
+  "tool",
+  "context",
+  "review",
+  "host_command",
+]);
+
 /** Whether a turn has any collapsible layer worth an expand-all control. */
 export function hasLayers(blocks: AssistantBlock[] | undefined): boolean {
-  return (blocks ?? []).some(
-    (b) =>
-      b.kind === "thinking" ||
-      b.kind === "tool" ||
-      b.kind === "context" ||
-      b.kind === "review" ||
-      b.kind === "host_command",
-  );
+  return (blocks ?? []).some((b) => WORK.has(b.kind));
 }
 
 /** Flatten a turn to one plain-text block for COPY MESSAGE — reasoning, each
@@ -80,7 +88,13 @@ export function assembleTranscript(
       case "tool": {
         const t = b.tool;
         const outcome = t.error ? `error: ${t.error}` : (t.result ?? "");
-        parts.push(`${t.name}(${t.args}) -> ${outcome}`);
+        // The narration leads, and it is carried separately because `args` no longer
+        // holds it: `formatArgs` strips it so the open card does not print the row's
+        // own headline twice. Without this line the export would be the one place the
+        // agent's reason for a call is missing — and "why did it do that" is most of
+        // what a pasted turn is pasted to answer.
+        const why = t.narration ? `# ${t.narration}\n` : "";
+        parts.push(`${why}${t.name}(${t.args}) -> ${outcome}`);
         break;
       }
       case "context":
@@ -346,20 +360,33 @@ export function runningTools(
 }
 
 /* ── Compaction layout ────────────────────────────────────────────────────────
-   Fold every maximal run of consecutive collapsible work that reaches
-   WORK_LOG_MIN_RUN groups into its own WORK LOG accordion, always leaving the
-   non-collapsible blocks (the answer, View chips, pending actions, outputs) and
-   the active/streaming tail visible and in order — so the turn's true
-   think → tool → text → … narrative survives and process recedes into
-   per-segment accordions.
+   Every maximal run of consecutive *work* becomes one WORK LOG accordion, and
+   everything else — the answer, View chips, outputs — stays visible between the
+   logs, in order, so the turn's true think → tool → text → … narrative survives.
 
-   What breaks a run is therefore only what the operator has to read or act on.
-   A blank passage is neither, and is skipped outright rather than counted as an
-   answer — see `isBlankText`. */
+   **What breaks a log is the answer, not a state.** Membership is decided by kind
+   (`WORK`) and visibility separately (`pinsRunInline` via `isCollapsible`), which
+   are two questions that used to be one. Deciding them together meant a failure, a
+   live call, a screenshot or a refusal *ended* the log it belonged to and started
+   another with the same name under it, so an ordinary turn with one failed call
+   rendered as three items the operator had to read as one sequence. Now such a row
+   sits inside the log, pinned open; the log is still forbidden from hiding it, and
+   the turn still has one account of itself.
+
+   A blank passage is neither answer nor work, and is skipped outright rather than
+   counted as an answer — see `isBlankText`. */
+
+/** A row inside a work log, and whether the fold is allowed to hide it. */
+export interface WorkLogEntry {
+  group: BlockGroup;
+  /** Shown whether the log is open or shut — a call in flight, a failure, a picture,
+   *  a refusal, or the live tail. See `pinsRunInline`. */
+  pinned: boolean;
+}
 
 export type LayoutItem =
   | { type: "group"; group: BlockGroup }
-  | { type: "worklog"; groups: BlockGroup[] };
+  | { type: "worklog"; entries: WorkLogEntry[] };
 
 /**
  * A stable identity for a layout item, across every recompute of the plan.
@@ -377,7 +404,7 @@ export type LayoutItem =
  */
 export function layoutItemKey(item: LayoutItem): string {
   return item.type === "worklog"
-    ? `w:${item.groups[0]?.id ?? ""}`
+    ? `w:${item.entries[0]?.group.id ?? ""}`
     : `g:${item.group.id}`;
 }
 
@@ -388,27 +415,38 @@ export function planTurnLayout(
   // While streaming, the trailing group is "live" — keep it inline, never folded.
   const activeIndex = opts.streaming ? groups.length - 1 : -1;
   const items: LayoutItem[] = [];
-  let run: BlockGroup[] = [];
+  let run: WorkLogEntry[] = [];
   const flush = (): void => {
     if (run.length >= WORK_LOG_MIN_RUN) {
-      items.push({ type: "worklog", groups: run });
+      items.push({ type: "worklog", entries: run });
     } else {
-      for (const group of run) items.push({ type: "group", group });
+      for (const entry of run)
+        items.push({ type: "group", group: entry.group });
     }
     run = [];
   };
   groups.forEach((group, i) => {
+    const active = i === activeIndex;
     // Transparent, not collapsible: a blank passage joins no run and emits no row,
     // so the work either side of it stays one run. The live tail is the exception —
     // a streaming text block is blank for its first delta and carries the caret,
     // and dropping it would blink the caret out at the start of every answer.
-    if (i !== activeIndex && isBlankText(group)) return;
-    if (i !== activeIndex && isCollapsible(group)) {
-      run.push(group);
-    } else {
+    if (!active && isBlankText(group)) return;
+    if (!WORK.has(group.kind)) {
       flush();
       items.push({ type: "group", group });
+      return;
     }
+    // Every work group joins the log, including the ones the log may not hide.
+    //
+    // This used to flush the run at anything non-collapsible, which meant a single
+    // failed call mid-turn produced *three* items — a log, the failure, then a second
+    // log with the same name — and an operator reading down the turn had to stitch one
+    // sequence back together out of them. The fold's promise is only that a live call,
+    // a failure, a picture and a refusal stay visible; it was never that they should
+    // cut the account of the turn in half. So they stay visible **in place**, and the
+    // turn keeps one log.
+    run.push({ group, pinned: active || !isCollapsible(group) });
   });
   flush();
   return items;

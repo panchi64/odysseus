@@ -32,22 +32,33 @@ import { ProcessRow, Sep } from "./ProcessRow";
  *  the one question a bare magnitude does answer honestly. */
 export function WorkLogHeader(props: {
   shape: WorkShape;
+  /** How many rows are actually behind the fold.
+   *
+   *  Not `shape.steps`, which is the size of the whole run. Since a pinned row —
+   *  a failure, a live call, a screenshot — now sits inside the log rather than
+   *  beside it, the run and the fold are no longer the same set, and counting the
+   *  run would promise rows that are already on screen. */
+  steps: number;
   open: boolean;
+  /** False when every row is pinned: there is nothing to open onto, so the header
+   *  keeps its summary and drops the chevron rather than offering an empty fold. */
+  foldable: boolean;
   onToggle: () => void;
 }): JSX.Element {
   const latest = () => props.shape.latest;
   return (
     <ProcessRow
       open={props.open}
+      foldable={props.foldable}
       onToggle={props.onToggle}
       label="Work log"
       /* From two steps up. A one-step fold's headline already *is* its only row,
          so a count beside it would say the same thing twice — and "1 steps" is
          the shape that gives a generated readout away. */
       trailing={
-        <Show when={props.shape.steps > 1}>
+        <Show when={props.steps > 1}>
           <Text variant="micro" tone="dim" class="tabular-nums">
-            {`${props.shape.steps} steps`}
+            {`${props.steps} steps`}
           </Text>
         </Show>
       }

@@ -191,6 +191,39 @@ opens up the line it sits in.
 That is precisely what re-couples the two scales, and the next time one moves the
 other follows silently.
 
+#### Reading rhythm, and the second place it is written
+
+Blocks sit 16px apart; a heading takes more above it and less below (`space-8` for
+`h1`, `space-6` for `h2`/`h3`, `space-5` below that, `space-2` after any of them),
+so a section opens on space and binds to the paragraph it introduces.
+
+**That cascade is transcribed a second time in `Markdown.tsx`, and the copy is load-
+bearing.** The `streamStable` path wraps each top-level block in its own `div`, so
+those wrappers — not the `<p>`/`<h*>` elements — are what `.ody-prose`'s child
+selectors match, and every heading-aware rule misses them. `blockSpacingClass` exists
+to restate the same ladder in spacing utilities. When the two disagree the symptom is
+nearly invisible: an answer is set to one rhythm while it streams and to another once
+it reloads from history. Change one side, change the other.
+
+#### The reading register has its own colour
+
+`.ody-prose` takes `--text-reading`, not `--text`. The argument is the same one the
+reading *scale* makes, carried into colour: a value tuned for a rail row is not a
+value for five paragraphs.
+
+**The two modes step differently, and the asymmetry is the point.** Ink moves a long
+way — 8.3:1 to 13.9:1 — because light-on-dark is where the difference bites. Thin
+strokes on black bleed into the ground, and a grey that reads as crisp on a one-line
+label reads as haze over a screenful. Paper moves barely at all, to 12.5:1, because
+halation is a property of light on dark and dark-on-light has none: 10.9:1 is
+already comfortable for long-form, and driving it toward black would make a
+screenful harsher rather than easier.
+
+This leaves every other dim surface alone, which is what it is for. The deliberate
+subtlety of reasoning, rails and metadata lives in `--text-dim` and the `micro`/
+`meta` voices; none of it was ever wired through the prose colour, so raising the
+reading register costs the ambiance nothing.
+
 ### Rules
 
 - **Labels are sentence case.** "Context used", not "CONTEXT USED". Uppercase is now a *signal* (it means "machine"), and a signal used everywhere signals nothing.
@@ -769,6 +802,7 @@ A licensed moment is a single expressive device — the `DeepField`'s graticule,
   --annunciator-dark: #0d0d0d;   /* an unlit caution & warning cell */
   --line: #212121;       --line-strong: #333333;
   --text-dim: #6e6e6e;   --text: #a8a8a8;         --text-bright: #ffffff;
+  --text-reading: #d2d2d2;       /* prose only — 13.9:1 */
   --accent: #34d67f;
   --accent-nominal: #34d67f;  --accent-warn: #f2a93b;
   --accent-alert: #ff5c5c;    --accent-info: #5aa2ff;
@@ -782,6 +816,7 @@ A licensed moment is a single expressive device — the `DeepField`'s graticule,
   --annunciator-dark: #f7f7f5;
   --line: #e4e4e1;       --line-strong: #cfcfcb;
   --text-dim: #8a8a85;   --text: #3d3d3a;         --text-bright: #000000;
+  --text-reading: #343431;       /* prose only — 12.5:1 */
   --accent: #0b3d91;
   --accent-nominal: #0e7a46;  --accent-warn: #9a6510;
   --accent-alert: #c0342b;    --accent-info: #0f5fa8;

@@ -29,7 +29,10 @@ Last comes the **describing stage** (``describe.py``), which owns no policy at a
 rewrites each definition's model-facing text into the namespaced names this stack has
 just produced, and drops the library scaffolding and unreachable schema a
 harness-supplied tool arrives with. It runs after the gates so a description can never
-decide whether a tool is offered.
+decide whether a tool is offered. It is also where a tool that does more than read is
+offered its ``narration`` argument — one sentence of the model's own reason for a call, for
+the work log to show beside the arguments — which ``tools/narration.py`` takes back off
+before anything validates it.
 """
 
 from __future__ import annotations
@@ -41,12 +44,18 @@ from pydantic_ai import AbstractToolset, CombinedToolset, RunContext, ToolDefini
 
 from services.permissions import beyond_scope
 from services.tool_policy import permission_disabled_tools
-from services.tool_sensitivity import declared_sensitivity
+from services.tool_sensitivity import Sensitivity, declared_sensitivity, sensitivity_of
 
 from .builtin import builtin_toolset
 from .code import code_toolset
 from .deps import RunDeps
-from .describe import category_names, describe
+from .describe import (
+    NARRATION_ARG,
+    NARRATION_PROPERTY,
+    add_property,
+    category_names,
+    describe,
+)
 from .files import files_toolset
 from .harness_events import own_harness_events
 from .plan import GATED_TOOLS as _PLAN_GATED
@@ -115,6 +124,29 @@ def _approval_gate(
     ]
 
 
+def _narrated(tool_def: ToolDefinition) -> ToolDefinition:
+    """Offer this tool a ``narration`` argument, if it does anything more than read.
+
+    Classified with the same pair the approval gate above uses — the tool's own declaration
+    first, the name registry behind it — so the set of tools that explain themselves and the
+    set that can stop a run to ask cannot drift apart. A read is left silent on purpose:
+    its name and arguments already say what it is doing, the operator has nothing to weigh,
+    and the property is charged on every request whether or not the model writes one.
+
+    The property comes off again before validation (``tools/narration.py``); a tool function
+    never sees it.
+    """
+    sensitivity = declared_sensitivity(tool_def.metadata) or sensitivity_of(tool_def.name)
+    if not sensitivity.above(Sensitivity.READ):
+        return tool_def
+    return replace(
+        tool_def,
+        parameters_json_schema=add_property(
+            tool_def.parameters_json_schema, NARRATION_ARG, NARRATION_PROPERTY
+        ),
+    )
+
+
 def core_categories() -> dict[str, AbstractToolset[RunDeps]]:
     """The categories the harness itself contributes — everything else is a manifest's."""
     return {
@@ -165,8 +197,8 @@ def build_agent_toolsets(
     def _describe(
         ctx: RunContext[RunDeps], tool_defs: list[ToolDefinition]
     ) -> list[ToolDefinition]:
-        """Restate each tool in the names and vocabulary this catalog actually offers, and
-        stamp the owner its events are attributed to.
+        """Restate each tool in the names and vocabulary this catalog actually offers, offer
+        the acting ones a place to say why, and stamp the owner its events are attributed to.
 
         The stamp goes on every tool rather than only the harness-derived ones, because the
         alternative is a per-category list that silently rots: a lifted harness toolset whose
@@ -174,8 +206,15 @@ def build_agent_toolsets(
         It is safe to apply broadly — both places `capability_id` gates a tool require its
         owning capability to declare `defer_loading`, which this owner never does — and it
         yields to a definition that already names an owner (`tools/harness_events.py`).
+
+        The narration argument is added last of the three, after the rewrite rather than
+        before it: its text is ours, written against the namespaced catalog already, and
+        sending it through a pass that resolves cross-references would be asking a rewrite
+        to check a string this repo controls.
         """
-        return [own_harness_events(describe(tool_def, names)) for tool_def in tool_defs]
+        return [
+            own_harness_events(_narrated(describe(tool_def, names))) for tool_def in tool_defs
+        ]
 
     # Namespaced, then filtered, then gated, then described — in that order because each
     # step needs the one before it: the gate classifies by the `category_tool` name the

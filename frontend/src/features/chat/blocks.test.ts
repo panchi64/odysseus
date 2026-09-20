@@ -71,36 +71,51 @@ function plan(blocks: AssistantBlock[], streaming = true): string[] {
   );
 }
 
+/** Every row of every work log in a turn, as `id` or `id!` when the fold may not
+ *  hide it.
+ *
+ *  This is the assertion that replaced "the log splits here". Staying visible and
+ *  ending the log used to be the same act, so the tests below could only say a
+ *  failure was protected by showing a second log after it. They say it directly
+ *  now, which is also the thing that would silently stop being true. */
+function rows(blocks: AssistantBlock[], streaming = true): string[] {
+  return planTurnLayout(groupBlocks(blocks), { streaming }).flatMap((item) =>
+    item.type === "worklog"
+      ? item.entries.map((e) => `${e.group.id}${e.pinned ? "!" : ""}`)
+      : [],
+  );
+}
+
 describe("parallel tool calls stay visible while they run", () => {
   // These fixtures FIGHT the rule: `planTurnLayout` already keeps the trailing group
   // inline while streaming, so a running call in last position would pass with the
   // guard deleted. Each one puts it mid-run instead, with enough collapsible groups
   // around it that dropping the guard really does fold a work log over it.
-  test("a batch with one call still running does not fold", () => {
+  test("a batch with one call still running is pinned open in place", () => {
     expect(WORK_LOG_MIN_RUN).toBe(1);
-    // Guard removed: a, b, c fold into ONE log and only the tail d stays inline.
-    // The running call splitting that log in two is the whole assertion.
-    expect(
-      plan([
-        tool("a", "web_search", "ok"),
-        tool("b", "web_search", "running"),
-        tool("c", "web_search", "ok"),
-        tool("d", "web_search", "ok"),
-      ]),
-    ).toEqual(["worklog", "b", "worklog", "d"]);
+    const blocks = [
+      tool("a", "web_search", "ok"),
+      tool("b", "web_search", "running"),
+      tool("c", "web_search", "ok"),
+      tool("d", "web_search", "ok"),
+    ];
+    // Guard removed: `b` folds away with the rest.
+    expect(rows(blocks)).toEqual(["a", "b!", "c", "d!"]);
+    // And the whole batch is still ONE account of the turn.
+    expect(plan(blocks)).toEqual(["worklog"]);
   });
 
-  test("a whole batch still running stays inline", () => {
+  test("a whole batch still running is every row pinned, not no log", () => {
     // The trailing block is the answer, so no tool here is protected by position.
-    expect(
-      plan([
-        tool("a", "web_search", "running"),
-        tool("b", "web_search", "running"),
-        tool("c", "web_search", "running"),
-        tool("d", "web_search", "running"),
-        text("t"),
-      ]),
-    ).toEqual(["a", "b", "c", "d", "t"]);
+    const blocks = [
+      tool("a", "web_search", "running"),
+      tool("b", "web_search", "running"),
+      tool("c", "web_search", "running"),
+      tool("d", "web_search", "running"),
+      text("t"),
+    ];
+    expect(rows(blocks)).toEqual(["a!", "b!", "c!", "d!"]);
+    expect(plan(blocks)).toEqual(["worklog", "t"]);
   });
 
   test("the same batch, all settled, folds as before", () => {
@@ -137,25 +152,22 @@ describe("a call that came back with a picture keeps its run inline", () => {
   // what folds — so the images would be hidden precisely when there are the most of
   // them to see. Same fixture discipline as the failure rule: mid-run, settled turn,
   // enough collapsible groups either side that dropping the guard really does fold.
-  test("a settled turn with a screenshot does not fold", () => {
-    expect(
-      plan(
-        [
-          tool("a", "browse_click", "ok"),
-          shot("b"),
-          tool("c", "browse_get_text", "ok"),
-          tool("d", "browse_click", "ok"),
-        ],
-        false,
-      ),
-    ).toEqual(["worklog", "b", "worklog"]);
+  test("a settled turn with a screenshot keeps it pinned open", () => {
+    const blocks = [
+      tool("a", "browse_click", "ok"),
+      shot("b"),
+      tool("c", "browse_get_text", "ok"),
+      tool("d", "browse_click", "ok"),
+    ];
+    expect(rows(blocks, false)).toEqual(["a", "b!", "c", "d"]);
+    expect(plan(blocks, false)).toEqual(["worklog"]);
   });
 
   test("an empty image list is not a picture", () => {
     // The rule reads `images?.length`, not `images !== undefined` — a call that
     // reported an empty list has nothing to show and must fold like any other.
     expect(
-      plan(
+      rows(
         [
           tool("a", "browse_click", "ok"),
           shot("b", []),
@@ -163,7 +175,7 @@ describe("a call that came back with a picture keeps its run inline", () => {
         ],
         false,
       ),
-    ).toEqual(["worklog"]);
+    ).toEqual(["a", "b", "c"]);
   });
 });
 
@@ -173,12 +185,12 @@ describe("a failed call keeps its run inline", () => {
   // event buried, and a swallowed tool failure is how a contaminated answer gets
   // trusted. Each fixture puts the failure MID-RUN with enough collapsible
   // groups around it that dropping the guard really does fold over it.
-  test("a settled turn with a failure does not fold", () => {
+  test("a settled turn with a failure keeps it pinned open", () => {
     // The case that matters most: nothing is streaming, so `planTurnLayout`'s
     // trailing-group guard is not running and only the failure rule is holding
     // this open.
     expect(
-      plan(
+      rows(
         [
           tool("a", "web_search", "ok"),
           tool("b", "files_read_file", "error"),
@@ -187,25 +199,28 @@ describe("a failed call keeps its run inline", () => {
         ],
         false,
       ),
-    ).toEqual(["worklog", "b", "worklog"]);
+    ).toEqual(["a", "b!", "c", "d"]);
   });
 
-  test("a failure mid-stream does not fold", () => {
-    expect(
-      plan([
-        tool("a", "web_search", "ok"),
-        tool("b", "files_read_file", "error"),
-        tool("c", "web_search", "ok"),
-        text("t"),
-      ]),
-    ).toEqual(["worklog", "b", "worklog", "t"]);
+  test("a failure mid-stream does not cut the log in two", () => {
+    // The regression this is here for: staying visible used to mean *ending* the
+    // log, so one failed call rendered as log · failure · log — three items the
+    // operator had to read back together as one sequence.
+    const blocks = [
+      tool("a", "web_search", "ok"),
+      tool("b", "files_read_file", "error"),
+      tool("c", "web_search", "ok"),
+      text("t"),
+    ];
+    expect(plan(blocks)).toEqual(["worklog", "t"]);
+    expect(rows(blocks)).toEqual(["a", "b!", "c"]);
   });
 
-  test("a settled turn with no failure still folds", () => {
+  test("a settled turn with no failure pins nothing", () => {
     // The counterpart that proves the rule is doing the work above, rather than
     // settled turns simply never folding.
     expect(
-      plan(
+      rows(
         [
           tool("a", "web_search", "ok"),
           tool("b", "files_read_file", "ok"),
@@ -214,12 +229,12 @@ describe("a failed call keeps its run inline", () => {
         ],
         false,
       ),
-    ).toEqual(["worklog"]);
+    ).toEqual(["a", "b", "c", "d"]);
   });
 
-  test("a failed host command keeps its run inline", () => {
+  test("a failed host command is pinned like a failed tool", () => {
     expect(
-      plan(
+      rows(
         [
           tool("a", "web_search", "ok"),
           host("b", "error"),
@@ -228,14 +243,14 @@ describe("a failed call keeps its run inline", () => {
         ],
         false,
       ),
-    ).toEqual(["worklog", "b", "worklog"]);
+    ).toEqual(["a", "b!", "c", "d"]);
   });
 
   test("a denied host command is a decision, not a failure, and folds", () => {
     // The operator already dealt with this one; keeping it pinned forever would
     // mean every refusal permanently un-folds the turn it happened in.
     expect(
-      plan(
+      rows(
         [
           tool("a", "web_search", "ok"),
           host("b", "denied"),
@@ -244,7 +259,7 @@ describe("a failed call keeps its run inline", () => {
         ],
         false,
       ),
-    ).toEqual(["worklog"]);
+    ).toEqual(["a", "b", "c", "d"]);
   });
 });
 
@@ -275,7 +290,7 @@ describe("a blank passage does not segment the log", () => {
       { streaming: false },
     );
     expect(items.map((i) => i.type)).toEqual(["worklog"]);
-    expect(items[0].type === "worklog" && items[0].groups.length).toBe(1);
+    expect(items[0].type === "worklog" && items[0].entries.length).toBe(1);
   });
 
   test("whitespace of any shape counts as blank", () => {
@@ -411,15 +426,15 @@ describe("injected context recedes into the fold", () => {
       { streaming: false },
     );
     expect(items.map((i) => i.type)).toEqual(["worklog", "group"]);
-    expect(items[0].type === "worklog" && items[0].groups.length).toBe(3);
+    expect(items[0].type === "worklog" && items[0].entries.length).toBe(3);
   });
 
-  test("a live call still breaks the fold open around it", () => {
+  test("a live call is still pinned open beside an injection", () => {
     // The pin rules are about the *work*, and an injection must not smother them: a
     // call still in flight stays on screen with its spinner whatever sits beside it.
     expect(
-      plan([injected("c1", "repo"), tool("a", "web_search", "running")], false),
-    ).toEqual(["worklog", "a"]);
+      rows([injected("c1", "repo"), tool("a", "web_search", "running")], false),
+    ).toEqual(["c1", "a!"]);
   });
 });
 
@@ -491,21 +506,18 @@ describe("a review folds with the work, unless it refused something", () => {
     // The single thing in a turn the operator is most likely to disagree with, and the
     // only one with no following row to account for it — a refused call is followed by
     // nothing at all. Burying it would make Auto's promise unverifiable in practice.
-    expect(
-      plan(
-        [
-          tool("a", "files_read_file", "ok"),
-          tool("b", "files_read_file", "ok"),
-          tool("c", "files_read_file", "ok"),
-          review("r1", "block"),
-          tool("d", "files_read_file", "ok"),
-          tool("e", "files_read_file", "ok"),
-          tool("f", "files_read_file", "ok"),
-          text("t"),
-        ],
-        false,
-      ),
-    ).toEqual(["worklog", "r1", "worklog", "t"]);
+    const blocks = [
+      tool("a", "files_read_file", "ok"),
+      tool("b", "files_read_file", "ok"),
+      tool("c", "files_read_file", "ok"),
+      review("r1", "block"),
+      tool("d", "files_read_file", "ok"),
+      tool("e", "files_read_file", "ok"),
+      tool("f", "files_read_file", "ok"),
+      text("t"),
+    ];
+    expect(rows(blocks, false)).toEqual(["a", "b", "c", "r1!", "d", "e", "f"]);
+    expect(plan(blocks, false)).toEqual(["worklog", "t"]);
   });
 
   test("a review still in flight folds rather than pinning the turn open", () => {

@@ -116,6 +116,9 @@ export interface ChatSettings {
   autoCompactEnabled: boolean;
   autoCompactThreshold: number;
   autoCompactKeepTurns: number;
+  /** How long a thread must sit untouched before the backend writes its work
+   *  summary — the paragraph the thread-recap band shows on re-entry. Minutes. */
+  workSummaryIdleMinutes: number;
   contextWarnThreshold: number;
   contextAlertThreshold: number;
   agentRequestLimit: number;

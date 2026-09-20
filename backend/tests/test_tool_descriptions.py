@@ -20,10 +20,15 @@ from pydantic_ai.usage import RunUsage
 
 from prompts.agent import INSTRUCTIONS
 from runs import Run, RunStream
+from services.tool_sensitivity import Sensitivity, declared_sensitivity, sensitivity_of
 from tools import RunDeps, build_agent_toolsets
 from tools.catalog import tool_catalog
 from tools.describe import (
     _SUBTASKS_LEAKED,
+    NARRATION_ARG,
+    NARRATION_PROPERTY,
+    NARRATION_TEXT,
+    add_property,
     category_names,
     category_of,
     describe,
@@ -120,6 +125,49 @@ async def test_the_explanation_rule_is_stated_once_in_the_standing_brief():
     assert "explanation or reason argument" in INSTRUCTIONS
     for name, tool_def in (await _offered()).items():
         assert "operator reads when deciding" not in (tool_def.description or ""), name
+
+
+async def test_every_acting_tool_is_offered_somewhere_to_say_why():
+    """The work log shows a call's arguments, which say what is about to happen and never
+    why. The narration is that missing half, so the claim worth pinning is over the whole
+    assembled catalog: a new category of write tools that forgot to be classified would
+    otherwise ship silent."""
+    offered = await _offered()
+    acting = {
+        name
+        for name, tool_def in offered.items()
+        if (declared_sensitivity(tool_def.metadata) or sensitivity_of(name)).above(
+            Sensitivity.READ
+        )
+    }
+    assert acting, "nothing in the catalog acts; this test is no longer measuring anything"
+    for name in acting:
+        properties = offered[name].parameters_json_schema["properties"]
+        assert NARRATION_ARG in properties, f"{name} acts and cannot say why"
+        assert properties[NARRATION_ARG]["description"] == NARRATION_TEXT, name
+        # Optional by construction: a model that leaves it out gets a call that runs with
+        # no narration, not a retry prompt about a property nothing declares.
+        assert NARRATION_ARG not in offered[name].parameters_json_schema.get("required", []), name
+
+
+async def test_no_read_only_tool_is_charged_for_a_narration():
+    """A read's name and arguments already say what it is doing and there is nothing for
+    the operator to weigh, so the property would be schema on every request buying nothing.
+    The saving is real — it is most of the catalog — and it is the reason the line is drawn
+    at the sensitivity rather than everywhere."""
+    offered = await _offered()
+    reads = {
+        name
+        for name, tool_def in offered.items()
+        if not (declared_sensitivity(tool_def.metadata) or sensitivity_of(name)).above(
+            Sensitivity.READ
+        )
+    }
+    assert reads, "nothing in the catalog only reads; this test is no longer measuring anything"
+    for name in reads:
+        assert NARRATION_ARG not in offered[name].parameters_json_schema.get("properties", {}), (
+            name
+        )
 
 
 async def test_every_tool_named_as_leaking_is_one_the_catalog_offers():
@@ -254,6 +302,31 @@ def test_drop_properties_removes_an_emptied_required_list():
         {"timeout_ms"},
     )
     assert "required" not in dropped
+
+
+def test_add_property_offers_the_property_without_requiring_it():
+    schema = {
+        "type": "object",
+        "properties": {"path": {"type": "string"}},
+        "required": ["path"],
+    }
+    added = add_property(schema, NARRATION_ARG, NARRATION_PROPERTY)
+    assert added["properties"][NARRATION_ARG]["description"] == NARRATION_TEXT
+    assert added["required"] == ["path"]
+    # The caller's schema is untouched — it belongs to a toolset other code reads.
+    assert NARRATION_ARG not in schema["properties"]
+
+
+def test_add_property_gives_a_no_argument_tool_somewhere_to_put_it():
+    # The shape Pydantic AI hands over for a tool that takes nothing, and the case where a
+    # narration is worth most: the call's arguments say nothing at all by themselves.
+    added = add_property({"type": "object"}, NARRATION_ARG, NARRATION_PROPERTY)
+    assert added["properties"] == {NARRATION_ARG: dict(NARRATION_PROPERTY)}
+
+
+def test_add_property_is_idempotent():
+    once = add_property({"type": "object", "properties": {}}, NARRATION_ARG, NARRATION_PROPERTY)
+    assert add_property(once, NARRATION_ARG, NARRATION_PROPERTY) == once
 
 
 def test_prefix_references_rewrites_backticked_and_compound_names():

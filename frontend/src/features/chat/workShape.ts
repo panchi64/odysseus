@@ -75,11 +75,15 @@ function stepOf(block: AssistantBlock): WorkStep | undefined {
       return { icon: THINK_ICON, label: "Reasoning" };
     case "tool": {
       const { icon, label } = toolEntry(block.tool.name);
-      // The salient argument only. Never `tool.args`: the card falls back to the
-      // full `k=v` dump because an open card has room for it, and a header does
-      // not — a serialized argument blob here would push the one readable word
-      // off the end of the row.
-      return { icon, label, detail: block.tool.detail };
+      // The model's own reason where it wrote one, else the salient argument.
+      // Never `tool.args`: the card falls back to the full `k=v` dump because an
+      // open card has room for it, and a header does not — a serialized argument
+      // blob here would push the one readable word off the end of the row.
+      return {
+        icon,
+        label,
+        detail: block.tool.narration ?? block.tool.detail,
+      };
     }
     case "host_command": {
       const { icon, label } = toolEntry(HOST_TOOL);

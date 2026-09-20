@@ -19,11 +19,13 @@ from .deps import (
     default_workspace_key,
 )
 from .harness_events import harness_events_capability
+from .narration import NarrationCapability, strip_narration
 from .tool_search import dormant_index_instructions, tool_search_capability
 from .toolsets import CORE_GATED_TOOLS, build_agent_toolsets, core_categories
 
 __all__ = [
     "InstructionProvider",
+    "NarrationCapability",
     "PromptContextProvider",
     "PromptContextRequest",
     "RunDeps",
@@ -34,5 +36,6 @@ __all__ = [
     "default_workspace_key",
     "dormant_index_instructions",
     "harness_events_capability",
+    "strip_narration",
     "tool_search_capability",
 ]

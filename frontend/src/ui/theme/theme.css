@@ -21,6 +21,10 @@
   --color-line-strong: var(--line-strong);
   --color-dim: var(--text-dim);
   --color-text: var(--text);
+  /* Prose's own step. Mapped for the sake of conversation content that isn't
+     markdown — the operator's turn beside the answer — and for nothing else; the
+     chrome voice stays `text-text`/`text-dim`. */
+  --color-reading: var(--text-reading);
   --color-bright: var(--text-bright);
   --color-accent: var(--accent);
   --color-nominal: var(--accent-nominal);
@@ -1204,11 +1208,13 @@ body {
   font-family: var(--font-sans);
   font-size: var(--prose-size);
   line-height: var(--prose-lh);
-  color: var(--text);
+  /* The reading register, not the chrome one — see `--text-reading`. */
+  color: var(--text-reading);
   /* Nothing forces the operator to track a line across a 2560px display. */
   max-width: 72ch;
 }
-/* Default rhythm between blocks. */
+/* Default rhythm between blocks. The heading-aware overrides that make a section
+   read as a section are further down, beside the heading type itself. */
 .ody-prose > * + * {
   margin-top: var(--space-4);
 }

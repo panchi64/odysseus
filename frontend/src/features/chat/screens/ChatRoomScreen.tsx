@@ -440,7 +440,6 @@ export function ChatRoomScreen(): JSX.Element {
             has just been dropped at the bottom of. */}
         <ThreadRecap
           summary={recapSummary}
-          branch={branch.latest}
           streaming={stream.sending}
           onDismiss={() => setRecapDismissed(openId())}
         />

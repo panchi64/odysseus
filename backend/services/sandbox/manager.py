@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING
 
 from core.concurrency import gather_bounded
 from core.fork import MergeReport
+from core.periodic import PeriodicTask
 from core.vault import Vault
 
 from .base import SandboxError, safe_key
@@ -112,7 +113,6 @@ class SandboxSessionManager:
         self._work_root = data_dir / "sandbox" / "work"
         self._sealed_root = data_dir / "sandbox" / "sealed"
         self._idle_ttl = idle_ttl_s
-        self._reap_interval = reap_interval_s
         self._excludes = tuple(excludes)
         self._preview_startup_timeout_s = preview_startup_timeout_s
         # How many conversations may hold a live container at once. The idle TTL bounds a
@@ -130,7 +130,12 @@ class SandboxSessionManager:
         # on it; every other key is unaffected (sandbox-02).
         self._tearing_down: dict[str, asyncio.Event] = {}
         self._lock = asyncio.Lock()
-        self._reaper: asyncio.Task | None = None
+        self._reaper = PeriodicTask(
+            "sandbox-reaper",
+            interval_s=reap_interval_s,
+            work=self._sweep,
+            logger=logger,
+        )
         self._warm: asyncio.Task | None = None
         self._image_warmup = ImageWarmup()
         # Teardowns in flight, owned by the manager rather than by whoever triggered
@@ -551,7 +556,7 @@ class SandboxSessionManager:
         + image); the image pull runs off the critical path so app startup is never
         blocked, then logs when ready."""
         await self.reconcile()
-        self._reaper = asyncio.create_task(self._reaper_loop())
+        await self._reaper.start()
         runtime = self._backend.runtime
         image = self._backend.image
         logger.info("sandbox: code execution ready (runtime=%s) — warming image %s", runtime, image)
@@ -593,14 +598,15 @@ class SandboxSessionManager:
         self._image_warmup.mark_done(ready)
 
     async def stop(self) -> None:
-        for task in (self._reaper, self._warm):
-            if task is not None:
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-        self._reaper = None
+        # The reaper owns its own cancel-and-await; the warm-up is a one-shot task with no
+        # loop behind it, so it stays hand-rolled rather than being bent into a timer.
+        await self._reaper.stop()
+        if self._warm is not None:
+            self._warm.cancel()
+            try:
+                await self._warm
+            except asyncio.CancelledError:
+                pass
         self._warm = None
         # Drained, never cancelled: a teardown interrupted partway leaves containers
         # still holding a workspace mount. Drained *before* taking the lock, which is
@@ -615,14 +621,6 @@ class SandboxSessionManager:
                     pass
             self._sessions.clear()
             self._preview_tokens.clear()
-
-    async def _reaper_loop(self) -> None:
-        while True:
-            await asyncio.sleep(self._reap_interval)
-            try:
-                await self._sweep()
-            except Exception:  # noqa: BLE001 — the reaper must survive a bad sweep
-                pass
 
     async def _sweep(self) -> None:
         now = time.monotonic()

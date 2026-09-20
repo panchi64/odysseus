@@ -34,7 +34,11 @@ import type { ContextWindow, RunEvent, TaskItem } from "~/lib/stream";
 import { ENGAGEMENT_ORDER, permissionLevel } from "../model";
 import type { PermissionLevel, PlanDocument } from "../model";
 import { toast } from "~/ui";
-import { commandBoundary, toTerminalOutcome } from "../data/hostCommands";
+import {
+  commandBoundary,
+  commandReason,
+  toTerminalOutcome,
+} from "../data/hostCommands";
 import { formatArgs, stringifyResult, toolImages } from "../data/messages";
 import { toStats } from "../data/summaries";
 import { toVersionChipBlock, toViewSnapshotRef } from "../data/viewSnapshots";
@@ -48,7 +52,11 @@ import type {
   ViewSnapshotRef,
 } from "../model";
 import { isTerminalTool } from "../toolPresentation";
-import { describeToolArgs, describeToolResult } from "../toolSummary";
+import {
+  describeToolArgs,
+  describeToolResult,
+  toolNarration,
+} from "../toolSummary";
 import {
   appendDelta,
   clearPark,
@@ -144,10 +152,7 @@ export function createFolder(
             upsertHost(m, ev.tool_call_id, ev.name, {
               command:
                 typeof ev.args.command === "string" ? ev.args.command : "",
-              explanation:
-                typeof ev.args.explanation === "string"
-                  ? ev.args.explanation
-                  : undefined,
+              explanation: commandReason(ev.args),
             }),
           );
           break;
@@ -161,6 +166,7 @@ export function createFolder(
               name: ev.name,
               args: formatArgs(ev.args),
               detail: describeToolArgs(ev.name, ev.args),
+              narration: toolNarration(ev.args),
               status: "running",
             },
           });

@@ -64,13 +64,19 @@ function cachedParse(raw: string): string {
   return html;
 }
 
-/** Vertical rhythm between top-level blocks, replicating the `.ody-prose > * + *`
- *  cascade (theme.css) at the block-wrapper level — the `streamStable` path
- *  wraps each block in its own `div`, so those blocks (not the raw `<p>`/`<h*>`
- *  elements) are the direct children `.ody-prose`'s CSS selectors key off, and
- *  the heading-aware rules never see them. Token-backed spacing utilities
- *  (space-2/4/6/8), same source-order precedence as the CSS: current-heading
- *  size wins, else previous-heading tightens, else the space-4 default. */
+/** Vertical rhythm between top-level blocks, replicating theme.css's heading
+ *  cascade at the block-wrapper level — the `streamStable` path wraps each block in
+ *  its own `div`, so those wrappers, not the raw `<p>`/`<h*>` elements, are the
+ *  direct children `.ody-prose`'s selectors key off, and the heading-aware rules
+ *  never see them.
+ *
+ *  **This is a transcription, not a second opinion.** Every value below is one of
+ *  theme.css's, and the two drift silently when they disagree: the same answer takes
+ *  one rhythm while it streams and another once it reloads from history, which is
+ *  invisible until someone reloads a thread mid-read. The mapping, in order —
+ *  `h1` → `space-8`, `h2`/`h3` → `space-6`, `h4`–`h6` → `space-5`, the block after
+ *  any heading → `space-2` (tight, so the heading binds to what it opens), anything
+ *  else → `space-4`. Change one side and change this one. */
 function headingDepth(token: Token | undefined): number | null {
   return token?.type === "heading" ? token.depth : null;
 }
@@ -83,8 +89,8 @@ function blockSpacingClass(
   if (isFirst) return "mt-0";
   const currDepth = headingDepth(curr);
   if (currDepth === 1) return "mt-8";
-  if (currDepth === 2) return "mt-6";
-  if (currDepth === 3 || currDepth === 4) return "mt-6";
+  if (currDepth === 2 || currDepth === 3) return "mt-6";
+  if (currDepth !== null) return "mt-5";
   if (headingDepth(prev) !== null) return "mt-2";
   return "mt-4";
 }

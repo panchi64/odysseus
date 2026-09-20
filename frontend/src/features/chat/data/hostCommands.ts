@@ -16,7 +16,30 @@ import type {
   HostCommand,
   HostCommandPhase,
 } from "../model";
+import { NARRATION_ARG } from "../toolSummary";
 import type { HostResult, ToolCallDTO } from "./wire";
+
+/** Why this command was run, in the agent's words.
+ *
+ *  Two arguments can carry it and which one depends on the tool. `code_run_host_command`
+ *  declares an `explanation` of its own, because that sentence is *approval copy* — the
+ *  operator decides on it, so it is part of the call rather than decoration. The worktree
+ *  shell declares no such thing and relies on the `narration` every acting tool is offered
+ *  (`tools/narration.py`).
+ *
+ *  Reading only the first is what this used to do, and it meant code mode's primary tool —
+ *  the one whose terminal the operator watches most — was the one place the narration never
+ *  appeared. The approval copy still wins where both exist: it is the sentence the operator
+ *  was actually shown when they said yes. */
+export function commandReason(
+  args: Record<string, unknown>,
+): string | undefined {
+  for (const key of ["explanation", NARRATION_ARG]) {
+    const value = args[key];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return undefined;
+}
 
 /** Pull the structured streams out of a host command's result, or null when the
  *  payload isn't that shape (e.g. a denial string) — callers leave the phase
@@ -114,10 +137,7 @@ export function toHostCommand(dto: ToolCallDTO): HostCommand {
     toolCallId: dto.id,
     name: dto.name,
     command: typeof dto.args.command === "string" ? dto.args.command : "",
-    explanation:
-      typeof dto.args.explanation === "string"
-        ? dto.args.explanation
-        : undefined,
+    explanation: commandReason(dto.args),
     phase,
     exitCode: outcome?.exitCode,
     stdout: outcome?.stdout,

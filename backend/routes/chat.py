@@ -50,6 +50,7 @@ from services.permissions import PermissionLevel
 from services.registry import ModelRegistry
 from services.settings_store import (
     AUTO_COMPACT_KEEP_TURNS_MAX,
+    WORK_SUMMARY_IDLE_MINUTES_MAX,
     AutoCompactSettings,
     get_agent_request_limit,
     get_agent_request_limit_override,
@@ -58,12 +59,14 @@ from services.settings_store import (
     get_inactivity_timeout,
     get_subagent_limit,
     get_wall_clock_timeout,
+    get_work_summary_idle_minutes,
     set_agent_request_limit,
     set_auto_compact,
     set_context_thresholds,
     set_inactivity_timeout,
     set_subagent_limit,
     set_wall_clock_timeout,
+    set_work_summary_idle_minutes,
 )
 from services.uploads import UploadStore
 from tools import InstructionProvider, PromptContextProvider
@@ -209,6 +212,16 @@ class ChatSettings(BaseModel):
     # whole thread would make the fold a no-op at the moment the thread is out of room.
     auto_compact_keep_turns: int | None = Field(
         default=None, ge=0, le=AUTO_COMPACT_KEEP_TURNS_MAX
+    )
+    # How many minutes a thread must be quiet before the background sweep writes its work
+    # summary — the account of what the agent did that the re-entry band shows when the
+    # operator comes back to it. ``ge=1``: a zero-minute window is not a faster setting but
+    # a broken one, since every thread would qualify the instant its turn finished and the
+    # sweep would be summarizing conversations that are still going. The ceiling keeps the
+    # window inside a day, past which the band would never appear on a thread worked on in
+    # a normal week — which is indistinguishable from the feature being switched off.
+    work_summary_idle_minutes: int | None = Field(
+        default=None, ge=1, le=WORK_SUMMARY_IDLE_MINUTES_MAX
     )
     # The context gauge's severity boundaries — the fullness at which the ring under the
     # composer turns amber, then red. Fractions, like the compaction threshold above and
@@ -944,11 +957,13 @@ def _settings_response(
     inactivity: float | None,
     wall_clock: float | None,
     subagents: int | None,
+    work_summary_idle_minutes: int,
 ) -> ChatSettings:
     return ChatSettings(
         auto_compact_enabled=auto.enabled,
         auto_compact_threshold=auto.threshold,
         auto_compact_keep_turns=auto.keep_turns,
+        work_summary_idle_minutes=work_summary_idle_minutes,
         context_warn_threshold=context.warn,
         context_alert_threshold=context.alert,
         agent_request_limit=steps,
@@ -968,7 +983,10 @@ async def get_chat_settings(request: Request) -> ChatSettings:
     wall_clock = await get_wall_clock_timeout(store, OPERATOR_ID)
     context = await get_context_thresholds(store, OPERATOR_ID)
     subagents = await get_subagent_limit(store, OPERATOR_ID)
-    return _settings_response(auto, context, steps, inactivity, wall_clock, subagents)
+    idle_minutes = await get_work_summary_idle_minutes(store, OPERATOR_ID)
+    return _settings_response(
+        auto, context, steps, inactivity, wall_clock, subagents, idle_minutes
+    )
 
 
 @router.put("/settings", response_model=ChatSettings)
@@ -998,6 +1016,13 @@ async def update_chat_settings(body: ChatSettings, request: Request) -> ChatSett
         subagents = await set_subagent_limit(store, OPERATOR_ID, body.subagent_max_concurrent)
     else:
         subagents = await get_subagent_limit(store, OPERATOR_ID)
+
+    if body.work_summary_idle_minutes is not None:
+        idle_minutes = await set_work_summary_idle_minutes(
+            store, OPERATOR_ID, body.work_summary_idle_minutes
+        )
+    else:
+        idle_minutes = await get_work_summary_idle_minutes(store, OPERATOR_ID)
 
     auto = await get_auto_compact(store, OPERATOR_ID)
     if (
@@ -1043,4 +1068,6 @@ async def update_chat_settings(body: ChatSettings, request: Request) -> ChatSett
                 ),
             ) from exc
         context = await set_context_thresholds(store, OPERATOR_ID, thresholds)
-    return _settings_response(auto, context, steps, inactivity, wall_clock, subagents)
+    return _settings_response(
+        auto, context, steps, inactivity, wall_clock, subagents, idle_minutes
+    )

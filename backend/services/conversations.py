@@ -591,6 +591,15 @@ class ConversationSummaryView:
     updated_at: datetime
     message_count: int
     preview: str | None
+    # The idle thread's work summary — what the agent did here, in two or three sentences,
+    # written by the background sweep (`services/work_summaries.py`). None until a thread
+    # has been idle long enough to have earned one.
+    #
+    # On the *listing* projection, beside `preview`, because that is where the frontend's
+    # re-entry band reads it from: the band is drawn over a row the session list already
+    # loaded, and a short summary is the same class of payload as the excerpt sitting next
+    # to it. A second fetch per row would be the same bytes over more round trips.
+    work_summary: str | None = None
     # The model the conversation last ran on (the most recent response's
     # model_name). None for a conversation with no answer yet.
     model: str | None = None
@@ -1304,6 +1313,7 @@ class ConversationStore:
             updated_at=conversation.updated_at,
             message_count=count,
             preview=preview[:140] if preview else None,
+            work_summary=self._open_work_summary(conversation),
             model=model,
             # Normalised through the registry for the same reason `binding` does it: the
             # column is a plain string, and a listing that grouped rows under a mode this
@@ -1465,6 +1475,98 @@ class ConversationStore:
             conversation.title = None
             conversation.updated_at = datetime.now(UTC)
             return True
+
+        return await in_session(self._engine, work)
+
+    def _open_work_summary(self, conversation: Conversation) -> str | None:
+        """The thread's work summary on its way out.
+
+        Through the same sealed-column reader the title uses, with no legacy cleartext to
+        fall back to: the column was born sealed, so there is no half-migrated state here
+        and ``None`` means only "never summarized". Sharing the reader rather than calling
+        the vault directly keeps one answer to "how is a sealed column opened" — the day a
+        row can be sealed under an older key, this reads it the way the title does."""
+        return open_sealed(self._vault, conversation.work_summary_enc, None)
+
+    async def set_work_summary(self, conversation_id: str, summary: str) -> None:
+        """Store this thread's work summary, replacing whatever was there.
+
+        A **plain replace**, deliberately unlike :meth:`set_title_if_absent`: the title is
+        fill-only because the operator may have named the thread and an auto-title must
+        never clobber a name they chose, while the summary has no operator-authored twin —
+        it is the sweep's own output and a fresher one is strictly better than the account
+        of a thread that has moved on since.
+
+        Sealed on the write path like the title, and for the same reason: the sweep runs
+        with the vault unlocked, and this does not ride the drainer's queue.
+
+        **``updated_at`` is deliberately not bumped.** It is what the staleness rule and
+        the idle window are both read off, so touching it here would make every summary
+        immediately look fresh *and* push the thread's idle clock forward — the write would
+        rewrite the two facts it is supposed to be measured against. ``work_summary_at``
+        carries the time instead."""
+        summary_enc = self._vault.encrypt_str(summary)
+        generated_at = datetime.now(UTC)
+
+        def work(session: Session) -> None:
+            conversation = session.get(Conversation, conversation_id)
+            if conversation is not None:
+                conversation.work_summary_enc = summary_enc
+                conversation.work_summary_at = generated_at
+
+        await in_session(self._engine, work)
+
+    async def work_summary_candidates(
+        self, owner_id: str, *, idle_before: datetime, limit: int, min_messages: int = 2
+    ) -> list[str]:
+        """Ids of threads whose work summary is worth (re)writing — the sweep's whole query.
+
+        Three conditions, and each drops work the model should never be asked to do. The
+        thread has been quiet since ``idle_before``, because a summary of a conversation
+        still in flight is out of date before it is stored. Its summary is **stale** — never
+        written, or written before the thread last spoke — so an idle thread costs nothing
+        on every sweep after its first. And it has at least ``min_messages`` messages, since
+        a thread holding one unanswered prompt has no work to account for and would produce
+        a summary that only restates its own title.
+
+        Ordered by most recently active and capped at ``limit``: a first sweep over a large
+        workspace would otherwise queue one model call per thread the operator has ever
+        opened, and the threads they are plausibly about to re-enter are the recent ones.
+        Ephemeral threads are excluded like they are from every listing — nothing renders a
+        band over a compare pane.
+        """
+        if limit <= 0:
+            return []
+
+        def work(session: Session) -> list[str]:
+            # Correlated, not a `GROUP BY` over the whole table joined in. The grouped
+            # form aggregates every message the operator has ever sent on every sweep —
+            # a minute-by-minute full scan to learn the count for the handful of threads
+            # that pass the filters below, most passes finding nothing to do at all.
+            # Correlated, it runs per surviving row against the `conversation_id` index,
+            # which is the same shape `_db_stats` uses for the same question.
+            message_count = (
+                select(func.count())
+                .select_from(Message)
+                .where(Message.conversation_id == Conversation.id)
+                .scalar_subquery()
+            )
+            query = (
+                select(Conversation.id)
+                .where(Conversation.owner_id == owner_id)
+                .where(Conversation.ephemeral == False)  # noqa: E712 — SQL boolean compare
+                .where(Conversation.updated_at < idle_before)
+                .where(message_count >= min_messages)
+                .where(
+                    or_(
+                        Conversation.work_summary_at.is_(None),  # type: ignore[union-attr]
+                        Conversation.work_summary_at < Conversation.updated_at,
+                    )
+                )
+                .order_by(Conversation.updated_at.desc())  # type: ignore[attr-defined]
+                .limit(limit)
+            )
+            return list(session.exec(query).all())
 
         return await in_session(self._engine, work)
 
