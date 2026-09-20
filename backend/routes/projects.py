@@ -22,14 +22,16 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 
 from core.exceptions import InvalidInputError, NotFoundError
 from routes import deps
 from routes.camel import CamelModel
 from routes.deps import OPERATOR_ID
+from routes.http import content_disposition
+from services.artifacts import guess_content_type
 from services.projects import ProjectView, WorktreeError
-from services.projects.listing import list_files
+from services.projects.listing import list_files, read_file
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -197,6 +199,64 @@ async def list_project_files(
         root="worktree" if from_worktree else "project",
         entries=[FileEntryOut(path=e.path, name=e.name) for e in listing.entries],
         truncated=listing.truncated,
+    )
+
+
+#: How much of a file the operator's viewer will be handed. A code thread's tree is
+#: browsable now, so a path can be asked for directly rather than only picked out of a
+#: listing that already honours `.gitignore` — and a worktree holds whatever the agent
+#: built in it. Generous for source, far under what would make the response the problem.
+_FILE_MAX_BYTES = 2 * 1024 * 1024
+
+
+@router.get("/{project_id}/file")
+async def read_project_file(
+    request: Request,
+    project_id: str,
+    path: str,
+    conversation_id: str | None = None,
+) -> Response:
+    """One file out of the tree `list_files` just listed, for the operator to read.
+
+    **The same resolver, deliberately.** It answers for whichever checkout
+    :func:`~routes.deps.composer_tree` names — the thread's own worktree when it has one,
+    the project root otherwise — because a viewer reading from a different tree than the
+    list it was picked from is the failure mode worth spending a shared resolver on.
+
+    **It never creates a worktree**, for the same reason the listing does not: opening a
+    file must not acquire the project's single checkout from whatever holds it.
+
+    A path that escapes the root, names a symlink out of it, names a directory, or simply
+    is not there all come back **404**. That is one answer to four questions on purpose —
+    distinguishing them would describe the filesystem around a path the operator is not
+    being allowed to read.
+
+    Served with the same inert headers as a View's bytes: a sandboxing CSP and `nosniff`,
+    so a file out of a repository cannot execute anything in the operator's origin.
+    """
+    root, _from_worktree = await deps.composer_tree(request, project_id, conversation_id)
+    if root is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    content = await read_file(root, path, max_bytes=_FILE_MAX_BYTES)
+    if content is None:
+        raise HTTPException(status_code=404, detail="file not found")
+    name = path.rsplit("/", 1)[-1]
+    headers = {
+        "Content-Security-Policy": (
+            "sandbox; default-src 'none'; img-src 'self' data: blob:; "
+            "style-src 'unsafe-inline'; font-src 'self' data:"
+        ),
+        "X-Content-Type-Options": "nosniff",
+        "Content-Disposition": content_disposition(name, inline=True, fallback="file"),
+        # Stated rather than implied: a viewer showing the first two megabytes of a file
+        # has to be able to say so, and a header is the one place that fact can ride
+        # alongside raw bytes.
+        "X-Content-Truncated": "true" if content.truncated else "false",
+    }
+    return Response(
+        content=content.data,
+        media_type=guess_content_type(name),
+        headers=headers,
     )
 
 

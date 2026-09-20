@@ -79,7 +79,7 @@ export const SURFACE_RENDERERS: Record<
   coverage: (ctx) => <CoverageSurface coverage={ctx.viewport.coverage} />,
   files: (ctx) => (
     <FilesSurface
-      items={ctx.viewport.items}
+      branch={ctx.viewport.branch}
       fontStep={ctx.viewport.state().fontStep}
       softWrap={ctx.viewport.state().softWrap}
     />

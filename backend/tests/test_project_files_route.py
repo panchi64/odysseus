@@ -161,3 +161,91 @@ class TestRoute:
             # character would take it from whatever else holds it.
             assert app.state.worktrees.holder(pid) is None
             assert not app.state.worktrees.path_for(pid).exists()
+
+
+class TestReadRoute:
+    """Reading one of the files the listing just offered.
+
+    The browsable tree is why this exists: a path can now be asked for directly rather
+    than only picked out of a listing that already honours `.gitignore`, so the refusals
+    are the interesting half.
+    """
+
+    async def _project(self, client, repo: Path) -> str:
+        created = await client.post("/projects/ensure", json={"rootPath": str(repo)})
+        return created.json()["id"]
+
+    async def test_it_serves_a_files_bytes(self, repo: Path):
+        (repo / "src" / "app.tsx").write_text("export const x = 1;\n")
+        async with client_app() as (client, _app):
+            pid = await self._project(client, repo)
+            res = await client.get(f"/projects/{pid}/file?path=src/app.tsx")
+        assert res.status_code == 200
+        assert res.text == "export const x = 1;\n"
+        # Inert, like a View's bytes: a file out of a repository must not be able to run
+        # anything in the operator's own origin.
+        assert res.headers["x-content-type-options"] == "nosniff"
+        assert "sandbox" in res.headers["content-security-policy"]
+        assert res.headers["x-content-truncated"] == "false"
+
+    @pytest.mark.parametrize(
+        "relative",
+        ["../outside.txt", "/etc/passwd", "src/../../outside.txt", "src", "gone.txt"],
+    )
+    async def test_every_unreadable_path_is_the_same_404(self, repo: Path, relative: str):
+        # One answer to four questions on purpose. Saying which of "outside the tree",
+        # "a directory" and "not there" a path was would describe the filesystem around
+        # something the operator is not being allowed to read.
+        async with client_app() as (client, _app):
+            pid = await self._project(client, repo)
+            res = await client.get(f"/projects/{pid}/file", params={"path": relative})
+        assert res.status_code == 404
+
+    async def test_a_symlink_out_of_the_tree_is_refused(self, repo: Path, tmp_path: Path):
+        secret = tmp_path / "secret.txt"
+        secret.write_text("the operator's own business")
+        (repo / "link.txt").symlink_to(secret)
+        async with client_app() as (client, _app):
+            pid = await self._project(client, repo)
+            res = await client.get(f"/projects/{pid}/file?path=link.txt")
+        assert res.status_code == 404
+
+    async def test_an_oversized_file_is_cut_and_says_so(self, repo: Path, monkeypatch):
+        # The ceiling has to be *detectable*, not inferred from a length that happens to
+        # equal it — hence the header rather than the client comparing sizes.
+        monkeypatch.setattr("routes.projects._FILE_MAX_BYTES", 8)
+        (repo / "big.txt").write_text("0123456789")
+        async with client_app() as (client, _app):
+            pid = await self._project(client, repo)
+            res = await client.get(f"/projects/{pid}/file?path=big.txt")
+        assert res.status_code == 200
+        assert res.text == "01234567"
+        assert res.headers["x-content-truncated"] == "true"
+
+    async def test_a_file_exactly_at_the_ceiling_is_not_called_truncated(
+        self, repo: Path, monkeypatch
+    ):
+        monkeypatch.setattr("routes.projects._FILE_MAX_BYTES", 10)
+        (repo / "exact.txt").write_text("0123456789")
+        async with client_app() as (client, _app):
+            pid = await self._project(client, repo)
+            res = await client.get(f"/projects/{pid}/file?path=exact.txt")
+        assert res.text == "0123456789"
+        assert res.headers["x-content-truncated"] == "false"
+
+    async def test_reading_never_creates_a_worktree(self, repo: Path):
+        async with client_app() as (client, app):
+            pid = await self._project(client, repo)
+            await client.get(
+                f"/projects/{pid}/file?path=README.md&conversation_id=c1"
+            )
+            # Same rule the listing keeps, and for the same reason: opening a file must
+            # not take the project's single checkout from whatever holds it.
+            assert app.state.worktrees.holder(pid) is None
+            assert not app.state.worktrees.path_for(pid).exists()
+
+    async def test_an_unknown_project_is_a_404(self, repo: Path):
+        async with client_app() as (client, _app):
+            assert (
+                await client.get("/projects/nope/file?path=README.md")
+            ).status_code == 404
