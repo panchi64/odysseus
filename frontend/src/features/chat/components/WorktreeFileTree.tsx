@@ -1,4 +1,4 @@
-import { For, Show, type JSX, type Resource } from "solid-js";
+import { createMemo, For, Show, type JSX, type Resource } from "solid-js";
 import {
   ListRow,
   Resource as ResourceView,
@@ -58,20 +58,27 @@ export function WorktreeFileTree(props: {
   /** Lay out as a fixed side column with a rule, rather than filling. */
   inline?: boolean;
 }): JSX.Element {
-  // Paths the diff names but the listing does not contain: a deletion has no file left
-  // to list, and a rename's old path is gone by definition. Dropping them would drop the
-  // rows the merge gate ranks highest — a deletion is never `normal`.
-  const missing = (listing: WorktreeListing): string[] =>
-    listing.root === "worktree"
-      ? [...props.changes.keys()].filter((p) => !listing.paths.includes(p))
-      : [];
+  // Derived once and read three times — the rows, the emptiness check the resource view
+  // makes, and the trailing group. Recomputing them per read turned the containment test
+  // below into a scan of the whole listing per changed file.
+  const present = createMemo(() => new Set(props.listing()?.paths ?? []));
 
-  const rowsOf = (listing: WorktreeListing): FileTreeRow[] => {
+  /** Paths the diff names but the listing does not contain: a deletion has no file left
+   *  to list, and a rename's old path is gone by definition. Dropping them would drop
+   *  the rows the merge gate ranks highest — a deletion is never `normal`. */
+  const missing = createMemo(() =>
+    props.listing()?.root === "worktree"
+      ? [...props.changes.keys()].filter((p) => !present().has(p))
+      : [],
+  );
+
+  const rows = createMemo((): FileTreeRow[] => {
+    const paths = props.listing()?.paths ?? [];
     const shown = props.editedOnly
-      ? listing.paths.filter((p) => props.changes.has(p))
-      : listing.paths;
+      ? paths.filter((p) => props.changes.has(p))
+      : paths;
     return groupByDirectory(shown);
-  };
+  });
 
   const fileRow = (
     row: Extract<FileTreeRow, { kind: "file" }>,
@@ -105,7 +112,7 @@ export function WorktreeFileTree(props: {
           data={props.listing}
           onRetry={props.onRetry}
           loadingLabel="Reading the workspace…"
-          isEmpty={(listing) => rowsOf(listing).length === 0}
+          isEmpty={() => rows().length === 0}
           emptyMessage={
             props.editedOnly ? "No files changed" : "No files in the workspace"
           }
@@ -123,7 +130,7 @@ export function WorktreeFileTree(props: {
                   </Text>
                 </div>
               </Show>
-              <For each={rowsOf(listing())}>
+              <For each={rows()}>
                 {(row) =>
                   row.kind === "dir" ? (
                     <div class="px-3 pb-1 pt-3">
@@ -136,13 +143,13 @@ export function WorktreeFileTree(props: {
                   )
                 }
               </For>
-              <Show when={missing(listing()).length > 0}>
+              <Show when={missing().length > 0}>
                 <div class="px-3 pb-1 pt-3">
                   <Text variant="micro" tone="dim">
                     Changed, not in the tree
                   </Text>
                 </div>
-                <For each={missing(listing())}>
+                <For each={missing()}>
                   {(path) => {
                     const change = props.changes.get(path);
                     return (
