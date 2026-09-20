@@ -255,6 +255,8 @@ function SessionRows(props: {
           reveal={titleReveals[s.id]}
           retitling={isRetitling(s.id)}
           activity={s.activity}
+          lastOutcome={s.lastOutcome}
+          updatedAt={s.updatedAt}
           onOpen={() => props.onSelect(s.id)}
           // The thread's id is the menu's key, which is what lets one panel serve the
           // whole list: it tells the rail which thread to build items for, and tells

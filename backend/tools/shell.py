@@ -64,27 +64,53 @@ any of them.
 tools from every mode whose spec does not admit the `shell` category, but that is a
 filter, and a filter is the wrong place for the only thing standing between a host command
 and a sandbox thread. The check is here too.
+
+**What a command hands back says where it ran, at every permission level.** The result is
+structure (``services/sandbox/shell_runner.ShellResult``) with the boundary on it: the
+`reach` the model declared, whether a fence was actually built from it, and — when one was
+not — why. That last part is the :class:`services.permissions.Capability` this file has
+always computed to decide the profile and then dropped on the floor; a contradicted
+declaration is the whole reason a command ran unfenced, and it was readable nowhere.
+Reviewing levels announce the same two facts on the stream (`review.started` /
+`review.completed`), but only Auto reviews, so every other level left the operator with a
+command and no account of what held it. The tool's own result is the one place that is
+true at all five, warm and on a cold reload alike.
+
+**Output streams while the command runs.** `run_command` passes the runner a progress hook
+and each new piece of output goes out as `tool.progress`, the frame a sandbox start
+already uses — so a ten-minute build reads as work rather than as a stall. Only the
+blocking tool streams: a background command is *already* the answer to "this takes too
+long to watch", and the agent reads it with `check_command`.
 """
 
 from __future__ import annotations
 
 import sys
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import AbstractToolset, FunctionToolset, RunContext
 from pydantic_ai.exceptions import ApprovalRequired
 
 from core.config import Settings, get_settings
+from runs import ToolProgress
 from services.egress import EgressPolicy
 from services.modes import mode_spec
 from services.permissions import Reach, capability_of
 from services.sandbox import denied_read_paths, fence
-from services.sandbox.shell_runner import Confiner, FencedShell
+from services.sandbox.shell_runner import (
+    BackgroundStatus,
+    Confiner,
+    FencedShell,
+    ProgressHook,
+    ShellResult,
+)
 from services.workspace import RunWorkspace
 
 from .deps import RunDeps
+from .emit import RunEventEmitted
 from .rebound import WorkspaceToolset
 from .workspace import run_workspace
 
@@ -199,15 +225,44 @@ async def _domains(ctx: RunContext[RunDeps]) -> tuple[str, ...]:
     return tuple(sorted(await policy.allowed_for(ctx.deps.workspace_key)))
 
 
-async def _profile(
+@dataclass(frozen=True, slots=True)
+class _Boundary:
+    """What holds one command, as something a reader can be shown.
+
+    Built once per call and carried to both ends of it: the profile goes to the shell,
+    and the other three fields go onto the result, which is how the declared reach and the
+    fence's verdict reach the operator at a level that never reviews anything.
+    """
+
+    reach: Reach
+    profile: SandboxRuntimeConfig | None
+    #: Why no fence was built, in the operator's language. None when one was — the two
+    #: are the same fact read twice, and :attr:`fenced` is the one to branch on.
+    reason: str | None
+
+    @property
+    def fenced(self) -> bool:
+        return self.profile is not None
+
+
+#: Why a command ran with no fence around it. Every one of them is somebody's explicit
+#: yes (see :func:`_boundary`), so they are worded as what was asked for rather than as a
+#: failure — an operator reading "unfenced" with no reason beside it would be right to
+#: read it as the gate having broken.
+_HOST_DECLARED = "the command declared `host`, which asks for the operator's machine itself"
+_ESCAPES = "the command names {paths}, outside the worktree its declaration covers"
+_CONTRADICTED = "the command reaches the network, which its `workspace` declaration does not cover"
+
+
+async def _boundary(
     name: str,
     command: str,
     reach: Reach,
     workspace: RunWorkspace,
     domains: tuple[str, ...],
     settings: Settings,
-) -> SandboxRuntimeConfig | None:
-    """The fence profile this command runs under, or None to run it as written.
+) -> _Boundary:
+    """What holds this command: the fence profile, or none and the reason there is none.
 
     **Built from the declaration, not from a judgement**, and that separation is the whole
     of it: the permission layer's stages answer *who must approve*, and this answers *what
@@ -235,15 +290,28 @@ async def _profile(
     list as "no list to hold it to" and lifting the fence inverted the setting: an operator
     who empties it to reach *less* would have handed every approved networked command the
     loosest execution path there is, write confinement and the read denials included.
+
+    **The extraction is kept, not consumed and dropped.** The capability read off the
+    command is the only account of *why* a command ran as written, and one of the two ways
+    out is readable nowhere else: a `host` declaration is in the call's own arguments, but
+    a declaration the command's syntax contradicts is in neither the arguments nor the
+    result, so an operator seeing `reach: workspace` beside an unfenced command would have
+    no way to tell that from a bug. The reason is carried out with the profile.
     """
     if reach == "host":
-        return None
+        return _Boundary(reach=reach, profile=None, reason=_HOST_DECLARED)
     capability = capability_of(
         f"{_NAMESPACE}{name}", {"command": command, "reach": reach}, root=workspace.root
     )
-    if capability.escapes or (reach == "workspace" and capability.network):
-        return None
-    return fence.workspace_profile(
+    if capability.escapes:
+        return _Boundary(
+            reach=reach,
+            profile=None,
+            reason=_ESCAPES.format(paths=", ".join(capability.escapes)),
+        )
+    if reach == "workspace" and capability.network:
+        return _Boundary(reach=reach, profile=None, reason=_CONTRADICTED)
+    profile = fence.workspace_profile(
         workspace.root,
         fence.GitDirs.read(workspace.root),
         workspace.branch,
@@ -260,15 +328,119 @@ async def _profile(
         allow_write=settings.worktree_command_allow_write,
         linux=sys.platform.startswith("linux"),
     )
+    return _Boundary(reach=reach, profile=profile, reason=None)
+
+
+def _fence_note(boundary: _Boundary, result: ShellResult) -> str | None:
+    """The fence's note about a permission failure in this command's output, or None.
+
+    Read back off :func:`services.sandbox.fence.annotate` rather than restating the
+    denials it looks for: what a fence failure looks like has one definition, and a second
+    copy here would be the copy that stops being updated. It used to be appended to the
+    one labelled string; with fields to put it in, it is its own.
+    """
+    if not boundary.fenced:
+        return None
+    text = f"{result.stdout}\n{result.stderr}"
+    return fence.annotate(text)[len(text) :].strip() or None
+
+
+def _progress_hook(ctx: RunContext[RunDeps]) -> ProgressHook | None:
+    """Put this command's output on the operator's stream as it arrives, or None.
+
+    None where there is no call to attribute a frame to — a tool driven outside a run, in
+    a test or a direct call. `tool.progress` is the frame a cold sandbox start already
+    uses, so there is nothing new on the wire: what is new is that a `partial` can now
+    arrive many times for one call, each carrying the *next* piece of output rather than
+    the whole of it so far. A reader appends; the completed result is still the record,
+    and is what a reload reads.
+    """
+    tool_call_id = ctx.tool_call_id
+    if not tool_call_id:
+        return None
+
+    async def hook(chunk: str, elapsed_s: float) -> None:
+        await ctx.emit(
+            RunEventEmitted(
+                body=ToolProgress(
+                    tool_call_id=tool_call_id, elapsed_s=elapsed_s, partial=chunk
+                )
+            )
+        )
+
+    return hook
+
+
+def _run_payload(result: ShellResult, boundary: _Boundary, timeout_s: float) -> dict[str, Any]:
+    """One finished command, as the model and the operator's terminal both read it.
+
+    The optional keys are **absent rather than null** when they say nothing, the same way
+    `code_execute`'s result omits its failure hint on success: a key whose presence is the
+    fact is easier to read than a null a reader has to know the meaning of.
+    """
+    payload: dict[str, Any] = {
+        "ok": result.ok,
+        "exit_code": result.exit_code,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "timed_out": result.timed_out,
+        "duration_ms": result.duration_ms,
+        **_boundary_fields(boundary),
+    }
+    note = _fence_note(boundary, result)
+    if note is not None:
+        payload["fence_note"] = note
+    if result.timed_out:
+        payload["error"] = (
+            f"The command was still running after {timeout_s}s and was terminated. "
+            "Everything it printed before that is above."
+        )
+    elif not result.ok:
+        payload["error"] = f"The command exited with status {result.exit_code}."
+    return payload
+
+
+def _boundary_fields(boundary: _Boundary) -> dict[str, Any]:
+    """The declaration and the fence's verdict, as the two keys every executing tool
+    carries — at every permission level, which is the whole point of them being here."""
+    fields: dict[str, Any] = {"reach": boundary.reach, "fenced": boundary.fenced}
+    if boundary.reason is not None:
+        fields["unfenced_reason"] = boundary.reason
+    return fields
+
+
+def _background_payload(status: BackgroundStatus) -> dict[str, Any]:
+    """A background command as it stands. ``ok`` reads the same way it does everywhere
+    else here — nothing went wrong — so a process still running is fine, and one that has
+    exited non-zero is not."""
+    return {
+        "ok": status.exit_code in (None, 0),
+        "command_id": status.command_id,
+        "status": status.status,
+        "exit_code": status.exit_code,
+        "stdout": status.stdout,
+        "stderr": status.stderr,
+    }
+
+
+def _unknown_command(command_id: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "command_id": command_id,
+        "error": (
+            f"No background command with ID {command_id!r} is running in this "
+            "conversation. It may have already been stopped."
+        ),
+    }
 
 
 def _tools_for(shell: FencedShell, settings: Settings) -> FunctionToolset[RunDeps]:
     """The four tools, over one bound shell."""
     toolset: FunctionToolset[RunDeps] = FunctionToolset()
 
-    async def profile_for(
+    async def boundary_for(
         ctx: RunContext[RunDeps], name: str, command: str, reach: Reach
-    ) -> SandboxRuntimeConfig | None:
+    ) -> _Boundary:
         """This call's boundary — resolved here so both executing tools ask one question.
 
         The workspace is read per call rather than captured when the shell was built, and
@@ -284,8 +456,8 @@ def _tools_for(shell: FencedShell, settings: Settings) -> FunctionToolset[RunDep
         """
         workspace = await run_workspace(ctx)
         if workspace is None:  # pragma: no cover — `bind` refuses this before we get here
-            return None
-        return await _profile(name, command, reach, workspace, await _domains(ctx), settings)
+            return _Boundary(reach=reach, profile=None, reason=None)
+        return await _boundary(name, command, reach, workspace, await _domains(ctx), settings)
 
     @toolset.tool(metadata={"code_arg_name": "command", "code_arg_language": "shell"})
     async def run_command(
@@ -293,7 +465,7 @@ def _tools_for(shell: FencedShell, settings: Settings) -> FunctionToolset[RunDep
         command: str,
         reach: Reach = "workspace",
         timeout_seconds: float | None = None,
-    ) -> str:
+    ) -> dict[str, Any]:
         """Execute a shell command in the project's worktree and return its output.
 
         Args:
@@ -308,16 +480,23 @@ def _tools_for(shell: FencedShell, settings: Settings) -> FunctionToolset[RunDep
             timeout_seconds: Maximum seconds to wait (default: 300).
 
         Returns:
-            Labeled stdout/stderr output with exit code on non-zero exit.
+            `ok`, `exit_code` (null if it timed out), `stdout`, `stderr`, `timed_out`,
+            `duration_ms`, the `reach` you declared and whether it ran `fenced`.
         """
-        profile = await profile_for(ctx, "run_command", command, reach)
-        output = await shell.run(command, profile=profile, timeout_seconds=timeout_seconds)
-        return fence.annotate(output) if profile is not None else output
+        boundary = await boundary_for(ctx, "run_command", command, reach)
+        result = await shell.run(
+            command,
+            profile=boundary.profile,
+            timeout_seconds=timeout_seconds,
+            on_progress=_progress_hook(ctx),
+        )
+        timeout = timeout_seconds if timeout_seconds is not None else _TIMEOUT_S
+        return _run_payload(result, boundary, timeout)
 
     @toolset.tool(metadata={"code_arg_name": "command", "code_arg_language": "shell"})
     async def start_command(
         ctx: RunContext[RunDeps], command: str, reach: Reach = "workspace"
-    ) -> str:
+    ) -> dict[str, Any]:
         """Start a long-running command in the background (e.g. a server or watcher).
 
         Callers MUST call `stop_command(command_id)` when done to terminate the
@@ -329,34 +508,45 @@ def _tools_for(shell: FencedShell, settings: Settings) -> FunctionToolset[RunDep
                 `run_command` takes, enforced the same way.
 
         Returns:
-            A message containing the unique command ID for later check/stop calls.
+            `command_id` for later check/stop calls, the `command` itself, and the same
+            `reach` / `fenced` pair every executing call carries.
         """
-        profile = await profile_for(ctx, "start_command", command, reach)
-        return await shell.start(command, profile=profile)
+        boundary = await boundary_for(ctx, "start_command", command, reach)
+        command_id = await shell.start(command, profile=boundary.profile)
+        return {
+            "ok": True,
+            "command_id": command_id,
+            "command": command,
+            **_boundary_fields(boundary),
+        }
 
     @toolset.tool
-    async def check_command(ctx: RunContext[RunDeps], command_id: str) -> str:
+    async def check_command(ctx: RunContext[RunDeps], command_id: str) -> dict[str, Any]:
         """Check the status and recent output of a background command.
 
         Args:
             command_id: The ID returned by start_command.
 
         Returns:
-            Status and recent output of the background command.
+            `status` (`running` or `finished`), `exit_code` once it has one, and
+            everything it has printed so far in `stdout` / `stderr`.
         """
-        return await shell.check(command_id)
+        status = await shell.check(command_id)
+        return _unknown_command(command_id) if status is None else _background_payload(status)
 
     @toolset.tool
-    async def stop_command(ctx: RunContext[RunDeps], command_id: str) -> str:
+    async def stop_command(ctx: RunContext[RunDeps], command_id: str) -> dict[str, Any]:
         """Stop a background command and return its final output.
 
         Args:
             command_id: The ID returned by start_command.
 
         Returns:
-            Final output and exit status of the stopped command.
+            `status` of `stopped`, the final `exit_code` where it had one, and everything
+            the command printed.
         """
-        return await shell.stop(command_id)
+        status = await shell.stop(command_id)
+        return _unknown_command(command_id) if status is None else _background_payload(status)
 
     return toolset
 

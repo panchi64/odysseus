@@ -2,6 +2,7 @@ import {
   Show,
   createEffect,
   createMemo,
+  createSignal,
   onMount,
   untrack,
   type JSX,
@@ -33,6 +34,7 @@ import { ContextRing } from "../components/ContextRing";
 import { ConversationStatusStrip } from "../components/ConversationStatusStrip";
 import { ParkDock } from "../components/ParkDock";
 import { PermissionControl } from "../components/PermissionControl";
+import { ThreadRecap } from "../components/ThreadRecap";
 import { TranscriptView } from "../components/TranscriptView";
 import { ModelPicker } from "~/app/ModelPicker";
 import { createConversationActions } from "../conversationActions";
@@ -146,6 +148,15 @@ export function ChatRoomScreen(): JSX.Element {
     return id ? sessions()?.find((s) => s.id === id) : undefined;
   });
   const headerTitle = () => currentSummary()?.title ?? "New conversation";
+
+  /** Which thread the operator has put the recap away for. View state and nothing
+   *  else — it is a toggle over a band, so it stays here rather than in storage the
+   *  backend would have to own. Keyed by thread so dismissing one doesn't dismiss the
+   *  next one the operator opens, which is the whole case for the band. */
+  const [recapDismissed, setRecapDismissed] = createSignal<string | null>(null);
+  const recapSummary = createMemo(() =>
+    recapDismissed() === openId() ? undefined : currentSummary(),
+  );
   // A just-generated title for the open thread, if the backend named it this turn.
   const headerReveal = () => {
     const id = openId();
@@ -231,10 +242,25 @@ export function ChatRoomScreen(): JSX.Element {
 
   // Stop the live run for real: cancel on the backend, abort the local stream.
   // `cancel()` surfaces its own backend error; this only adds the success note.
-  const stopRun = async () => {
+  //
+  // **A correction typed into the composer rides the same act.** Interrupting is rarely
+  // the whole intention — the run is stopped because it is doing the wrong thing, and
+  // what comes next is saying what the right thing was. As two acts that is a stop, a
+  // pause while the composer comes back, and a send; and in that gap the correction is
+  // retyped, or a queued message restoring itself lands on top of it.
+  //
+  // Nothing about the stopped run is discarded to make room for it: the cancel leaves
+  // the turn where it stopped — its answer so far, every tool block, every command's
+  // output — and the correction opens the next turn against that history, which is what
+  // makes it a correction rather than a restart.
+  const stopRun = async (correction?: string) => {
     if (!stream.sending()) return;
     await stream.cancel();
-    toast.success("Run cancelled");
+    if (!correction) return void toast.success("Run cancelled");
+    toast.success("Run cancelled — sending your correction");
+    // No attachment ids: attaching is unavailable while a run streams, so there can be
+    // nothing ready to carry.
+    sendTurn(correction, []);
   };
 
   onMount(() => {
@@ -394,6 +420,8 @@ export function ChatRoomScreen(): JSX.Element {
           createdAt={() => currentSummary()?.createdAt}
           conversationId={currentId}
           streaming={stream.sending}
+          activity={() => currentSummary()?.activity}
+          lastOutcome={() => currentSummary()?.lastOutcome}
           messageCount={() => stream.messages.length}
           viewport={viewport}
           branch={branch.latest}
@@ -405,6 +433,16 @@ export function ChatRoomScreen(): JSX.Element {
             copy: actions.copyTranscript,
             remove: () => void actions.removeConversation(),
           }}
+        />
+
+        {/* Pinned above the transcript, not folded into it: a recap inside the scroll
+            is a message that is not one, sitting at the top of a thread the operator
+            has just been dropped at the bottom of. */}
+        <ThreadRecap
+          summary={recapSummary}
+          branch={branch.latest}
+          streaming={stream.sending}
+          onDismiss={() => setRecapDismissed(openId())}
         />
 
         <TranscriptView
@@ -475,7 +513,7 @@ export function ChatRoomScreen(): JSX.Element {
                 edge="led"
                 autofocus
                 streaming={stream.sending()}
-                onStop={() => void stopRun()}
+                onStop={(correction) => void stopRun(correction)}
                 onSend={sendTurn}
                 menu={composerMenu}
                 // The backend refuses a turn it can't keep inside a context window; this

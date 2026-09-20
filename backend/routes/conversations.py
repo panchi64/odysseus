@@ -26,7 +26,7 @@ from core.config import get_settings
 from core.exceptions import DegradedCapabilityError, NotFoundError
 from routes import deps
 from routes.deps import OPERATOR_ID
-from runs import ContextWindow, FoldPoint, RunMetrics
+from runs import ContextWindow, FoldPoint, Run, RunMetrics
 from services.approval_grants import COMMAND_SCOPED_TOOLS
 from services.context_budget import compose
 from services.conversation_view import MessageView
@@ -66,6 +66,21 @@ class ConversationSummary(BaseModel):
     # busy-vs-needs-you distinction the nav rail already draws (an `awaiting_input`
     # run is parked on the operator's approval decision, not merely streaming).
     activity: str | None = None
+    # How the thread's most recent *finished* run ended, as its terminal `RunStatus`
+    # value (`done`, `error`, `blocked`, `cancelled`); None when nothing has finished
+    # that this process still remembers. `activity` covers only the three live statuses,
+    # so without this a thread that failed and a thread that never ran are the same row:
+    # both quiet, both null, and the failure is only discoverable by opening it.
+    #
+    # A sibling rather than a widening of `activity`, because they answer different
+    # questions and can both be true — a thread can be running *now* having errored last
+    # time. The live value is the one that wins on screen; this is what the row falls
+    # back to at rest.
+    #
+    # Registry-derived like `activity`, and therefore **best-effort**: the run registry
+    # is in memory and bounded, so a restart, or enough traffic to age the run out,
+    # leaves this null. Null means "nothing known", never "nothing happened".
+    last_outcome: str | None = None
     # What kind of work this thread is. The sidebar shows one mode at a time, so this is
     # on the listing rather than only on the detail — a rail that had to open every
     # thread to know which section it belongs in could not draw itself.
@@ -262,10 +277,37 @@ def _activity(request: Request, conversation_id: str) -> str | None:
     return run.status.value if run is not None else None
 
 
+def _outcomes(request: Request) -> dict[str, str]:
+    """conversation id → how its most recent finished run ended.
+
+    Built in one pass over the registry and handed to a whole listing, rather than
+    scanned per row: the rail re-reads this list on a timer while anything is running,
+    and the registry holds every run this process remembers, not this thread's.
+
+    Terminal runs only. A live run is `activity`'s business, and a conversation with one
+    in flight still reports what the previous one did — the two fields are read together.
+    """
+    latest: dict[str, Run] = {}
+    for run in deps.registry(request).list(OPERATOR_ID):
+        if not run.is_terminal or run.conversation_id is None:
+            continue
+        previous = latest.get(run.conversation_id)
+        if previous is None or _ended(run) > _ended(previous):
+            latest[run.conversation_id] = run
+    return {conversation_id: run.status.value for conversation_id, run in latest.items()}
+
+
+def _ended(run: Run) -> datetime:
+    """When a run stopped, falling back to when it started — a terminal run that
+    somehow carries no end time still has to sort against its siblings."""
+    return run.ended_at or run.created_at
+
+
 def _summary(
     view: ConversationSummaryView,
     activity: str | None = None,
     workspaces: Mapping[str, str] | None = None,
+    last_outcome: str | None = None,
 ) -> ConversationSummary:
     """One listing row. ``workspaces`` maps project id → directory basename; a caller
     with nothing to look up (a single-thread read, where the group heading is not being
@@ -279,6 +321,7 @@ def _summary(
         preview=view.preview,
         model=view.model,
         activity=activity,
+        last_outcome=last_outcome,
         mode=view.mode,
         workspace=(workspaces or {}).get(view.project_id or ""),
         project_id=view.project_id,
@@ -439,6 +482,7 @@ async def _detail(
             summary,
             activity=active_run.status if active_run else None,
             workspaces=await deps.projects(request).workspace_names(OPERATOR_ID),
+            last_outcome=_outcomes(request).get(conversation_id),
         ).model_dump(),
         messages=[_message(m, by_id) for m in messages],
         snapshots=[
@@ -473,7 +517,17 @@ async def list_conversations(request: Request) -> list[ConversationSummary]:
     # timer while anything is running, and a decrypt per thread would pay for the same
     # handful of directories over and over.
     workspaces = await deps.projects(request).workspace_names(OPERATOR_ID)
-    return [_summary(v, activity=_activity(request, v.id), workspaces=workspaces) for v in views]
+    # Same reasoning for the outcomes: one pass over the registry for the whole listing.
+    outcomes = _outcomes(request)
+    return [
+        _summary(
+            v,
+            activity=_activity(request, v.id),
+            workspaces=workspaces,
+            last_outcome=outcomes.get(v.id),
+        )
+        for v in views
+    ]
 
 
 @router.get("/{conversation_id}", response_model=ConversationDetail)
@@ -495,7 +549,11 @@ async def rename_conversation(
     summary = await store.get_summary(conversation_id, OPERATOR_ID)
     if summary is None:  # pragma: no cover — just confirmed it exists
         raise HTTPException(status_code=404, detail="conversation not found")
-    return _summary(summary, activity=_activity(request, conversation_id))
+    return _summary(
+        summary,
+        activity=_activity(request, conversation_id),
+        last_outcome=_outcomes(request).get(conversation_id),
+    )
 
 
 @router.post("/{conversation_id}/retitle", response_model=ConversationSummary)
@@ -546,7 +604,11 @@ async def retitle_conversation(
     summary = await store.get_summary(conversation_id, OPERATOR_ID)
     if summary is None:  # pragma: no cover — just confirmed it exists
         raise HTTPException(status_code=404, detail="conversation not found")
-    return _summary(summary, activity=_activity(request, conversation_id))
+    return _summary(
+        summary,
+        activity=_activity(request, conversation_id),
+        last_outcome=_outcomes(request).get(conversation_id),
+    )
 
 
 class OrphanImageAttachments(BaseModel):

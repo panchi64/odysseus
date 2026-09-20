@@ -537,9 +537,15 @@ class TestWhichFenceTheToolBuilds:
         workspace = RunWorkspace(
             root=tmp_path, kind="worktree", files=HostFiles(tmp_path), branch=BRANCH
         )
-        return await shell_tool._profile(  # noqa: SLF001 — the unit under test
+        boundary = await shell_tool._boundary(  # noqa: SLF001 — the unit under test
             "run_command", "uv sync", reach, workspace, domains, Settings()
         )
+        # The boundary carries the reason beside the profile now, so that a command the
+        # fence did not wrap can say so on its own result at any permission level. What
+        # this class is about is still the profile.
+        assert boundary.fenced is (boundary.profile is not None)
+        assert (boundary.reason is None) is boundary.fenced
+        return boundary.profile
 
     async def test_an_empty_allowed_list_still_means_no_network(self, tmp_path):
         # The setting reads as a tightening and had to behave as one. Read as "no list to

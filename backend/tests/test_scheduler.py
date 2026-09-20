@@ -85,6 +85,36 @@ def _list_runs(engine, task_id: str) -> list[TaskRun]:
         return list(session.exec(select(TaskRun).where(TaskRun.task_id == task_id)).all())
 
 
+async def _settled_runs(engine, task_id: str, *, timeout: float = 5.0) -> list[TaskRun]:
+    """``task_id``'s runs, once every one of them has finished.
+
+    **Wait for the condition, not for a plausible number of milliseconds.** `fire_now`
+    returns as soon as the `TaskRun` row exists; the executor and the bookkeeping that
+    finalizes `outcome` run on the scheduler's own loop afterwards. A fixed
+    `asyncio.sleep(0.2)` is therefore a bet on scheduling latency — one that holds on an
+    idle machine and loses when the whole suite is running in parallel, which is the only
+    time it ever failed.
+
+    ``outcome is None`` is what makes this a real wait rather than a faster guess: the row
+    is inserted with it unset and only filled in once the executor has returned, so a run
+    that satisfies this predicate has already appended to whatever the test is asserting
+    about. The deadline is generous on purpose — reaching it means something is genuinely
+    stuck, and a timeout that could be hit by a busy machine would be the same bug again.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        runs = _list_runs(engine, task_id)
+        if runs and all(run.outcome is not None for run in runs):
+            return runs
+        if loop.time() >= deadline:
+            raise AssertionError(
+                f"no run settled for {task_id} within {timeout}s — saw {len(runs)} run(s): "
+                f"{[(run.id, run.outcome) for run in runs]}"
+            )
+        await asyncio.sleep(0.01)
+
+
 async def _never_notify(view: ScheduledTaskView) -> None:
     raise AssertionError("notify must not be called for an agent task")
 
@@ -650,9 +680,8 @@ async def test_fire_now_fires_a_not_yet_due_task_immediately(tmp_path):
     try:
         task_run_id = await scheduler.fire_now(task_id)
         assert task_run_id is not None
-        await asyncio.sleep(0.2)
+        runs = await _settled_runs(engine, task_id)
         assert calls == [task_id]
-        runs = _list_runs(engine, task_id)
         assert len(runs) == 1
         assert runs[0].id == task_run_id
         assert runs[0].outcome == TaskOutcome.OK.value

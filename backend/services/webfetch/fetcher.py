@@ -88,8 +88,14 @@ class FetchedPage:
 
     def citations(self) -> list[Citation]:
         """The page itself — a fetch has exactly one source, and this is how the run
-        stream learns of it without the event translator knowing what a fetch is."""
-        return [Citation(url=self.url, title=self.title)]
+        stream learns of it without the event translator knowing what a fetch is.
+
+        ``read``, and this is the rung the ladder exists for: the page was rendered and
+        its text put in front of the model, which is a materially different claim from a
+        search having listed it. A URL a search already surfaced is emitted a second time
+        here, and the consumer's fold keeps this, the stronger sighting.
+        """
+        return [Citation(url=self.url, title=self.title, engagement="read")]
 
 
 class BrowserFetcher:

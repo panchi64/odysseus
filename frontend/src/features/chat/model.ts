@@ -111,11 +111,18 @@ export interface ToolInvocation {
   result?: string;
   /** Error detail shown when status='error'. */
   error?: string;
+  /** How long the call took. From the run while it is out (`tool.progress` carries the
+   *  elapsed seconds), then from the result's own measurement for a tool that reports
+   *  one — never a stopwatch started here, which would be timing the stream. */
   elapsedMs?: number;
   /** What the call *saw* — a browser screenshot, today. A tool that hands back pixels
    *  hands them back for the model, and the backend routes them here rather than
    *  letting the wire's user-role carrier surface as a turn the operator never took. */
   images?: ToolImage[];
+  /** For a call that ran a command without being a terminal — a backgrounded shell
+   *  process, whose result is a handle rather than output. Absent for everything else,
+   *  which is nearly every tool: nothing else declares a reach. */
+  boundary?: CommandBoundaryFacts;
 }
 
 /** One image a tool returned: base64 payload plus its media type. The scheme is the
@@ -209,11 +216,39 @@ export type HostCommandPhase =
   | "denied" // the operator refused it
   | "stale"; // a decision 409'd — already resolved elsewhere (see `Approval.stale`)
 
+/** How far a command **declared** it needs to reach, on the call itself. The
+ *  workspace, the network, or the operator's own machine — checked against every path
+ *  the command names before anything runs, and then held to by an OS fence built from
+ *  the same declaration. */
+export type CommandReach = "workspace" | "network" | "host";
+
+/**
+ * What a call that runs something declared, and what held it to that.
+ *
+ * Its own shape because **not every command renders as a terminal**. The foreground
+ * shell does, and a backgrounded one does not — it is a handle the agent checks on
+ * later, so it renders as an ordinary tool card — and both run a command line on the
+ * operator's machine under a declaration and a fence. One set of facts, carried by both
+ * kinds of row, rendered by one component.
+ */
+export interface CommandBoundaryFacts {
+  /** How far the call **declared** it needs to go. */
+  reach?: CommandReach;
+  /** Whether an OS fence built from that declaration was actually applied. Not implied
+   *  by `reach`: a host with no sandbox primitive has no fence to build. */
+  fenced?: boolean;
+  /** Why it ran unfenced — present only when `fenced` is false. */
+  unfencedReason?: string;
+  /** A permission failure in the output that the fence itself caused, said in words,
+   *  so a denied write reads as the fence holding rather than as a broken command. */
+  fenceNote?: string;
+}
+
 /** A host shell command rendered as a single persistent terminal: the exact
  *  command, the approval gate, and — once it runs — its captured output. Folded
  *  from the run's `tool.started`/`approval.required`/`tool.completed` events
  *  (warm) or the persisted tool call (cold), all keyed by `toolCallId`. */
-export interface HostCommand {
+export interface HostCommand extends CommandBoundaryFacts {
   toolCallId: string;
   /** The namespaced tool that asked. More than one renders as a terminal — the
    *  sandboxed host command and the worktree shell — and a conversation grant is
@@ -230,13 +265,27 @@ export interface HostCommand {
   risk?: "low" | "high" | "too_destructive";
   reviewReason?: string;
   phase: HostCommandPhase;
-  /** Captured output streams, present once the command has run. */
-  exitCode?: number;
+  /** Captured output streams, present once the command has run. `exitCode` is null
+   *  for a command that timed out — it never exited, which is a different fact from
+   *  not having run yet (undefined). */
+  exitCode?: number | null;
   stdout?: string;
   stderr?: string;
   timedOut?: boolean;
   /** A short failure hint, or a launch error. */
   error?: string;
+  /** Wall clock around the spawn. Set from the result's own measurement rather than
+   *  timed here — a client stopwatch would be measuring the stream, not the command. */
+  elapsedMs?: number;
+  /** Output streamed in while the command is still running, appended from the run's
+   *  `tool.progress` deltas.
+   *
+   *  Deliberately **one string** where the settled command has two: mid-flight the wire
+   *  carries stdout and stderr interleaved with no field to tell them apart, and
+   *  guessing would put half a stack trace in the wrong stream. It is what the terminal
+   *  shows while `phase` is `running`; the result is the record, and the card prefers
+   *  `stdout`/`stderr` the moment the call completes. */
+  streamed?: string;
 }
 
 /** How a View version previews on stage: a captured static file rendered by kind,
@@ -472,9 +521,35 @@ export interface ViewLiveBlock {
  *  (`citation.added`), rendered as a compact Sources row beneath the answer. Its display
  *  number is its position in that deduped row, so no per-source index is carried. */
 export interface Citation {
-  url: string;
+  /** Null for a corpus passage, which has a locator rather than an address — read
+   *  `kind` before rendering a link. */
+  url: string | null;
   title?: string;
+  /** What the source *is*, and what repeat sightings fold by. The backend supplies it,
+   *  because a web source and a corpus passage do not fold by the same field. Optional
+   *  only for the cold path, which has not been given one yet. */
+  key?: string;
+  kind?: "web" | "corpus";
+  /** How far the run got: `listed` (returned by a search, never opened) < `read` (its
+   *  text went in front of the model) < `cited`. The backend may emit one source several
+   *  times as it climbs; the highest rung wins. */
+  engagement?: "listed" | "read" | "cited";
+  snippet?: string;
+  /** The source's own date, exactly as its provider reported it. Never parsed by the
+   *  backend, so it is a bare string and may be any format. */
+  published?: string;
+  retrievedAt?: string;
+  sourceId?: string;
+  ref?: string;
 }
+
+/** The ladder's order, for folding several sightings of one source. Mirrors
+ *  `core/citations.ENGAGEMENT_ORDER` — which of two claims is the stronger is a fact
+ *  about the vocabulary the backend owns, not a rendering choice made here. */
+export const ENGAGEMENT_ORDER: Record<
+  NonNullable<Citation["engagement"]>,
+  number
+> = { listed: 0, read: 1, cited: 2 };
 
 export interface ChatMessage {
   id: string;
@@ -617,6 +692,15 @@ export interface ChatSession {
  *  are plain in-flight work. */
 export type ChatActivity = "queued" | "running" | "awaiting_input";
 
+/** How the most recent **terminal** run for a thread ended — the other half of the
+ *  story `activity` tells, and the half that used to collapse into nothing.
+ *
+ *  **Absent means "nothing known", never "nothing happened".** The backend derives it
+ *  from an in-memory, bounded run registry, so a restart or enough traffic since leaves
+ *  a thread that plainly finished with no outcome at all. Nothing may read the absence
+ *  as idleness, an unfinished run, or a thread that never ran. */
+export type ChatOutcome = "done" | "error" | "blocked" | "cancelled";
+
 export interface ChatSummary {
   id: string;
   title: string;
@@ -632,6 +716,11 @@ export interface ChatSummary {
   model?: string;
   /** Set while a run drives this thread; absent when it's idle. */
   activity?: ChatActivity;
+  /** How this thread's last terminal run ended, when the backend still remembers.
+   *  Read it only at rest: `activity` is the live truth and takes precedence, and the
+   *  two can be set at once (a thread that finished and has already been sent to
+   *  again). See `ChatOutcome` for why absence says nothing. */
+  lastOutcome?: ChatOutcome;
   /** What kind of work this thread is. The rail shows one mode at a time, so a
    *  summary that didn't carry it could not be filed anywhere. */
   mode: SessionMode;

@@ -12,7 +12,49 @@
 
 import { api, isApiError } from "~/lib/api";
 
-/** What a code thread has changed against its project's base ref. */
+/** One changed file, as the backend ranked it.
+ *
+ *  **Every judgement here is the server's.** `category`, `risk` and `reason` are
+ *  computed in `services/projects` and sent down finished — the frontend must not infer
+ *  a band from a path, re-word a reason, or decide that a lockfile matters. It renders
+ *  what it was handed, which is the same rule the review card keeps about a verdict. */
+export interface FileChange {
+  /** The file's path **now**. For a rename, where it ended up. */
+  path: string;
+  /** Where a rename came from; null for everything else. */
+  oldPath: string | null;
+  status:
+    | "added"
+    | "modified"
+    | "deleted"
+    | "renamed"
+    | "copied"
+    | "type-changed"
+    | "unmerged";
+  insertions: number;
+  deletions: number;
+  /** True when git could not count lines — in which case the two numbers above mean
+   *  nothing and must not be printed as a diffstat. */
+  binary: boolean;
+  category:
+    | "dependency"
+    | "infrastructure"
+    | "config"
+    | "code"
+    | "test"
+    | "asset"
+    | "docs";
+  risk: "high" | "elevated" | "normal";
+  /** One server-authored phrase saying why this file is banded where it is. **Shown
+   *  verbatim** — it is the backend speaking, not a key to look a sentence up by. */
+  reason: string;
+}
+
+/** What a code thread has changed against its project's base ref.
+ *
+ *  **`files` arrives sorted and the order is part of the contract** — risk, then
+ *  category, then churn, then path. Render it in the order given: re-sorting it in the
+ *  browser would be the frontend re-deciding a verdict the backend already reached. */
 export interface BranchState {
   conversationId: string;
   projectId: string;
@@ -23,6 +65,16 @@ export interface BranchState {
   deletions: number;
   patch: string;
   active: boolean;
+  /** Per-file rows, pre-ranked. Empty when there is no branch yet. */
+  files: FileChange[];
+  /** Commits the branch has that the base does not. 0 when unknown. */
+  ahead: number;
+  /** Commits the base has that the branch does not — **the staleness number**. 0 when
+   *  unknown, which is why the chip reports it on `> 0` rather than on presence. */
+  behind: number;
+  /** The branch tip's committer date, ISO-8601 **with an offset**; null when there is
+   *  no branch. A string and not a date: it is git's own field passed through. */
+  lastCommitAt: string | null;
 }
 
 /** The thread's branch, or null when there isn't one to show. */

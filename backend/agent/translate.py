@@ -17,6 +17,7 @@ the library doesn't know about them; we emit them here and in the engine.
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic_ai import (
@@ -53,8 +54,25 @@ from tools.emit import RunEventEmitted
 from .emit import ChassisEvent, OverheadMeasured, PrefixWatched
 from .meta import LoopBreaker
 
+#: How much of a source's snippet rides the wire. A citation is a *pointer* — the text
+#: that lets the operator recognise the source, not a second copy of it. The full passage
+#: is already in the tool result the frame sits beside, so a generous cap here would pay
+#: for every snippet twice on a search that returned ten.
+SNIPPET_MAX_CHARS = 400
 
-def citations_from_tool_result(content: Any) -> list[CitationAdded]:
+
+def _clip(text: str | None) -> str | None:
+    if text is None:
+        return None
+    folded = " ".join(text.split())
+    if len(folded) <= SNIPPET_MAX_CHARS:
+        return folded or None
+    return folded[: SNIPPET_MAX_CHARS - 1] + "…"
+
+
+def citations_from_tool_result(
+    content: Any, *, at: datetime | None = None
+) -> list[CitationAdded]:
     """Sources a completed tool call surfaced, in the order the result gave them.
 
     A result declares its own sources by implementing :class:`~core.citations.Citable`;
@@ -64,13 +82,34 @@ def citations_from_tool_result(content: Any) -> list[CitationAdded]:
     a new tool that returns a citable result is surfaced the day it lands, and Pillar II
     needn't import a feature's service types to recognize it.
 
-    Cross-call dedup and the Sources-row numbering are the consumer's concern (the run's
-    citation fold dedups by URL; the row numbers by position), so this neither dedups nor
-    assigns an index.
+    Folding and the Sources-row numbering are the consumer's concern (repeat sightings of
+    one source fold by ``key``, keeping the highest ``engagement``; the row numbers by
+    position), so this neither folds nor assigns an index.
+
+    ``retrieved_at`` is stamped here for any producer that did not set one. A tool result
+    reaches this function at the moment its call completed, which is within milliseconds
+    of when the source was actually read — and a producer that threaded a clock through
+    itself only to arrive at the same answer would be a second source for one fact.
+    ``at`` is the seam the tests pin that stamping through.
     """
     if not isinstance(content, Citable):
         return []
-    return [CitationAdded(url=c.url, title=c.title) for c in content.citations()]
+    stamp = at or datetime.now(UTC)
+    return [
+        CitationAdded(
+            key=c.key,
+            url=c.url,
+            title=c.title,
+            kind=c.kind,
+            engagement=c.engagement,
+            snippet=_clip(c.snippet),
+            published=c.published,
+            retrieved_at=c.retrieved_at or stamp,
+            source_id=c.source_id,
+            ref=c.ref,
+        )
+        for c in content.citations()
+    ]
 
 
 def _on_chassis_event(event: object, run: Run) -> bool:

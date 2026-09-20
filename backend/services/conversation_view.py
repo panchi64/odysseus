@@ -35,7 +35,7 @@ from core.serde import jsonable
 from core.text import chars_to_tokens
 from services.answers import ASK_USER_TOOL, AnsweredQuestion, parse_answer, questions_of
 from services.commands.spec import Invocation
-from services.subagents.report import direction_body, report_body
+from services.subagents.report import direction_body, report_body, report_prose
 
 if TYPE_CHECKING:  # a type, not a dependency — nothing here calls into the run substrate
     from runs import TurnOverhead
@@ -694,7 +694,11 @@ def project_tree(
                 # operator typed it — and they have not even seen it. Recognised by the
                 # envelope `agent/injected.py` writes, which is a constant of ours rather
                 # than a shape guessed at from the text.
-                report = report_body(text)
+                # The prose half only: a report may end with a machine-readable block of
+                # findings, which is the panel's copy of the same report. Both in the
+                # bubble would be the operator reading it twice, the second time as JSON.
+                envelope = report_body(text)
+                report = None if envelope is None else report_prose(envelope)
                 # The same link read the other way: the launching agent's mid-flight
                 # direction, in a sub-agent's own thread. Only the envelope is stripped —
                 # the message stays a `user` turn, because in a thread nobody else can type

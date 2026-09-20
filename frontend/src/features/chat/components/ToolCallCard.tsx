@@ -10,6 +10,7 @@ import {
 import { num } from "~/lib/format";
 import type { ToolInvocation } from "../model";
 import { toolPresentation } from "../toolPresentation";
+import { CommandBoundary, FenceNote } from "./CommandBoundary";
 import { ProcessRow, Sep, createAdoptedOpen } from "./ProcessRow";
 
 /** The family glyph carries the call's state as well as its kind, so a column of
@@ -200,6 +201,18 @@ export function ToolCallCard(props: {
             <span class="text-text">{props.tool.name}</span>
             {props.tool.args ? ` ${props.tool.args}` : ""}
           </Text>
+          {/* A call that ran a command without being a terminal — a backgrounded
+              process, which is a handle the agent checks on later rather than output
+              the operator watches arrive. It still ran something on their machine
+              under a declared reach, and this is the only row that would say so. */}
+          <Show when={props.tool.boundary}>
+            {(boundary) => (
+              <>
+                <CommandBoundary command={boundary()} />
+                <FenceNote command={boundary()} />
+              </>
+            )}
+          </Show>
           <Show
             when={props.tool.status === "error" && props.tool.error}
             fallback={

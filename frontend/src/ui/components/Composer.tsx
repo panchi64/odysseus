@@ -126,8 +126,24 @@ export interface ComposerProps {
    *  disabled field shows STOP alone. Attaching is unavailable while streaming
    *  either way. */
   streaming?: boolean;
-  /** Invoked when STOP is pressed mid-stream (see `streaming`). */
-  onStop?: () => void;
+  /**
+   * Invoked when STOP is pressed mid-stream (see `streaming`), with whatever was in
+   * the field at that moment — **stop and correct in one act**.
+   *
+   * Interrupting is almost never the whole intention. The operator stops a run because
+   * it is doing the wrong thing, and what they want next is to say what the right thing
+   * is; two controls made that two acts with a gap between them, and the gap is where
+   * the correction gets retyped or lost. So the button carries the draft: type the
+   * correction, press STOP, and the run ends and the correction goes.
+   *
+   * The composer decides nothing about it — it hands over the text and clears the
+   * field. Whether that becomes the next turn, and what happens to the run's own
+   * state, is the caller's, because it is a rule about what the product does.
+   *
+   * `undefined` when the field was empty, which is a plain interrupt; the field then
+   * takes focus so the correction can simply be typed.
+   */
+  onStop?: (correction?: string) => void;
   /** What SEND is called. Defaults to "Send".
    *
    *  For the one case where sending this field does something other than message the
@@ -623,16 +639,24 @@ export function Composer(props: ComposerProps): JSX.Element {
       )}
     </Show>
   );
+  // Stop, carrying the draft when there is one. The label says which of the two it is
+  // about to be, because "Stop" over a field with a correction in it would give no
+  // warning that pressing it also sends the correction — and the operator who typed one
+  // and then wanted a plain interrupt would have no way to tell.
+  const stop = () => {
+    const correction = text().trim();
+    props.onStop?.(correction || undefined);
+    if (correction) {
+      setText(""); // clears the persisted draft via the effect above
+      props.attachments?.clear();
+    } else field?.focus(); // nothing to say yet — put the caret where saying it happens
+  };
   const actionBtn = (
     <Show when={props.streaming} fallback={sendBtn()}>
       <span class="flex items-center gap-2">
         <Show when={!props.disabled}>{sendBtn()}</Show>
-        <Button
-          variant="default"
-          leading="stop"
-          onClick={() => props.onStop?.()}
-        >
-          Stop
+        <Button variant="default" leading="stop" onClick={stop}>
+          {text().trim() ? "Stop & correct" : "Stop"}
         </Button>
       </span>
     </Show>

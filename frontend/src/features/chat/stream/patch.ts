@@ -85,6 +85,22 @@ export function findTool(
   );
 }
 
+/** The terminal block for one call, keyed by tool_call_id.
+ *
+ *  `upsertHost` finds the same block to write to it; this is the read, for a frame that
+ *  must **not** open one that isn't there. A progress delta belongs to whatever block
+ *  already exists for the call, and which kind that is — a terminal or a generic tool
+ *  card — is what decides whether the delta appends or replaces. */
+export function findHost(
+  m: ChatMessage,
+  toolCallId: string,
+): HostCommandBlock | undefined {
+  return m.blocks?.find(
+    (b): b is HostCommandBlock =>
+      b.kind === "host_command" && b.command.toolCallId === toolCallId,
+  );
+}
+
 /** The review row for one call, keyed by tool_call_id — `review.started` opens it and
  *  `review.completed` fills in the verdict on the same block, so the row the operator
  *  saw appear is the row that ends up carrying the answer. */
@@ -133,10 +149,7 @@ export function upsertHost(
   name: string,
   patch: Partial<HostCommand>,
 ): void {
-  const existing = m.blocks?.find(
-    (b): b is HostCommandBlock =>
-      b.kind === "host_command" && b.command.toolCallId === toolCallId,
-  );
+  const existing = findHost(m, toolCallId);
   if (existing) {
     // A denied terminal is settled by the operator's own decision, and nothing the
     // tool reports afterwards may un-settle it. A denial still arrives as a

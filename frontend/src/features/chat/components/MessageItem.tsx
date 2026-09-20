@@ -553,9 +553,16 @@ function SourcesRow(props: { citations: Citation[] }): JSX.Element {
       <For each={shown()}>
         {(c, i) => (
           <Chip
-            onClick={() => window.open(c.url, "_blank", "noopener,noreferrer")}
+            // A corpus passage has a locator, not an address — there is no tab to
+            // open it in, and a chip that opened `about:blank` would read as a
+            // broken link rather than as a source on the operator's own disk.
+            onClick={
+              c.url
+                ? () => window.open(c.url!, "_blank", "noopener,noreferrer")
+                : undefined
+            }
           >
-            [{i() + 1}] {hostLabel(c.url)}
+            [{i() + 1}] {c.url ? hostLabel(c.url) : (c.ref ?? c.title ?? "")}
           </Chip>
         )}
       </For>

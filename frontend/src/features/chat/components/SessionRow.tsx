@@ -1,18 +1,20 @@
-import { Show, type JSX } from "solid-js";
+import { Show, createMemo, type JSX } from "solid-js";
 import {
   Button,
   Frames,
   Icon,
   LedEdge,
+  MetClock,
   REVEAL_ON_GROUP_HOVER,
+  StatusDot,
   Text,
   TypewriterText,
   cx,
   type ContextMenuTriggerProps,
-  type LedTone,
 } from "~/ui";
 import { REVEAL_SPEED_MS } from "../data";
-import type { ChatActivity } from "../model";
+import type { ChatActivity, ChatOutcome } from "../model";
+import { resolveRunState, runStateSpec } from "../runState";
 
 export interface SessionRowProps {
   title: string;
@@ -28,6 +30,13 @@ export interface SessionRowProps {
   /** The backend's status for this thread's live run, when it has one. Lights the
    *  accent edge; absent leaves the row at rest. */
   activity?: ChatActivity;
+  /** How the last terminal run ended, when the backend still remembers. Read only at
+   *  rest — `activity` is the live truth and both can be set at once. */
+  lastOutcome?: ChatOutcome;
+  /** The thread's most recent backend write, ISO-8601. Anchors the elapsed clock on a
+   *  row whose run is in flight — see the clock's own note for what it can and cannot
+   *  claim to measure. */
+  updatedAt?: string;
   onOpen: () => void;
   /** Open this row's menu at the cursor. The whole row is the target. */
   onContextMenu: (e: MouseEvent) => void;
@@ -38,26 +47,10 @@ export interface SessionRowProps {
   menuOpen?: boolean;
 }
 
-/** The activity → LED tone mapping, matching the nav rail's split (§4 — color
- *  carries meaning only): a run parked on the operator's approval decision is a
- *  "needs YOU" signal (warn), plain in-flight work is ambient (info). */
-const activityTone: Record<ChatActivity, LedTone> = {
-  queued: "info",
-  running: "info",
-  awaiting_input: "warn",
-};
-
 /* The row is short and its light spills inward, so the reach is pulled well in:
    at full reach the bloom would wash the whole row flat instead of falling off
    across it, and `overflow-hidden` would be doing all the shaping. */
 const LED_REACH = 0.6;
-
-/** Screen-reader wording for each edge, so the state isn't carried by color alone. */
-const activityLabel: Record<ChatActivity, string> = {
-  queued: "queued",
-  running: "running",
-  awaiting_input: "awaiting approval",
-};
 
 /**
  * A selectable session row with its own actions menu.
@@ -83,12 +76,39 @@ const activityLabel: Record<ChatActivity, string> = {
  * thing that is running rather than as a row wearing a coloured border. Every
  * row reserves the rule (transparent at rest) so lighting one can't shift the
  * list.
+ *
+ * **A finished run is no longer indistinguishable from a thread that never ran.** The
+ * row reports two backend facts through one table (`runState.ts`), and it reports them
+ * with two different devices on purpose:
+ *
+ * - **The edge is for what needs you.** Live work, and the two endings that mean the
+ *   operator is wanted — a failure and a limit — light it. Lighting it for every
+ *   `done` was the obvious version and the wrong one: §5 rule 1 is that a screen at
+ *   rest is grayscale, and a rail where thirty finished threads each glow green is a
+ *   rail nobody scans for the lit one. That is the whole mechanism, spent.
+ * - **The dot is for what happened.** Every terminal outcome gets a 6px `StatusDot` at
+ *   rest, which is exactly the trade `StatusFlag` documents: confining the hue to a
+ *   mark keeps the state legible from across the room and keeps the accent budget
+ *   intact. It shows only when nothing is live, since a live run is already speaking.
+ *
+ * Self-limiting by construction, which is what makes it bearable at all: the backend's
+ * run registry is bounded, so only recently-active threads carry an outcome and the
+ * older rail stays grey without the interface having to ration it.
  */
 export function SessionRow(props: SessionRowProps): JSX.Element {
+  /** The one state this row is in — live if there is one, else how it ended. */
+  const state = createMemo(() =>
+    resolveRunState(props.activity, props.lastOutcome),
+  );
+  const spec = createMemo(() => {
+    const s = state();
+    return s ? runStateSpec(s) : undefined;
+  });
+
   return (
     <LedEdge
-      lit={Boolean(props.activity)}
-      tone={props.activity ? activityTone[props.activity] : undefined}
+      lit={spec()?.loud ?? false}
+      tone={spec()?.tone}
       spill="in"
       unlit="clear"
       reach={LED_REACH}
@@ -140,12 +160,43 @@ export function SessionRow(props: SessionRowProps): JSX.Element {
           <Frames class="shrink-0 text-info" />
           <span class="sr-only">naming this thread</span>
         </Show>
-        <Show when={props.activity}>
-          {(activity) => (
-            <span class="sr-only">{activityLabel[activity()]}</span>
+        {/* How long this thread has been working, on the row rather than only in the
+            room — the rail is where the operator watches several at once, and until
+            now a run three threads down reported that it was happening and never how
+            long it had been happening.
+
+            **It is anchored on `updated_at`, and that is an approximation the backend
+            cannot yet improve on.** The list DTO carries no run start; the thread's
+            last write is the turn that started the run, which is within a second of it
+            on a fresh send and drifts on a thread the run has since written to. So it
+            is shown only while work is live, where the figure is still the answer to
+            "how long has this been going", and it is never shown at rest, where the
+            same number would quietly become the age of the record. Still a backend
+            timestamp formatted, never a clock the frontend keeps.
+
+            No `T+` prefix: at `micro` in a 248px rail the two characters cost more
+            than they explain, and a ticking mono figure beside a live edge is already
+            reading as elapsed. */}
+        <Show when={spec()?.live && props.updatedAt}>
+          {(startedAt) => (
+            <MetClock
+              startedAt={startedAt()}
+              variant="micro"
+              prefix={false}
+              class="shrink-0"
+            />
           )}
         </Show>
+        <Show when={spec()}>
+          {(s) => <span class="sr-only">{s().spoken}</span>}
+        </Show>
       </button>
+      {/* How the last run ended, at rest. Hidden while something is live — the edge and
+          the clock are already saying what this thread is doing, and a second mark
+          reporting an older fact beside them reads as a contradiction. */}
+      <Show when={!spec()?.live && spec()}>
+        {(s) => <StatusDot status={s().status} class="mr-1.5 shrink-0" />}
+      </Show>
       {/* Marker, not a control — inside the row's own gutter so it cannot be
           mistaken for the button beside it. `sr-only` text because the glyph is
           the only thing carrying the state (§12). */}

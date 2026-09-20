@@ -27,14 +27,6 @@ export interface ToolPresentation {
   label: string;
 }
 
-/** How a terminal-rendered tool reports what happened.
- *
- *  `record` — a structured result with each stream and the exit code separately, which
- *  is what the sandboxed host command can report because it runs through a seam we own.
- *  `text` — one labelled string, which is what the worktree shell hands back because
- *  its harness composes the model's view itself. */
-export type TerminalResult = "record" | "text";
-
 export interface ToolEntry extends ToolPresentation {
   /** Argument keys in preference order; the first one present becomes the row's
    *  detail. Omitted where the generic order already picks the right one. */
@@ -50,8 +42,14 @@ export interface ToolEntry extends ToolPresentation {
    *  tool that does it — the fold used to ask `name === code_run_host_command` in four
    *  separate event cases, which is four places to remember when a second one lands,
    *  and is why `shell_run_command` (code mode's only way to run anything, already
-   *  carrying the terminal glyph two rows below) fell through to a generic card. */
-  terminal?: TerminalResult;
+   *  carrying the terminal glyph two rows below) fell through to a generic card.
+   *
+   *  It used to say *how* the tool reported, because the worktree shell answered with
+   *  one labelled string the client had to pull apart while the sandboxed one answered
+   *  with a record. Both answer with a record now, so the distinction had one value
+   *  left and no second reading — a flag is the honest shape of the question that
+   *  remains. */
+  terminal?: true;
 }
 
 /** The glyph for a category, for any tool without its own row below. Every
@@ -126,7 +124,7 @@ const TOOLS: Record<string, ToolEntry> = {
     icon: "terminal",
     label: "Host command",
     keys: ["explanation", "command"],
-    terminal: "record",
+    terminal: true,
   },
 
   conversations_read: {
@@ -238,7 +236,7 @@ const TOOLS: Record<string, ToolEntry> = {
     icon: "terminal",
     label: "Shell",
     keys: ["command"],
-    terminal: "text",
+    terminal: true,
   },
   // Deliberately not a terminal: a background process is a handle the agent checks on
   // later, not a command whose output the operator watches arrive. Its result is that
@@ -328,11 +326,11 @@ export function toolEntry(name: string): ToolEntry {
   };
 }
 
-/** How this tool's result becomes a terminal, or undefined for a tool that is not one.
- *  The single question the live fold and the cold mapper both ask, so the two cannot
- *  disagree about whether a reload turns a terminal back into a tool card. */
-export function terminalResult(name: string): TerminalResult | undefined {
-  return toolEntry(name).terminal;
+/** Whether this tool renders as a terminal. The single question the live fold and the
+ *  cold mapper both ask, so the two cannot disagree about whether a reload turns a
+ *  terminal back into a tool card. */
+export function isTerminalTool(name: string): boolean {
+  return toolEntry(name).terminal === true;
 }
 
 /** The glyph and label a transcript row leads with. */

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 
+from services.subagents.report import FINDINGS_INSTRUCTION
 from services.subagents.spec import SubagentSpec
 
 EXPLORER = "explorer"
@@ -91,7 +92,12 @@ _RESEARCHER_BRIEF = (
     "the real answer from your report and cannot check a claim it cannot trace. State "
     "plainly what you could not establish: a named gap is worth more than a confident "
     "sentence covering it.\n\n"
-    "Report what you found, not how you searched. Nobody downstream wants the queries."
+    "Report what you found, not how you searched. Nobody downstream wants the queries.\n\n"
+    # The researcher is the one built-in whose report is read by something other than a
+    # model: a fan-out of these is what the operator's coverage map is drawn from, and a
+    # map cannot be drawn from prose. The instruction is appended rather than woven in so
+    # the brief above still reads as one argument about how to research.
+    + FINDINGS_INSTRUCTION
 )
 
 _WORKER_BRIEF = (

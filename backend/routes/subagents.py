@@ -47,6 +47,7 @@ from routes import deps
 from routes.conversations import TaskOut
 from routes.deps import OPERATOR_ID
 from services.subagents import SubagentLauncher, SubagentView
+from services.subagents.report import ReportStructure, report_prose, report_structure
 from services.task_list import tasks_payload
 
 router = APIRouter(prefix="/conversations", tags=["subagents"])
@@ -70,8 +71,17 @@ class Subagent(BaseModel):
     #: live; a blocked one is waiting on the operator rather than on the machine.
     status: str
     #: What it reported, once it has. While it is still going this is its latest answer
-    #: instead — a current best, explicitly not a report.
+    #: instead — a current best, explicitly not a report. This is the **prose**: the
+    #: machine-readable block a reporting sub-agent ends with is taken out and served as
+    #: `findings` below, because a card ending in forty lines of JSON is a card nobody
+    #: reads to the end.
     summary: str | None = None
+    #: The same report as data, when the sub-agent emitted one and it parsed — findings
+    #: with their sources, conflicts with their sides, and per-topic coverage with its
+    #: gaps. Null for every sub-agent whose job is not to report, and for one whose block
+    #: was missing or unreadable: the structure is additive, and its absence costs a panel
+    #: rather than a report.
+    findings: ReportStructure | None = None
     error: str | None = None
     #: How full its context window is. Both are null until its run has made a request, and
     #: a finished sub-agent keeps the last figures it had.
@@ -90,6 +100,12 @@ class SubagentList(BaseModel):
 
 
 def _card(view: SubagentView, tasks: list[TaskOut]) -> Subagent:
+    # Split once, here, rather than letting the client do it: which part of a report is
+    # prose and which is structure is a fact about the format, and a frontend deriving it
+    # would be a frontend deciding. `report_structure` never raises, so an unreadable
+    # block degrades to the prose alone.
+    report = view.summary
+    structure = report_structure(report) if report else None
     return Subagent(
         id=view.subagent_id,
         conversation_id=view.conversation_id,
@@ -99,7 +115,8 @@ def _card(view: SubagentView, tasks: list[TaskOut]) -> Subagent:
         task=view.task,
         tasks=tasks,
         status=view.status,
-        summary=view.summary,
+        summary=report_prose(report) if report else None,
+        findings=structure,
         error=view.error,
         context_used=view.context_used,
         context_window=view.context_window,

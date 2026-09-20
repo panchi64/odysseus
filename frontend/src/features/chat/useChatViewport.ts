@@ -34,7 +34,12 @@ import {
   type Accessor,
 } from "solid-js";
 import { createPanelResize, observeAvailableWidth } from "./panelResize";
-import type { ChatMessage, PlanDocument, ViewSnapshotRef } from "./model";
+import type {
+  ChatMessage,
+  HostCommand,
+  PlanDocument,
+  ViewSnapshotRef,
+} from "./model";
 import type { BranchState, Subagent } from "./data";
 import type { TaskItem } from "~/lib/stream/events";
 import {
@@ -60,6 +65,17 @@ import {
   type ViewSurfaceState,
 } from "./viewport/persistence";
 import { shapeOf, SURFACE_IDS, type SurfaceId } from "./viewport/surfaces";
+import { collectCommands } from "./viewport/commandItems";
+import {
+  collectCoverage,
+  contestedTokens,
+  type CoverageReport,
+} from "./viewport/coverageItems";
+import {
+  buildInventory,
+  collectSources,
+  type SourceInventory,
+} from "./viewport/sourceItems";
 import {
   claimAutoOpen,
   collectViewItems,
@@ -103,6 +119,15 @@ export interface ChatViewport {
   subagents: Accessor<Subagent[]>;
   /** Re-read them — after the operator answers one that was waiting on them. */
   refetchSubagents: () => void;
+  /** Every command the thread has run, for the Commands surface. Derived from the
+   *  transcript's terminal blocks, so it needs nothing from the room. */
+  commands: Accessor<HostCommand[]>;
+  /** Every source the thread has read, folded and shelved, for the Sources surface.
+   *  Derived from the transcript's citations for the same reason `commands` is. */
+  sources: Accessor<SourceInventory>;
+  /** The shape of the investigation, for the Coverage surface — merged out of whatever
+   *  structured reports the sub-agents have sent back. */
+  coverage: Accessor<CoverageReport>;
   /** Whether a surface has anything to show — which header buttons exist. */
   available: (id: SurfaceId) => boolean;
   /** The first surface in registry order that has anything to show, or `undefined` on a
@@ -191,12 +216,31 @@ export function useChatViewport(
   const items = createMemo(() =>
     collectViewItems(source.messages, source.snapshots()),
   );
+  // What the thread has run, derived from the same transcript for the same reason —
+  // the terminal blocks are already the record, and a second source would be a second
+  // answer to what happened.
+  const commands = createMemo(() => collectCommands(source.messages));
+  // **The coverage map is derived first, because the inventory depends on it.** Which
+  // sources a report put on opposite sides of a disagreement is the one fact about a
+  // source that does not come from the citation stream, and it is the fact that decides
+  // which shelf the source sits on — so the join runs here, once, rather than inside a
+  // surface that would have to reach for the other's data to do it.
+  const coverage = createMemo(() => collectCoverage(source.subagents()));
+  // Two memos rather than one, so a sub-agent reporting back does not re-fold the whole
+  // transcript's citations: the poll invalidates `coverage` every few seconds, and a
+  // thread that has read two hundred sources should not pay for that.
+  const citations = createMemo(() => collectSources(source.messages));
+  const sourceInventory = createMemo(() =>
+    buildInventory(citations(), contestedTokens(coverage())),
+  );
   const sources = createSurfaceSources({
     viewItems: items,
     tasks: source.tasks,
     plan: source.plan,
     branch: source.branch,
     subagents: source.subagents,
+    commands,
+    sources: sourceInventory,
   });
   const available = (id: SurfaceId): boolean => sources[id].available();
   const firstAvailable = (): SurfaceId | undefined =>
@@ -569,6 +613,12 @@ export function useChatViewport(
     refetchBranch: source.refetchBranch,
     subagents: source.subagents,
     refetchSubagents: source.refetchSubagents,
+    commands,
+    // `sourceInventory`, not the `sources` above it: that one is the per-surface
+    // availability record this module builds, and the two are different things that
+    // one short word would happily confuse.
+    sources: sourceInventory,
+    coverage,
     available,
     firstAvailable,
     layout: liveLayout,

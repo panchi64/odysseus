@@ -381,10 +381,34 @@ export interface ContextInjected extends Base {
 }
 
 // --- Notices ---------------------------------------------------------------
+/** A source the turn met, and how far it got with it.
+ *
+ *  `key` is what the source *is* — a URL for a page, `source:ref` for a corpus passage —
+ *  and is what repeat sightings fold by. It is on the wire because "these two rows are
+ *  one source" is a claim about the sources, and a web citation and a corpus one do not
+ *  fold by the same field.
+ *
+ *  `engagement` is the rung this sighting reached: `listed` (a search returned it, nobody
+ *  opened it) < `read` (its text was put in front of the model) < `cited` (something
+ *  asserted rests on it). One source may arrive on several frames — listed by a search,
+ *  then read by a fetch — and the consumer keeps the highest.
+ *
+ *  `url` is null for a corpus passage, which has a locator (`source_id` + `ref`) rather
+ *  than an address, so read `kind` before rendering a link. `published` is the source's
+ *  own date exactly as its provider reported it — a bare string, never parsed by the
+ *  backend. `snippet` is already unfenced and capped. */
 export interface CitationAdded extends Base {
   type: "citation.added";
-  url: string;
+  url: string | null;
   title: string | null;
+  key: string;
+  kind: "web" | "corpus";
+  engagement: "listed" | "read" | "cited";
+  snippet: string | null;
+  published: string | null;
+  retrieved_at: string | null;
+  source_id: string | null;
+  ref: string | null;
 }
 export interface ApprovalRequired extends Base {
   type: "approval.required";

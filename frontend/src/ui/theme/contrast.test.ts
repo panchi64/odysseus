@@ -14,6 +14,14 @@ import {
   ACCENT_TOKENS,
   SESSION_ACCENT_DEFAULTS,
 } from "./accents";
+import {
+  CAUTION_TINT,
+  DIAGRAM_CONTRAST_PAIRS,
+  budgetedEmphases,
+  emphasesInSource,
+  legibleOn,
+  mixHex,
+} from "../components/mermaidTheme";
 
 describe("normalizeHex", () => {
   test("expands 3-digit hex and lowercases", () => {
@@ -196,5 +204,208 @@ describe("meetsAccentFloor", () => {
       expect(SESSION_ACCENT_DEFAULTS[mode].normal).toBe(
         ACCENT_DEFAULTS[mode].accent,
       );
+  });
+});
+
+/* ==========================================================================
+   The diagram register.
+
+   A rendered diagram is the one surface whose colours are written into the
+   markup as LITERALS rather than left to the cascade — it has to be, since the
+   same markup is handed to an `<img>` in the lightbox, where no custom property
+   reaches it. `mermaidTheme` reads those literals back out of `<html>`, so the
+   values it emits are exactly the tokens below and nothing else. This is where
+   the pairs it rests on are held to a floor.
+
+   Two floors, not one, and the split is WCAG's: an edge is a graphical object
+   (1.4.11, 3:1) and a label is text (1.4.3, 4.5:1). Reading tokens.css rather
+   than restating its hexes, the way `accents.test.ts` does.
+   ========================================================================== */
+
+const TOKENS_CSS = await Bun.file(
+  new URL("./tokens.css", import.meta.url).pathname,
+).text();
+
+/** tokens.css scopes Ink to `:root` and Paper to `[data-theme="paper"]`; slice
+ *  at the Paper selector, anchored to the start of a line because the selector
+ *  is also named in a comment near the top of the file. */
+function tokenBlock(mode: "phosphor" | "paper"): string {
+  const paperAt = TOKENS_CSS.search(/^\[data-theme="paper"\]\s*\{/m);
+  expect(paperAt).toBeGreaterThan(-1);
+  return mode === "phosphor"
+    ? TOKENS_CSS.slice(0, paperAt)
+    : TOKENS_CSS.slice(paperAt);
+}
+
+function token(mode: "phosphor" | "paper", name: string): string {
+  // `--text` must not match `--text-dim:`, so the boundary is explicit.
+  const match = tokenBlock(mode).match(
+    new RegExp(`--${name}\\s*:\\s*(#[0-9a-fA-F]{3,8})\\s*;`),
+  );
+  expect(match, `tokens.css declares --${name} for ${mode}`).not.toBeNull();
+  return normalizeHex(match![1])!;
+}
+
+describe("diagram tokens", () => {
+  test("the stylesheet was actually read", () => {
+    // Without this, a bad path would make every assertion below vacuous.
+    expect(TOKENS_CSS.length).toBeGreaterThan(1000);
+    expect(TOKENS_CSS).toContain("--surface-raised:");
+  });
+
+  for (const mode of ["phosphor", "paper"] as const)
+    for (const pair of DIAGRAM_CONTRAST_PAIRS)
+      test(`${mode} · ${pair.what}`, () => {
+        const fg = token(mode, pair.fg);
+        const bg = token(mode, pair.bg);
+        const ratio = contrastRatio(fg, bg)!;
+        expect(
+          ratio,
+          `${pair.fg} (${fg}) on ${pair.bg} (${bg}) is ${ratio.toFixed(2)}:1`,
+        ).toBeGreaterThanOrEqual(pair.floor);
+      });
+
+  test("the `line` token would NOT do for an edge, in either theme", () => {
+    // The defect this register was reviewed for: an edge drawn at `line`
+    // vanished into the frame around it and its arrowheads stopped being
+    // legible at all. `line` is a hairline BORDER token and an edge is content,
+    // so the two are not interchangeable — and the measurement is what says so
+    // rather than the argument. If this ever passes 3:1, the reasoning in
+    // `mermaidTheme`'s EDGE_WIDTH note needs rewriting, not the token swapping.
+    for (const mode of ["phosphor", "paper"] as const) {
+      const ratio = contrastRatio(token(mode, "line"), token(mode, "surface"))!;
+      expect(
+        ratio,
+        `${mode}: line on surface is ${ratio.toFixed(2)}:1`,
+      ).toBeLessThan(3);
+    }
+  });
+});
+
+describe("severity fills", () => {
+  test("a caution tint keeps its label legible in both themes", () => {
+    // Caution is a TINT and alert is a solid fill — fill weight, not hue, so the
+    // two survive any colour vision. A tint still has to be a surface a label
+    // can sit on.
+    for (const mode of ["phosphor", "paper"] as const) {
+      const tint = mixHex(
+        token(mode, "accent-warn"),
+        token(mode, "surface-raised"),
+        CAUTION_TINT,
+      );
+      const ratio = contrastRatio(token(mode, "text-bright"), tint)!;
+      expect(
+        ratio,
+        `${mode}: label on ${tint} is ${ratio.toFixed(2)}:1`,
+      ).toBeGreaterThanOrEqual(ACCENT_CONTRAST_FLOOR);
+    }
+  });
+
+  test("a caution tint is separable from an ordinary node", () => {
+    // If the tint landed on the node fill, severity would be carried by the
+    // reserved second line alone and the panel would stop being readable at a
+    // glance — which is the whole reason the fill ladder exists.
+    for (const mode of ["phosphor", "paper"] as const) {
+      const node = token(mode, "surface-raised");
+      const tint = mixHex(token(mode, "accent-warn"), node, CAUTION_TINT);
+      expect(tint, `${mode}`).not.toBe(node);
+      expect(
+        Math.abs(relativeLuminance(tint)! - relativeLuminance(node)!),
+      ).toBeGreaterThan(0.01);
+    }
+  });
+
+  test("a solid fill's label is measured, not assumed", () => {
+    // White on Ink's alert red is 3.0:1 and black on it is 6.9:1; on Paper the
+    // verdict reverses. Assuming either one ships an illegible node in one of
+    // the two themes, which is exactly what `legibleOn` exists to prevent.
+    const chosen: Record<string, string> = {};
+    for (const mode of ["phosphor", "paper"] as const) {
+      const fill = token(mode, "accent-alert");
+      const label = legibleOn(fill, [
+        token(mode, "bg"),
+        token(mode, "text-bright"),
+      ]);
+      chosen[mode] = label;
+      const ratio = contrastRatio(label, fill)!;
+      expect(
+        ratio,
+        `${mode}: ${label} on ${fill} is ${ratio.toFixed(2)}:1`,
+      ).toBeGreaterThanOrEqual(ACCENT_CONTRAST_FLOOR);
+    }
+    expect(chosen.phosphor).not.toBe(chosen.paper);
+  });
+
+  test("a focused node's label is legible on every shipped signature", () => {
+    // The signature moves with `data-mode`, so this is six fills, not two.
+    for (const mode of ["phosphor", "paper"] as const)
+      for (const sessionMode of SESSION_MODE_IDS) {
+        const fill = SESSION_ACCENT_DEFAULTS[mode][sessionMode];
+        const label = legibleOn(fill, [
+          token(mode, "bg"),
+          token(mode, "text-bright"),
+        ]);
+        const ratio = contrastRatio(label, fill)!;
+        expect(
+          ratio,
+          `${mode}/${sessionMode}: ${label} on ${fill} is ${ratio.toFixed(2)}:1`,
+        ).toBeGreaterThanOrEqual(ACCENT_CONTRAST_FLOOR);
+      }
+  });
+});
+
+describe("mixHex", () => {
+  test("returns its endpoints", () => {
+    expect(mixHex("#ffffff", "#000000", 1)).toBe("#ffffff");
+    expect(mixHex("#ffffff", "#000000", 0)).toBe("#000000");
+  });
+
+  test("mixes in linear light, not in gamma-encoded channels", () => {
+    // A naive channel average of black and white is #808080 (luminance 0.216);
+    // the linear-light midpoint is perceptually mid-gray at ~#bcbcbc
+    // (luminance 0.5). Mixing the naive way darkens every tint, and darkens it
+    // by MORE on Ink than on Paper — which is how the two themes drift apart.
+    const mid = mixHex("#ffffff", "#000000", 0.5);
+    expect(relativeLuminance(mid)).toBeCloseTo(0.5, 2);
+    expect(mid).not.toBe("#808080");
+  });
+
+  test("falls back to the surface when the tint is not a colour", () => {
+    // The caller is always tinting a surface, so the surface is the safe answer.
+    expect(mixHex("nope", "#161616", 0.5)).toBe("#161616");
+  });
+});
+
+describe("the two-accent budget", () => {
+  test("keeps at most two, ranked alert over caution over focus", () => {
+    // A screen at rest is grayscale and carries at most two accents. A diagram
+    // that asks for all three keeps the severities — they are what the operator
+    // is scanning for — and the focused node falls back to a neutral emphasis,
+    // which is still a fill and so still visible.
+    expect([...budgetedEmphases(["alert", "caution", "focus"])]).toEqual([
+      "alert",
+      "caution",
+    ]);
+    expect([...budgetedEmphases(["focus", "caution"])]).toEqual([
+      "caution",
+      "focus",
+    ]);
+    expect([...budgetedEmphases(["focus"])]).toEqual(["focus"]);
+    expect([...budgetedEmphases([])]).toEqual([]);
+  });
+
+  test("ignores classes that are not emphases", () => {
+    expect([...budgetedEmphases(["decorative", "focus"])]).toEqual(["focus"]);
+  });
+
+  test("reads both of the syntaxes that attach a class", () => {
+    // The budget has to be decided before the diagram renders, so both the
+    // inline form and the standalone statement have to be found in the source.
+    const source = [
+      "flowchart TD",
+      '  A["Build"]:::alert --> B["Ship"]',
+      "  class B,C caution",
+    ].join("\n");
+    expect(emphasesInSource(source)).toEqual(new Set(["alert", "caution"]));
   });
 });
