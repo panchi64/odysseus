@@ -10,15 +10,15 @@ import {
 } from "solid-js";
 import { api } from "~/lib/api";
 import { Button, CodeBlock, EmptyState, LoadingText, Text } from "~/ui";
+import type { BranchState, FileChange } from "../data";
 import {
-  fetchSnapshotFiles,
-  fetchSnapshotFileText,
-  snapshotFilePath,
-} from "../data";
-import type { ViewItem } from "../viewport/viewItems";
+  fetchWorktreeFiles,
+  fetchWorktreeFileText,
+  worktreeFilePath,
+} from "../data/worktreeFiles";
 import { extensionOf } from "../viewport/viewItems";
 import { createDownloadSlot } from "../viewport/downloadRegistry";
-import { isEdited, SnapshotFileTree } from "./SnapshotFileTree";
+import { WorktreeFileTree } from "./WorktreeFileTree";
 import { settled } from "~/lib/resource";
 
 /** Below this the tree and a file cannot share a row, so the pane shows one at a
@@ -28,89 +28,127 @@ const SIDE_BY_SIDE = 560;
 /**
  * The workspace, browsable on its own.
  *
- * The same files have always been reachable — inside the View's CODE tab, which means
- * first having a View and then knowing to switch tabs. This is the workspace as a place
- * you go, which is what it is: a code thread's files are a thing the operator looks at
- * *while* reading the conversation, not a mode of an artifact viewer.
+ * **It reads the worktree, not a snapshot of one.** It used to list the newest View
+ * version's files, which meant the panel was empty — and unavailable — until the agent
+ * happened to call `view_show`. A code thread that edits ten files and never captures a
+ * version is an ordinary code thread, and it showed nothing. The tree now comes from the
+ * same listing the composer's `@` picker reads, resolved by the backend against this
+ * thread's own worktree.
  *
- * **It is not the CODE tab moved.** That tab compares two captured versions and owns
- * the pickers for choosing them; this shows the latest snapshot's tree and the file you
- * pick. The one thing it adds is the filter the compare view had no need for: showing
- * only what this snapshot touched, which the backend already answers per file.
+ * **It is not the View's CODE tab, and that tab is unchanged.** CODE compares two
+ * *captured* versions and owns the pickers for choosing them; there is no live equivalent
+ * of a comparison between two moments that were never recorded. This is the workspace as
+ * a place you go, which is what it is.
+ *
+ * **What changed is the branch's word, joined here by path.** The marker on a row comes
+ * from `BranchState.files`, which the backend already ranked and classified; this puts
+ * two server answers beside each other and renders both verbatim. It classifies nothing.
  *
  * **Narrow, it is one thing at a time.** A tree beside a file is the right layout when
  * there is room for both and an unreadable pair when there is not, so below
  * `SIDE_BY_SIDE` picking a file replaces the list and a back control returns to it.
  */
 export function FilesSurface(props: {
-  /** The thread's View items — the newest snapshot is the workspace as it stands. */
-  items: () => ViewItem[];
+  /** The thread's branch — the source of both the ids to read by and the change marks. */
+  branch: () => BranchState | null | undefined;
   fontStep?: number;
   softWrap?: boolean;
 }): JSX.Element {
-  const snapshot = createMemo(
-    () => [...props.items()].reverse().find((i) => i.snapshot)?.snapshot,
+  // The listing re-reads when the branch tip moves. `diff` commits the worktree before
+  // it reads, so `lastCommitAt` is the backend's own statement of when these files last
+  // changed — a truer refresh trigger than a turn counter, and the reason this needs no
+  // filesystem watcher (there is none in the backend, by design).
+  const key = createMemo(() => {
+    const b = props.branch();
+    if (!b) return undefined;
+    return [
+      b.projectId,
+      b.conversationId,
+      b.lastCommitAt ?? "",
+      b.filesChanged,
+    ] as const;
+  });
+
+  const [listing, { refetch }] = createResource(
+    key,
+    ([projectId, conversationId]) =>
+      fetchWorktreeFiles(projectId, conversationId),
   );
 
-  const [files, { refetch }] = createResource(
-    () => snapshot()?.snapshotId,
-    fetchSnapshotFiles,
-  );
+  const changes = createMemo(() => {
+    const rows = props.branch()?.files ?? [];
+    return new Map<string, FileChange>(rows.map((f) => [f.path, f]));
+  });
+
   const [selectedPath, setSelectedPath] = createSignal<string | null>(null);
   const [editedOnly, setEditedOnly] = createSignal(false);
   const [width, setWidth] = createSignal(0);
   const sideBySide = (): boolean => width() >= SIDE_BY_SIDE;
 
-  // Default to the first file the operator is likely to want: the first *changed*
-  // one when there is one, since a snapshot exists because something changed.
+  // Default to the first file the operator is likely to want: the first *changed* one
+  // when the thread has changed anything, since that is what they came to look at.
+  //
+  // **Only where a file is on screen anyway.** Narrow, the pane shows the tree *or* a
+  // file, and clearing the selection is how the operator gets back to the tree — so an
+  // auto-select that fires whenever the selection is empty re-picks a file the instant
+  // the back control clears one, and the control does nothing. Side by side there is a
+  // viewer either way and a default is a courtesy; narrow, the list is the right
+  // landing and the operator opens what they want from it.
   createEffect(() => {
-    const list = files();
-    if (!list || list.length === 0) return;
+    if (!sideBySide()) return;
+    const rows = listing();
+    if (!rows || rows.paths.length === 0) return;
     if (selectedPath() !== null) return;
-    setSelectedPath((list.find(isEdited) ?? list[0]).path);
+    const edited = rows.paths.find((p) => changes().has(p));
+    setSelectedPath(edited ?? rows.paths[0]);
   });
 
-  // A snapshot's file list is per snapshot, so a newer one invalidates the pick.
-  // `defer` so this does not fire on mount and fight the default-select above —
-  // it is only the *change* that clears.
+  // A thread change invalidates the pick; a re-read of the *same* thread does not —
+  // reselecting on every turn would yank the file the operator is reading out from under
+  // them. `defer` so this does not fire on mount and fight the default-select above.
   createEffect(
     on(
-      () => snapshot()?.snapshotId,
+      () => props.branch()?.conversationId,
       () => setSelectedPath(null),
       { defer: true },
     ),
   );
 
-  const [text] = createResource(
-    () => {
-      const id = snapshot()?.snapshotId;
-      const path = selectedPath();
-      return id && path ? ([id, path] as const) : undefined;
-    },
-    ([id, path]) => fetchSnapshotFileText(id, path),
+  const fileKey = createMemo(() => {
+    const b = props.branch();
+    const path = selectedPath();
+    return b && path
+      ? ([b.projectId, b.conversationId, path, b.lastCommitAt ?? ""] as const)
+      : undefined;
+  });
+
+  const [text] = createResource(fileKey, ([projectId, conversationId, path]) =>
+    fetchWorktreeFileText(projectId, conversationId, path),
   );
 
   // Arm the panel's download with whatever file is on screen.
   const armDownload = createDownloadSlot();
   createEffect(() => {
-    const id = snapshot()?.snapshotId;
+    const b = props.branch();
     const path = selectedPath();
-    if (!id || !path) {
+    if (!b || !path) {
       armDownload(null);
       return;
     }
     armDownload({
       name: path.split("/").pop() ?? path,
-      getBlob: () => api.getBlob(snapshotFilePath(id, path)),
+      getBlob: () =>
+        api.getBlob(worktreeFilePath(b.projectId, b.conversationId, path)),
     });
   });
 
   const tree = (inline: boolean): JSX.Element => (
-    <SnapshotFileTree
-      files={files}
+    <WorktreeFileTree
+      listing={listing}
       onRetry={() => void refetch()}
       selectedPath={selectedPath()}
       onSelectPath={setSelectedPath}
+      changes={changes()}
       editedOnly={editedOnly()}
       inline={inline}
     />
@@ -139,12 +177,36 @@ export function FilesSurface(props: {
             file would blank the pane rather than hold the current file until
             the new one lands. */}
         <Show when={settled(text) !== undefined} fallback={<LoadingText />}>
-          <CodeBlock
-            code={settled(text) ?? ""}
-            lang={extensionOf(selectedPath()) ?? undefined}
-            fontStep={props.fontStep}
-            softWrap={props.softWrap}
-          />
+          <Show
+            when={!settled(text)?.unreadable}
+            fallback={
+              // The listing and the read disagree by design — git lists a symlink
+              // pointing out of the tree and the containment check refuses to open it.
+              // Said in a sentence rather than left as a spinner.
+              <div class="px-3 py-2">
+                <Text variant="micro" tone="dim">
+                  This file is in the listing but cannot be opened from here.
+                </Text>
+              </div>
+            }
+          >
+            <CodeBlock
+              code={settled(text)?.text ?? ""}
+              lang={extensionOf(selectedPath()) ?? undefined}
+              fontStep={props.fontStep}
+              softWrap={props.softWrap}
+            />
+          </Show>
+          <Show when={settled(text)?.truncated}>
+            {/* The backend cut the file at its ceiling and said so in a header. A
+                viewer showing the first part of a file has to repeat that, or it
+                reads as the whole file. */}
+            <div class="px-3 py-2">
+              <Text variant="micro" tone="dim">
+                This file is longer than the viewer will load.
+              </Text>
+            </div>
+          </Show>
         </Show>
       </div>
     </div>
@@ -163,17 +225,17 @@ export function FilesSurface(props: {
       class="flex h-full min-h-0 flex-col"
     >
       <Show
-        when={snapshot()}
+        when={props.branch()}
         fallback={
           <EmptyState
             icon="file"
-            message="No files yet"
-            hint="The workspace appears here once the agent has captured a version of it."
+            message="No workspace yet"
+            hint="A code thread's files appear here once it has a branch to work on."
           />
         }
       >
-        {/* The name is the pane frame's; what stays here is the one control, which
-            is a control over this surface's own state rather than a figure about it. */}
+        {/* The name is the pane frame's; what stays here are controls over this
+            surface's own state rather than figures about it. */}
         <div class="flex shrink-0 items-center justify-end gap-2 px-3 pb-2">
           <Button
             variant="ghost"
@@ -184,6 +246,15 @@ export function FilesSurface(props: {
           >
             Edited only
           </Button>
+          {/* The tree re-reads when the branch tip moves, which covers the agent's own
+              edits. This is for the other writer: the operator, in their editor. */}
+          <Button
+            variant="ghost"
+            size="sm"
+            leading="refresh"
+            onClick={() => void refetch()}
+            aria-label="Re-read the workspace"
+          />
         </div>
         <div class="flex min-h-0 flex-1">
           <Show

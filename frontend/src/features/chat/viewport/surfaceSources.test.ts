@@ -123,14 +123,23 @@ describe("availability", () => {
     ).toBe(true);
   });
 
-  test("files need a captured snapshot, not merely a live head", () => {
+  test("files need a worktree, not a captured snapshot", () => {
+    // The fixture is ordered to fight the old rule: a thread with a snapshot and no
+    // branch used to be the *only* way to get this panel, and is now the case that
+    // must not. What makes a workspace browsable is having one.
     expect(
-      sources({ viewItems: () => [viewItem(false)] }).files.available(),
+      sources({
+        branch: () => null,
+        viewItems: () => [viewItem(true)],
+      }).files.available(),
     ).toBe(false);
     expect(
-      sources({ viewItems: () => [viewItem(true)] }).files.available(),
+      sources({
+        branch: () => ({ branch: "x" }) as BranchState,
+        viewItems: () => [],
+      }).files.available(),
     ).toBe(true);
-    // The View itself is happy with either.
+    // The View itself is happy with either, and is unchanged by this.
     expect(
       sources({ viewItems: () => [viewItem(false)] }).view.available(),
     ).toBe(true);

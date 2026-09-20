@@ -144,10 +144,14 @@ export function createSurfaceSources(
       arrival: () => "announce",
       claimKey: () => "",
     },
-    // The workspace is browsable once a version of it has been captured — the same
-    // snapshots the View lists, read as a tree rather than as versions.
+    // **Browsable from the thread's first turn, not from its first snapshot.** This used
+    // to wait on `viewItems().some(i => i.snapshot)`, which meant the panel was offered
+    // only once the agent had called `view_show` — so a code thread that never minted a
+    // version had no Files panel at all while its worktree sat full of files. A worktree
+    // is what makes a workspace browsable; a snapshot is one thing that can be taken of
+    // it. Same condition the diff keeps, because it is the same fact.
     files: {
-      available: () => deps.viewItems().some((i) => i.snapshot),
+      available: () => Boolean(deps.branch()),
       // Nobody is ever waiting on a file listing.
       arrival: () => "silent",
       claimKey: () => "",

@@ -75,11 +75,19 @@ export const SURFACE_RENDERERS: Record<
       softWrap={ctx.viewport.state().softWrap}
     />
   ),
-  sources: (ctx) => <SourcesSurface inventory={ctx.viewport.sources} />,
+  sources: (ctx) => (
+    <SourcesSurface
+      inventory={ctx.viewport.sources}
+      claims={ctx.viewport.claims}
+      canExtract={ctx.viewport.canExtractClaims}
+      onExtract={ctx.viewport.extractClaims}
+      extracting={ctx.viewport.extractingClaims}
+    />
+  ),
   coverage: (ctx) => <CoverageSurface coverage={ctx.viewport.coverage} />,
   files: (ctx) => (
     <FilesSurface
-      items={ctx.viewport.items}
+      branch={ctx.viewport.branch}
       fontStep={ctx.viewport.state().fontStep}
       softWrap={ctx.viewport.state().softWrap}
     />

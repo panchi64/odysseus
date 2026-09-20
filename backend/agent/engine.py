@@ -30,6 +30,8 @@ with its own reason to change and its own module docstring saying what it owns:
 - ``prelude.py`` — everything settled before the model is called, in a load-bearing order.
 - ``turn.py`` — one turn to its end: the ``agent.iter`` loop and the three ways it stops.
 - ``verify.py`` — whether a finished turn is worth judging, and its one bounded correction.
+- ``attribution.py`` — reading a finished answer back against the sources it was built
+  from, so a claim can be checked rather than a page.
 - ``folding.py`` — when a *turn* folds the thread, and what that does to its persistence
   boundary. (``summarize.py`` is the fold itself.)
 - ``metrics.py`` — the context gauge and the room check.
@@ -68,6 +70,7 @@ from runs import (
     Run,
     RunStatus,
 )
+from services.attributions import ConversationAttributions
 from services.commands.spec import Invocation
 from services.conversations import (
     ConversationBinding,
@@ -80,6 +83,7 @@ from tools import (
     PromptContextProvider,
 )
 
+from .attribution import attribute_answer, last_answer_id, tool_results
 from .factory import NO_DORMANT, build_agent
 from .finalize import finalize, flush_recorder, parked_context, persist_parked_cancel
 from .flush import PersistContext, TurnFlush
@@ -95,7 +99,7 @@ from .parking import DEFAULT_BINDING, ParkedTurn
 from .prelude import TurnSetup, prepare_turn
 from .summarize import AutoCompactPolicy
 from .title import last_user_text
-from .turn import NO_CAPS, drive_turn
+from .turn import NO_CAPS, TurnResult, drive_turn
 from .verify import should_verify, verify_and_correct
 
 logger = logging.getLogger(__name__)
@@ -307,6 +311,38 @@ def build_chat_orchestrator(
                 return None
             return reject_idx - start, nudge_idx - start
 
+        async def _attribute(run: Run, turn: TurnResult, setup: TurnSetup) -> None:
+            # Read the finished answer back against the sources it was built from, and
+            # write the triples down (`agent/attribution.py`). The trigger lives there,
+            # not here: a thread whose mode does not ask for this leaves that function
+            # having spent nothing — in particular, no model call.
+            #
+            # Swallowed in full. Everything it does is a readout of a turn that has
+            # already answered and already persisted, so the worst any failure can cost is
+            # a panel without its claim arm; letting one out here would turn an answered
+            # turn into an errored run and route its messages through the degraded
+            # error-flush instead of the `finalize` that already recorded them — the same
+            # reasoning the overhead write below is swallowed under.
+            try:
+                message_id = await last_answer_id(store, conversation_id)
+                if message_id is None or conversation_id is None:
+                    return
+                await attribute_answer(
+                    run,
+                    answer=turn.answer,
+                    results=tool_results(setup.turn_start.slice(turn.messages)),
+                    message_id=message_id,
+                    conversation_id=conversation_id,
+                    owner_id=run.owner_id,
+                    model=utility_model,
+                    reasoning_off=utility_settings,
+                    settings=settings,
+                    mode=binding.mode,
+                    attributions=capabilities.get_optional(ConversationAttributions),
+                )
+            except Exception:
+                logger.warning("claim attribution failed", exc_info=True)
+
         # Set by `verify_and_correct` the moment it commits to a correction, so a stop
         # mid-correction can drop the same range the completed path does.
         drop_ref: list[tuple[int, int]] = []
@@ -464,6 +500,16 @@ def build_chat_orchestrator(
                 # running one so the event is emitted before the orchestrator returns
                 # (run.ended) and the open stream carries it.
                 await settle_title(setup.title_namer)
+                # The answer is written down and the thread is named; now read the answer
+                # back against what it was built from. It hangs here, in the same
+                # post-answer window titling settles in, for the same two reasons: the
+                # turn is finished and nothing it does can disturb it, and the run is
+                # still open so a `cited` frame reaches the client that watched the
+                # answer arrive. It must follow `finalize` — the id it stores under is
+                # the branch node the store mints while recording the turn — and it is
+                # swallowed whole, because a reading of an answer failing is not an
+                # answer failing.
+                await _attribute(run, turn, setup)
 
             # What this turn's requests weighed besides the conversation, written onto
             # the thread for its own next cold load — neither the brief nor the schemas

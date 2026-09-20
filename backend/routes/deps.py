@@ -25,6 +25,7 @@ from runs import ConversationBusyError, RunRegistry
 from services.api_token_store import ApiTokenStore
 from services.approval_grants import ApprovalGrantStore
 from services.artifacts import ArtifactStore
+from services.attributions import ConversationAttributions
 from services.backup import BackupService
 from services.browser import BrowserSessionManager
 from services.calendar import CalendarService
@@ -183,6 +184,12 @@ def notifications(request: Request) -> NotificationService:
 
 def conversation_tasks(request: Request) -> ConversationTasks:
     return request.app.state.conversation_tasks
+
+
+def attributions(request: Request) -> ConversationAttributions:
+    """Claim-level attribution for a thread's answers — the triples a second reader
+    extracted, keyed by the branch node the detail route already numbers turns by."""
+    return request.app.state.attributions
 
 
 def plan_mode(request: Request) -> PlanMode:

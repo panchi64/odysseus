@@ -113,6 +113,13 @@ class ModeSpec:
     #: operator's to set, but a mode that *cannot* do its work inside the default would
     #: otherwise fail at a bound the operator never chose for it.
     request_limit: int | None = None
+    #: Whether a finished answer in this mode is read back against its own sources
+    #: (``agent/attribution.py``). A row rather than a comparison on ``id`` for the
+    #: reason every other answer here is one: the pass costs a background model call per
+    #: answer, and which threads are worth it is a fact about the kind of work, not a
+    #: branch for a caller to re-derive. Only a mode whose whole output is a synthesis of
+    #: things it read has anything for the reader to check.
+    attributes_claims: bool = False
 
 
 MODES: Mapping[ModeId, ModeSpec] = {
@@ -129,6 +136,9 @@ MODES: Mapping[ModeId, ModeSpec] = {
         # Reading enough sources to see where they disagree is many more round-trips than
         # answering a question, and the operator's chat default is set for the latter.
         request_limit=60,
+        # The one mode whose answer is a synthesis of sources the operator did not read,
+        # which is exactly the thing they open a citation to check.
+        attributes_claims=True,
     ),
     "code": ModeSpec(
         id="code",

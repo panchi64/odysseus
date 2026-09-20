@@ -27,8 +27,11 @@ meets twice is emitted twice — once per rung it reaches. Consumers fold by
 the ladder's order is stated here rather than inferred.
 
 What is deliberately *not* here is a link from a source to the sentence it supports. That
-is claim-level attribution; it is an open design question with real trade-offs, and
-nothing in this module should be read as having settled it.
+link exists now — it is :mod:`services.attributions` and :mod:`agent.attribution` — and it
+lives there rather than here for the reason it has to: it is not something a tool result
+can declare. A tool knows what it returned; only a reader of the *finished answer* knows
+what the answer ended up resting on, and that reading happens after the turn. What this
+module gained from it is the ``cited`` rung finally having a producer.
 """
 
 from __future__ import annotations
@@ -53,7 +56,9 @@ CitationKind = Literal["web", "corpus"]
 #:
 #: ``cited`` — something asserted rests on it, and says so. Only a producer that genuinely
 #: knows this may claim it; the tool boundary does not, which is exactly the defect this
-#: ladder exists to stop repeating.
+#: ladder exists to stop repeating. The one producer that does know is the post-answer
+#: extraction pass (:mod:`agent.attribution`), which read a claim in the finished prose
+#: and found the passage behind it — so this rung is minted there and nowhere else.
 Engagement = Literal["listed", "read", "cited"]
 
 #: The ladder's order, for a consumer folding several sightings of one source. Exported

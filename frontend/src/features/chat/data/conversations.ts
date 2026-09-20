@@ -21,13 +21,9 @@ import {
   type CompactionState,
   type PlanDocument,
 } from "../model";
-import {
-  deriveTitle,
-  toActiveRun,
-  toMessage,
-  toStats,
-  toViewSnapshotRef,
-} from "./mappers";
+import { toMessage } from "./messages";
+import { deriveTitle, toActiveRun, toStats } from "./summaries";
+import { toViewSnapshotRef } from "./viewSnapshots";
 import { refreshSessions } from "./sessions";
 import { revealTitle } from "./titleReveals";
 import type {

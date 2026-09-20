@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { commandBoundary, toTerminalOutcome } from "./data/mappers";
+import { commandBoundary, toTerminalOutcome } from "./data/hostCommands";
 import { isTerminalTool } from "./toolPresentation";
 
 /**

@@ -34,16 +34,10 @@ import type { ContextWindow, RunEvent, TaskItem } from "~/lib/stream";
 import { ENGAGEMENT_ORDER, permissionLevel } from "../model";
 import type { PermissionLevel, PlanDocument } from "../model";
 import { toast } from "~/ui";
-import {
-  commandBoundary,
-  formatArgs,
-  stringifyResult,
-  toStats,
-  toolImages,
-  toTerminalOutcome,
-  toVersionChipBlock,
-  toViewSnapshotRef,
-} from "../data/mappers";
+import { commandBoundary, toTerminalOutcome } from "../data/hostCommands";
+import { formatArgs, stringifyResult, toolImages } from "../data/messages";
+import { toStats } from "../data/summaries";
+import { toVersionChipBlock, toViewSnapshotRef } from "../data/viewSnapshots";
 import { refreshSessions } from "../data/sessions";
 import { revealTitle } from "../data/titleReveals";
 import type {
