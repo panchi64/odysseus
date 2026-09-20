@@ -34,7 +34,7 @@ export {
   startConversation,
 } from "./entry";
 
-export { formatArgs } from "./mappers";
+export { formatArgs } from "./messages";
 
 export {
   conversationGrantsRevision,

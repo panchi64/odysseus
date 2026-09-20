@@ -194,14 +194,23 @@ export const api = {
   /** PUT a multipart form — the same upload, at a caller-chosen address (e.g. a
    *  skill bundle's file, whose path *is* its identity). */
   putForm: <T>(path: string, form: FormData) => sendForm<T>("PUT", path, form),
-  /** Fetch raw bytes (auth-gated content like artifacts) for a blob URL. */
-  async getBlob(path: string): Promise<Blob> {
+  /** The raw `Response` for an auth-gated GET, after the same auth handling and error
+   *  mapping every other verb gets.
+   *
+   *  For the callers that need something off the *envelope* rather than the body — a
+   *  content header the bytes cannot carry themselves. `getBlob` is this plus `.blob()`,
+   *  rather than a second copy of the auth dance. */
+  async getResponse(path: string): Promise<Response> {
     const res = await trackedFetch(`${API_BASE}${path}`, {
       headers: authHeaders(),
       credentials: "omit",
     });
     if (res.status === 401 || res.status === 423) handleAuthFailure();
     if (!res.ok) throw await toApiError(res);
-    return res.blob();
+    return res;
+  },
+  /** Fetch raw bytes (auth-gated content like artifacts) for a blob URL. */
+  async getBlob(path: string): Promise<Blob> {
+    return (await api.getResponse(path)).blob();
   },
 };

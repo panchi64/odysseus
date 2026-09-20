@@ -25,9 +25,12 @@ merely mentions it.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from dataclasses import dataclass
 from pathlib import Path
+
+from services.sandbox.base import contained_file
 
 from .repo import branch_for, run_git
 
@@ -99,6 +102,61 @@ async def list_files(root: Path, *, query: str = "", limit: int = 200) -> FileLi
     ranked = _rank(query, paths)
     entries = tuple(FileEntry(path=p, name=p.rsplit("/", 1)[-1]) for p in ranked[:limit])
     return FileListing(entries=entries, truncated=truncated or len(ranked) > limit)
+
+
+@dataclass(frozen=True)
+class FileContent:
+    """One file's bytes, and whether that is all of them."""
+
+    data: bytes
+    #: True when the read stopped at its ceiling. Said out loud for the same reason
+    #: :attr:`FileListing.truncated` is — a viewer showing the first megabyte of a file
+    #: must not look like a viewer showing the file.
+    truncated: bool
+
+
+async def read_file(root: Path, relpath: str, *, max_bytes: int) -> FileContent | None:
+    """The bytes of ``relpath`` under ``root``, or ``None`` when there is no file to read.
+
+    The operator-facing counterpart to :func:`list_files`: they picked a path out of that
+    listing and want to look at it. Reads through :func:`~services.sandbox.base.contained_file`
+    rather than joining the path itself, which is what refuses a traversal, a symlink out of
+    the tree, and a directory — and refuses them as an *answer* rather than an exception,
+    because the operator is browsing and a path that no longer resolves is an ordinary
+    outcome rather than a fault.
+
+    ``None`` covers every one of those cases on purpose. Telling the operator which of
+    "outside the tree", "a symlink", "a directory" or "not there" their path was would be
+    describing the filesystem around a path they are not allowed to read.
+
+    Bounded, because nothing upstream is: ``list_files`` honours ``.gitignore`` and so
+    never *offers* a build artifact, but a path can be asked for directly and a worktree
+    holds whatever the agent put in it.
+    """
+    target = contained_file(root, relpath)
+    if target is None:
+        return None
+    # +1 so the ceiling is detected rather than inferred: a file exactly `max_bytes` long
+    # would otherwise be indistinguishable from one that was cut at it.
+    data = await asyncio.to_thread(_read_head, target, max_bytes + 1)
+    if data is None:
+        return None
+    if len(data) > max_bytes:
+        return FileContent(data=data[:max_bytes], truncated=True)
+    return FileContent(data=data, truncated=False)
+
+
+def _read_head(target: Path, limit: int) -> bytes | None:
+    """``limit`` bytes off the front of a file, or ``None`` if it cannot be read.
+
+    An unreadable file is the same ordinary outcome a missing one is — a permission bit
+    the operator has not noticed is not worth a 500.
+    """
+    try:
+        with target.open("rb") as handle:
+            return handle.read(limit)
+    except OSError:
+        return None
 
 
 async def _candidates(root: Path) -> tuple[list[str], bool]:

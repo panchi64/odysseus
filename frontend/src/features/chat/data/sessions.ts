@@ -22,7 +22,7 @@ import { api } from "~/lib/api";
 import { parseInstant } from "~/lib/format";
 import { readLS, writeLS } from "~/lib/storage";
 import type { ChatSummary } from "../model";
-import { toSummary } from "./mappers";
+import { toSummary } from "./summaries";
 import type { ConversationSummaryDTO } from "./wire";
 
 /* ── Recency-gated resume ─────────────────────────────────────────────────────

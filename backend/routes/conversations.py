@@ -19,6 +19,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from agent.attribution import attribute_answer
 from agent.summarize import compact_conversation
 from agent.title import title_from_history
 from core.compaction_sections import SummarySection
@@ -28,6 +29,7 @@ from routes import deps
 from routes.deps import OPERATOR_ID
 from runs import ContextWindow, FoldPoint, Run, RunMetrics
 from services.approval_grants import COMMAND_SCOPED_TOOLS
+from services.attributions import MessageClaims
 from services.context_budget import compose
 from services.conversation_view import MessageView
 from services.conversations import (
@@ -795,6 +797,10 @@ async def delete_conversation(
         # restate what was asked for, so neither must outlive the thread.
         await deps.conversation_tasks(request).delete_for_conversation(OPERATOR_ID, conversation_id)
         await deps.plan_mode(request).delete_for_conversation(OPERATOR_ID, conversation_id)
+        # And the claim attributions: a claim is a verbatim span of the answer and a
+        # passage a verbatim span of something the operator read, so they are the thread's
+        # content by another name and must not outlive it either.
+        await deps.attributions(request).delete_for_conversation(OPERATOR_ID, conversation_id)
         # And the sub-agents it launched. Unlike everything else here they are not merely
         # stored state: a live one is a *running* model, spending the operator's money on
         # work for a thread that no longer exists and holding a slot against the cap, with
@@ -1052,6 +1058,155 @@ async def read_plan(conversation_id: str, request: Request) -> PlanOut | None:
     await _require_owned(request, conversation_id)
     plan = await deps.plan_mode(request).current(OPERATOR_ID, conversation_id)
     return PlanOut(**plan.payload()) if plan is not None else None
+
+
+class ClaimOut(BaseModel):
+    """One claim an answer made, and the source it does — or does not — rest on.
+
+    ``grounded`` is the field the panel leads with, and it is not the same question as
+    "is ``passage`` null". A claim can name a source and still carry no passage from it:
+    the answer pointed at a page and a second reader could not find the assertion in it.
+    That row is the whole reason this surface exists, so it arrives fully populated —
+    source and all — and reads ``grounded: false`` rather than arriving stripped.
+
+    ``source_key`` is the same key ``citation.added`` carries, so the panel joins a claim
+    to the Sources row it belongs to without matching on titles or URLs. It is null only
+    when the reader could not name a source at all.
+
+    ``offset`` is a character position into this message's ``content`` where ``claim``
+    begins, already verified server-side to be where the text actually is — so a client
+    may highlight at it without re-checking. Null means no trustworthy position was
+    reported, which is an ordinary outcome and never an error: render the claim without
+    a highlight.
+    """
+
+    claim: str
+    grounded: bool
+    source_key: str | None = None
+    source_title: str | None = None
+    source_url: str | None = None
+    source_kind: str | None = None
+    passage: str | None = None
+    confidence: str = "low"
+    offset: int | None = None
+
+
+class MessageAttributionOut(BaseModel):
+    """One assistant turn's reading. ``message_id`` is the same id ``MessageOut.id``
+    carries, which is the branch node — so a client joins these onto the turns it already
+    has rather than asking for them per message."""
+
+    message_id: str
+    extracted_at: datetime
+    claims: list[ClaimOut]
+
+
+class AttributionOut(BaseModel):
+    """Every reading stored for a thread, oldest first.
+
+    Whole-thread rather than per message because the panel draws the thread: one round
+    trip, and a turn with no reading is simply absent from ``messages`` — which is the
+    ordinary case for every non-research thread and for every research answer that cited
+    nothing. An empty list is not an error and must not blank anything; the message-level
+    sources the client already renders are unaffected by any of this.
+    """
+
+    conversation_id: str
+    messages: list[MessageAttributionOut]
+
+
+class AttributionRequest(BaseModel):
+    """Which turn to read. ``null`` means the thread's most recent assistant turn, which
+    is what a panel on an open thread is looking at."""
+
+    message_id: str | None = None
+
+
+def _attribution_out(conversation_id: str, rows: list[MessageClaims]) -> AttributionOut:
+    return AttributionOut(
+        conversation_id=conversation_id,
+        messages=[
+            MessageAttributionOut(
+                message_id=row.message_id,
+                extracted_at=row.extracted_at,
+                claims=[ClaimOut(**claim.as_dict()) for claim in row.claims],
+            )
+            for row in rows
+        ],
+    )
+
+
+@router.get("/{conversation_id}/attributions", response_model=AttributionOut)
+async def read_attributions(conversation_id: str, request: Request) -> AttributionOut:
+    """The claim → source → passage triples stored for this thread.
+
+    A sibling of the detail route rather than a field on it: a thread's attributions are
+    read by one panel, they are absent for most threads, and unsealing them on every
+    conversation open would make every reader pay for a surface most of them never show.
+    """
+    await _require_owned(request, conversation_id)
+    rows = await deps.attributions(request).for_conversation(OPERATOR_ID, conversation_id)
+    return _attribution_out(conversation_id, rows)
+
+
+@router.post("/{conversation_id}/attributions", response_model=AttributionOut)
+async def extract_attributions(
+    conversation_id: str, request: Request, body: AttributionRequest | None = None
+) -> AttributionOut:
+    """Run the extraction over a turn that has none — the retroactive path.
+
+    The pass ordinarily runs in the post-answer window of the turn that produced the
+    answer, so this is for the threads that finished before it existed, and for a turn
+    whose live pass degraded (no utility model bound at the time, a timeout, a locked
+    vault). It is possible at all because tool results are persisted **structurally**: the
+    inventory of sources a turn retained is recoverable from the stored history, so a
+    reading taken now is the reading that turn would have got.
+
+    It runs the *same* function the engine runs, with the same trigger — so a thread whose
+    mode does not ask for this, or a turn that retained no sources, spends no model call
+    and answers with whatever was already stored. An extraction that comes back empty
+    stores nothing and returns the same, which is the degrade the whole feature is built
+    around: the client keeps its message-level sources and nothing is blanked.
+    """
+    summary = await _require_owned(request, conversation_id)
+    store = deps.store(request)
+    attributions = deps.attributions(request)
+    views = await store.messages_view(conversation_id)
+    target = (body or AttributionRequest()).message_id
+    view = next(
+        (
+            v
+            for v in reversed(views)
+            if v.role == "assistant" and (target is None or v.id == target)
+        ),
+        None,
+    )
+    if view is None:
+        raise HTTPException(status_code=404, detail="no such assistant turn")
+    try:
+        background = await deps.models(request).resolve_background(owner_id=OPERATOR_ID)
+    except (NotFoundError, DegradedCapabilityError):
+        # No utility model reachable. The same degrade the live pass takes — the operator
+        # gets what is already stored rather than an error about a reading nothing
+        # promised them.
+        background = None
+    await attribute_answer(
+        None,
+        answer=view.content,
+        # Already `jsonable`-coerced by the projection, which is the shape the source
+        # reader takes — the one path a live turn's results are put through too.
+        results=[tool.result for tool in view.tools if tool.result is not None],
+        message_id=view.id,
+        conversation_id=conversation_id,
+        owner_id=OPERATOR_ID,
+        model=background.model if background is not None else None,
+        reasoning_off=background.reasoning_off if background is not None else None,
+        settings=get_settings(),
+        mode=summary.mode,
+        attributions=attributions,
+    )
+    rows = await attributions.for_conversation(OPERATOR_ID, conversation_id)
+    return _attribution_out(conversation_id, rows)
 
 
 @router.delete("/{conversation_id}/grants/{tool_name}", status_code=204)

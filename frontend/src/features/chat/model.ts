@@ -1,6 +1,8 @@
 /** Chat feature data contracts. This is the SEAM: screens depend on these
- *  types, `data/mappers.ts` maps backend responses/events to them — so screens
- *  don't change when the mapping behind them does. */
+ *  types, and the mappers under `data/` — `messages.ts`, `hostCommands.ts`,
+ *  `summaries.ts`, `viewSnapshots.ts`, `citations.ts` — map backend
+ *  responses/events to them, so screens don't change when the mapping behind
+ *  them does. */
 
 import type { SessionMode } from "~/lib/modes";
 import type {

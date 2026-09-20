@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { toMessage } from "./mappers";
+import { toMessage } from "./messages";
 import type { MessageDTO } from "./wire";
 
 function divider(overrides: Partial<MessageDTO> = {}): MessageDTO {
@@ -62,6 +62,16 @@ describe("toMessage decodes a compaction divider", () => {
     expect(toMessage(divider()).summarySections).toBeUndefined();
     expect(
       toMessage(divider({ sections: null })).summarySections,
+    ).toBeUndefined();
+  });
+
+  test("an empty section list decodes to absent, not to an empty list", () => {
+    // The case `?? undefined` alone would miss, and the one the backend actually sends:
+    // it defaults `sections` to `[]` on *every* row, and an empty array is not nullish.
+    // Passing it through would hang a list off every turn that the divider would render
+    // as "this checkpoint said nothing" — absent-not-empty is the rule here.
+    expect(
+      toMessage(divider({ sections: [] })).summarySections,
     ).toBeUndefined();
   });
 

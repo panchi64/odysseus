@@ -275,6 +275,25 @@ class Settings(BaseSettings):
     # Set False to judge every answer.
     verify_heuristic: bool = True
 
+    # Claim-level attribution. After a research answer lands, a second reader on the
+    # utility model reads the finished prose against the sources the turn actually
+    # retained and returns claim → source → passage triples. It is a *second* reader
+    # rather than the writer's own account of itself, which is the whole point: the
+    # question it answers is whether the synthesis is honest, and the synthesizer
+    # cannot settle that about itself.
+    #
+    # One background round trip per research answer, bounded by `attribution_timeout_s`
+    # so a stuck utility model cannot hold a finished run open; the whole pass is
+    # best-effort and an expired one costs the panel its claim arm, never the answer.
+    # `attribution_max_sources` and `attribution_source_chars` bound what it is handed —
+    # a wide-reading thread can retain dozens of pages, and the reader's own window is
+    # the utility model's, not the chat model's.
+    attribution_enabled: bool = True
+    attribution_timeout_s: float = 90.0
+    attribution_max_tokens: int = 8192
+    attribution_max_sources: int = 24
+    attribution_source_chars: int = 4000
+
     # Approval grants. When the operator approves a deferred tool call with the
     # "allow for this conversation" option, that tool auto-approves in that
     # conversation for this long before lapsing back to strict per-call approval.

@@ -761,8 +761,11 @@ class CitationAdded(_Body):
     ``snippet`` is the text the source was seen through, already unfenced and capped.
 
     Deliberately **not** carried: any link from this source to a particular sentence of
-    the answer. Claim-level attribution is an open design question, and a field added
-    here in anticipation of it would pre-empt the decision.
+    the answer. That link exists, but it is not a property of a source — it is a reading
+    of the finished answer, produced after the turn by a second model pass and served
+    from its own route (``GET /conversations/{id}/attributions``). What reaches this frame
+    from it is one thing: ``engagement="cited"``, emitted once per source a claim was
+    actually grounded in, which is the first honest use of that rung anywhere.
     """
 
     type: Literal["citation.added"] = "citation.added"

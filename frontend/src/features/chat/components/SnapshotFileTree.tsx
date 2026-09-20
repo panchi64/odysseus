@@ -21,8 +21,11 @@ export function statusMark(status: SnapshotFile["status"]): string {
 
 /** Whether a file changed in this snapshot. The backend already answers this per
  *  file, so "only what was edited" is a predicate over a list we have rather than a
- *  second request. */
-export const isEdited = (f: SnapshotFile): boolean => f.status !== "unchanged";
+ *  second request.
+ *
+ *  Local: the Files surface used to import it to pick a default file, and now reads a
+ *  live worktree whose changed set comes from the branch instead. */
+const isEdited = (f: SnapshotFile): boolean => f.status !== "unchanged";
 
 /**
  * A snapshot's files, as a pickable list.

@@ -76,6 +76,8 @@ import {
   collectSources,
   type SourceInventory,
 } from "./viewport/sourceItems";
+import type { ClaimInventory } from "./viewport/claimItems";
+import { createClaimsState } from "./claimsState";
 import {
   claimAutoOpen,
   collectViewItems,
@@ -128,6 +130,16 @@ export interface ChatViewport {
   /** The shape of the investigation, for the Coverage surface — merged out of whatever
    *  structured reports the sub-agents have sent back. */
   coverage: Accessor<CoverageReport>;
+  /** What a second reader found in this thread's answers — claim, source, passage.
+   *  **Fetched, not derived**: unlike `sources` and `commands` this is not in the
+   *  transcript at all. Empty for every thread that has no reading, which is most. */
+  claims: Accessor<ClaimInventory>;
+  /** Whether offering to read this thread's claims is worth doing — it has sources and
+   *  nothing has read them yet. The backend runs its own trigger either way, so this
+   *  decides only whether the control is shown. */
+  canExtractClaims: () => boolean;
+  extractClaims: () => void;
+  extractingClaims: Accessor<boolean>;
   /** Whether a surface has anything to show — which header buttons exist. */
   available: (id: SurfaceId) => boolean;
   /** The first surface in registry order that has anything to show, or `undefined` on a
@@ -233,6 +245,17 @@ export function useChatViewport(
   const sourceInventory = createMemo(() =>
     buildInventory(citations(), contestedTokens(coverage())),
   );
+  // The thread's claim-level reading. Re-read when the transcript grows, since that is
+  // when a turn — and with it the post-answer pass — has just finished.
+  const claimsState = createClaimsState(
+    currentId,
+    () => source.messages.length,
+  );
+  // Offered only where there is something to read *against*: a thread with sources and
+  // no reading. Asking on a thread with neither would be offering a check on nothing.
+  const canExtractClaims = (): boolean =>
+    sourceInventory().items.length > 0 &&
+    claimsState.claims().items.length === 0;
   const sources = createSurfaceSources({
     viewItems: items,
     tasks: source.tasks,
@@ -619,6 +642,10 @@ export function useChatViewport(
     // one short word would happily confuse.
     sources: sourceInventory,
     coverage,
+    claims: claimsState.claims,
+    canExtractClaims,
+    extractClaims: claimsState.extract,
+    extractingClaims: claimsState.extracting,
     available,
     firstAvailable,
     layout: liveLayout,
