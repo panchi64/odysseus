@@ -423,6 +423,7 @@ export function ChatRoomScreen(): JSX.Element {
           activity={() => currentSummary()?.activity}
           lastOutcome={() => currentSummary()?.lastOutcome}
           messageCount={() => stream.messages.length}
+          compacting={stream.compacting}
           viewport={viewport}
           branch={branch.latest}
           actions={{

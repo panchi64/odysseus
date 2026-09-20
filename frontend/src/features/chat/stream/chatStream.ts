@@ -620,6 +620,16 @@ export function createChatStream(
     switchVersion: branching.switchVersion,
     rewind: branching.rewind,
     compactNow: branching.compactNow,
+    /** True while a hand-started fold is in flight on the thread the room is showing.
+     *
+     *  Composed here rather than inside the branching ops because the answer needs the
+     *  *reactive* half of the bound id: the ops read `activeConversationId` imperatively,
+     *  and a `compacting` built on that would never re-run on a thread switch — it would
+     *  keep reporting the thread the operator left. */
+    compacting: (): boolean => {
+      const id = boundConversationId();
+      return id !== null && branching.compactingIds().has(id);
+    },
     removeMessage: branching.removeMessage,
     toggleMessagePin: branching.toggleMessagePin,
   };

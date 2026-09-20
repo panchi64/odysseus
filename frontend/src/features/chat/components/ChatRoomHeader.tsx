@@ -57,6 +57,10 @@ export interface ChatRoomHeaderProps {
   lastOutcome: () => ChatOutcome | undefined;
   /** Length of the transcript, which is what makes compact and copy available. */
   messageCount: () => number;
+  /** True while a hand-started fold is running on this thread. A fold has a summarizer
+   *  inside it and changes nothing until it lands, so the room has to say it is working
+   *  — the menu that started it has already closed by then. */
+  compacting: () => boolean;
   viewport: ChatViewport;
   /** The thread's branch, fetched by the room and shared with the Diff surface. */
   branch: () => BranchState | null | undefined;
@@ -119,7 +123,14 @@ export function ChatRoomHeader(props: ChatRoomHeaderProps): JSX.Element {
             so it follows the title; the model is true of the whole thread whether or
             not it has been named, so it leads. The two are near-exclusive anyway —
             the hint appears only for a staged worktree thread. */}
-        <Show when={props.model() ?? props.createdAt() ?? runState()}>
+        <Show
+          when={
+            props.model() ??
+            props.createdAt() ??
+            runState() ??
+            (props.compacting() || undefined)
+          }
+        >
           {/* The mission clock rides the eyebrow beside the model because the two
               answer the same kind of question — what is true of this thread as a
               whole, rather than of any turn in it — and because §11 wants its one
@@ -143,6 +154,15 @@ export function ChatRoomHeader(props: ChatRoomHeaderProps): JSX.Element {
                   {s().readout}
                 </StatusFlag>
               )}
+            </Show>
+            {/* Beside the run state, because it is the same kind of fact — work in
+                flight on this thread — and because the operator who just picked
+                "Compact now" is looking at the header, not at the transcript, which
+                a fold leaves untouched until it lands. */}
+            <Show when={props.compacting()}>
+              <StatusFlag status="info" dot pulse class="shrink-0">
+                FOLDING
+              </StatusFlag>
             </Show>
             <Show when={props.model()}>
               {(model) => (
@@ -234,11 +254,20 @@ export function ChatRoomHeader(props: ChatRoomHeaderProps): JSX.Element {
                 onSelect: props.actions.retitle,
               },
               {
-                label: "Compact now",
+                label: props.compacting() ? "Folding…" : "Compact now",
                 icon: "layers",
-                // Nothing to fold in an empty or one-turn thread; the backend
-                // refuses those anyway, this just doesn't offer the action.
-                disabled: !props.conversationId() || props.messageCount() < 3,
+                // Whether a fold would take anything is the *backend's* arithmetic:
+                // it retains the last N turns word for word, and N is an operator
+                // setting this row cannot see. This used to guess at it with a
+                // transcript length of 3, which matched no threshold the backend has
+                // — it greyed the row out on threads that would have folded fine and
+                // left it lit on threads that could only ever be refused. So the row
+                // asks about the one thing the room does know, and the backend says
+                // in its own words when it declines.
+                disabled:
+                  !props.conversationId() ||
+                  props.messageCount() === 0 ||
+                  props.compacting(),
                 onSelect: props.actions.compact,
               },
               {

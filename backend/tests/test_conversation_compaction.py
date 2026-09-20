@@ -1027,6 +1027,53 @@ async def test_manual_compact_409s_when_there_is_nothing_to_fold(monkeypatch):
         assert (await client.post(f"/conversations/{cid}/compact")).status_code == 409
 
 
+@pytest.mark.parametrize(
+    ("keep", "expected"),
+    [(1, "the last 1 exchange word"), (4, "the last 4 exchanges word")],
+)
+async def test_a_refusal_names_the_retained_tail(monkeypatch, keep, expected):
+    """A thread no longer than the retained tail is the ordinary way to meet this refusal,
+    and "there is nothing to compact" reads, on a thread full of turns, as a broken button.
+    The detail has to name what is actually stopping it — the retained count — so the
+    operator can change it instead of pressing again.
+
+    The count is *set* rather than read off the config default, because the route builds
+    the message from the operator's stored setting: a test that asserted on the default
+    would be asserting on a number it does not control. Both counts because the sentence
+    inflects, and a stray "1 exchanges" is exactly the kind of thing nothing else catches."""
+    async with client_app() as (client, app):
+        patch_model_resolution(monkeypatch)
+        await client.put("/chat/settings", json={"auto_compact_keep_turns": keep})
+        store = app.state.conversations
+        cid = await store.create_conversation(OPERATOR_ID)
+        # Exactly the retained tail: real turns, and still nothing above them to fold.
+        for i in range(keep):
+            store.record(cid, _turn(f"q{i}", f"a{i}"))
+
+        resp = await client.post(f"/conversations/{cid}/compact")
+        assert resp.status_code == 409
+        detail = resp.json()["detail"]
+        assert expected in detail
+        assert "Settings" in detail
+
+
+async def test_a_fold_that_had_something_to_fold_and_failed_is_a_503(monkeypatch):
+    """The summarizer writing nothing is not the same answer as the thread having nothing
+    to fold, and reporting both as 409 is what makes a genuine failure look like a no-op.
+    A thread that plainly *has* foldable turns must report the failure as one."""
+    async with client_app() as (client, app):
+        # An empty summary is exactly what `compact_conversation` swallows into `None`.
+        patch_model_resolution(monkeypatch, output_text="")
+        store = app.state.conversations
+        cid = await store.create_conversation(OPERATOR_ID)
+        for i in range(get_settings().auto_compact_keep_turns + 3):
+            store.record(cid, _turn(f"q{i}", f"a{i}"))
+
+        resp = await client.post(f"/conversations/{cid}/compact")
+        assert resp.status_code == 503
+        assert "did not land" in resp.json()["detail"]
+
+
 async def test_manual_compact_409s_on_a_busy_conversation(monkeypatch):
     """It appends to the tree, so unlike retitle it must not run beside a live turn."""
     async with client_app() as (client, app):

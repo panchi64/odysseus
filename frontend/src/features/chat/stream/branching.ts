@@ -20,7 +20,7 @@
  */
 
 import { reconcile, type SetStoreFunction } from "solid-js/store";
-import type { Setter } from "solid-js";
+import { createSignal, type Setter } from "solid-js";
 import { api, isApiError } from "~/lib/api";
 import { effectiveSelection, type ModelSelection } from "~/lib/stores/models";
 import { toast } from "~/ui";
@@ -81,6 +81,31 @@ function toastError(err: unknown, fallback: string): void {
 export function createBranchingOps(ctx: BranchingContext) {
   const reseat = (detail: ConversationDetailDTO) =>
     reseatFromDetail(ctx, detail);
+
+  /** The threads a hand-started fold is running against, by id.
+   *
+   *  Every other op here either streams (so the transcript animates) or returns in a
+   *  round trip. A fold does neither: it holds a summarizer call inside it — seconds on
+   *  a local model — and until it lands there is nothing anywhere in the room that has
+   *  changed. Without this the operator picks "Compact now", the menu closes, and the
+   *  product looks like it dropped the request.
+   *
+   *  A **set of ids**, not one id and not a boolean, for the same reason the retitle
+   *  throbber is one (`conversationActions.ts`): this controller outlives every thread
+   *  it binds to, so the fold belongs to a conversation rather than to the stream. A
+   *  single slot would let a fold on one thread silently refuse a fold on another — and
+   *  then clear that other one's flag when the first finished. */
+  const [compactingIds, setCompactingIds] = createSignal<ReadonlySet<string>>(
+    new Set(),
+  );
+  const markCompacting = (conversationId: string, active: boolean): void => {
+    setCompactingIds((prev) => {
+      const next = new Set(prev);
+      if (active) next.add(conversationId);
+      else next.delete(conversationId);
+      return next;
+    });
+  };
 
   /** A 409 means the backend already has a run on this thread. Surface the one that is
    *  actually in flight instead of leaving the operator's action to vanish. */
@@ -235,17 +260,31 @@ export function createBranchingOps(ctx: BranchingContext) {
    *  actions, so the new divider renders from exactly the shape a cold read gives. */
   async function compactNow(): Promise<void> {
     const conversationId = ctx.conversationId();
-    if (conversationId === null) return;
-    if (ctx.sending()) await ctx.cancel();
+    // Claimed synchronously, *before* the cancel below: a guard taken after an await is
+    // not a guard. Two presses during a live run would both read an unclaimed thread,
+    // both wait out the cancel and both POST, and the second would meet the first one's
+    // conversation claim as a busy error for a fold asked for once.
+    if (conversationId === null || compactingIds().has(conversationId)) return;
+    markCompacting(conversationId, true);
     try {
+      // The cancel is inside the claim for the same reason: a fold that stops a live run
+      // is already under way as far as the operator is concerned.
+      if (ctx.sending()) await ctx.cancel();
       const detail = await api.post<ConversationDetailDTO>(
         `/conversations/${conversationId}/compact`,
         {},
       );
-      reseat(detail);
+      // A fold is the one op here slow enough for the operator to leave mid-flight, and
+      // a reseat is a whole-store replacement — so it has to be aimed. Reseating a
+      // thread the room has moved off would write its transcript, its window reading and
+      // its snapshots over whichever thread is now on screen. The fold still landed; the
+      // thread that was left reads it back when it is opened again.
+      if (ctx.conversationId() === conversationId) reseat(detail);
       toast.success("Earlier turns folded into a summary");
     } catch (err) {
       toastError(err, "Unable to compact this conversation.");
+    } finally {
+      markCompacting(conversationId, false);
     }
   }
 
@@ -322,6 +361,7 @@ export function createBranchingOps(ctx: BranchingContext) {
     switchVersion,
     rewind,
     compactNow,
+    compactingIds,
     removeMessage,
     toggleMessagePin,
     toggleSnapshotKeeper,
