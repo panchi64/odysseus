@@ -35,9 +35,17 @@ import {
 } from "../viewport/sourceItems";
 import { Sep } from "./ProcessRow";
 import { SourceRow } from "./SourceRow";
+import { ClaimsSection } from "./ClaimsSection";
+import type { ClaimInventory } from "../viewport/claimItems";
 
 export function SourcesSurface(props: {
   inventory: () => SourceInventory;
+  /** What a second reader found in this thread's answers — empty for most threads. */
+  claims: () => ClaimInventory;
+  /** Whether asking for a reading is worth offering here. */
+  canExtract: () => boolean;
+  onExtract: () => void;
+  extracting: () => boolean;
 }): JSX.Element {
   const inv = () => props.inventory();
   return (
@@ -53,6 +61,15 @@ export function SourcesSurface(props: {
         }
       >
         <InventoryHead inventory={inv()} />
+        {/* **Above the inventory, deliberately.** The inventory answers "what did this
+            read"; the claims answer "is what it wrote actually in there", which is the
+            harder question and the one an operator opens this panel carrying. */}
+        <ClaimsSection
+          claims={props.claims()}
+          canExtract={props.canExtract()}
+          onExtract={props.onExtract}
+          extracting={props.extracting()}
+        />
         <For each={inv().groups}>
           {(group) => (
             <div class="flex flex-col gap-1">
@@ -80,10 +97,11 @@ export function SourcesSurface(props: {
 
 /** The two figures the whole inventory is read against, and when it was last added to.
  *
- *  `origins` is the independent-source count the requirement asks for, at the level it
- *  can honestly be given: a count of distinct publishers behind the thread's reading.
- *  Per-*claim* independence would need a claim→source link, which does not exist and is
- *  deliberately not being invented here. */
+ *  `origins` is the independent-source count at the **thread** level: distinct publishers
+ *  behind everything this thread read. Per-*claim* independence is a different figure and
+ *  it now exists — the claims section above carries it, counted the same way over the
+ *  sources one assertion rests on. Both are printed because they answer different
+ *  questions, and neither stands in for the other. */
 function InventoryHead(props: { inventory: SourceInventory }): JSX.Element {
   const inv = () => props.inventory;
   return (

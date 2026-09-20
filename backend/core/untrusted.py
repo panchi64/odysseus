@@ -23,6 +23,12 @@ _INSTRUCTION = (
 )
 
 
+#: The part of the preamble that is the same on every block — everything ahead of the
+#: nonce. Derived rather than written a second time, so a reword of the instruction cannot
+#: leave :func:`unwrap_untrusted` matching a sentence nothing emits any more.
+_PREAMBLE_PREFIX = _INSTRUCTION.split("{nonce}")[0]
+
+
 def new_nonce() -> str:
     """A fresh one-time fence token.
 
@@ -75,6 +81,27 @@ def unfence(text: str) -> str:
     ):
         return "\n".join(lines[1:-1])
     return text
+
+
+def unwrap_untrusted(text: str) -> str:
+    """:func:`unfence`'s counterpart for :func:`wrap_untrusted` — the content inside a
+    *preamble plus fence*, or ``text`` unchanged when it is neither.
+
+    The two wrappers are not interchangeable and neither are their readers. A batch
+    producer emits one preamble and N bare fences, so ``unfence`` alone is the right
+    reader for one of its snippets; a single-block producer (a fetched page, an upload)
+    emits the preamble and the fence together, and ``unfence`` alone leaves the standing
+    instruction sitting at the top of the text. A reader that got the wrong one does not
+    fail — it quietly carries somebody else's nonce and an instruction addressed to a
+    different model into whatever it does next.
+
+    A presentation unwrap on text *we* wrapped, like ``unfence``, and nothing downstream
+    is more trusted for having been through it.
+    """
+    head, separator, rest = text.partition("\n")
+    if separator and head.startswith(_PREAMBLE_PREFIX):
+        return unfence(rest)
+    return unfence(text)
 
 
 def wrap_untrusted(content: str, *, source: str | None = None) -> str:
