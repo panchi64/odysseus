@@ -29,7 +29,7 @@ from sqlmodel import Session, select
 from core.citations import Citation
 from core.db import get_owned, in_session
 from core.exceptions import DegradedCapabilityError
-from core.untrusted import untrusted_fence, untrusted_preamble
+from core.untrusted import unfence, untrusted_fence, untrusted_preamble
 from core.vault import Vault
 from models.search import SearchProvider
 
@@ -60,11 +60,36 @@ class SearchResults:
     def citations(self) -> list[Citation]:
         """The hits, in result order — how the run stream learns a search's sources
         without the event translator having to know what a search result is. Already
-        URL-unique from the service, so nothing is deduped here."""
+        URL-unique from the service, so nothing is deduped here.
+
+        ``listed`` and not a stronger claim: a search hit is a title, a URL and whatever
+        the engine chose to show of the page. The page itself was not opened, and a row
+        that said otherwise would make "cited" mean no more than "an engine returned it".
+        A `web_fetch` of one of these emits it again at ``read``.
+
+        The snippet is **unfenced** here. The fence is how the text is handed to the
+        model; the citation is how it is handed to the operator, and a row opening on
+        ``[BEGIN UNTRUSTED CONTENT …]`` is marker noise in front of the sentence they
+        wanted. Nothing is more trusted for the unwrap — it never leaves this row.
+
+        **A hit with no URL is dropped rather than cited.** The parse above keeps such a
+        hit deliberately — ``if url and url in seen`` never dedups the empty string, so
+        every URL-less result an engine returns is passed to the model, which can still
+        use the snippet. A citation cannot survive the same way: it is a row the operator
+        clicks, :class:`~core.citations.Citation` refuses a web source without an address,
+        and letting one through would raise here — inside the translator's citation pass,
+        taking every *other* source in the same search down with it.
+        """
         return [
-            Citation(url=item.url, title=item.title)
+            Citation(
+                url=item.url,
+                title=item.title,
+                snippet=unfence(item.snippet),
+                published=item.published,
+                engagement="listed",
+            )
             for item in self.results
-            if isinstance(item, SearchResult)
+            if isinstance(item, SearchResult) and item.url
         ]
 
 

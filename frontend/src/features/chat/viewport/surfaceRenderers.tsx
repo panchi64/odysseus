@@ -21,6 +21,9 @@
 import { createMemo, Show, type JSX } from "solid-js";
 import { Text } from "~/ui";
 import { SubagentsSurface } from "../components/SubagentsSurface";
+import { CommandsSurface } from "../components/CommandsSurface";
+import { CoverageSurface } from "../components/CoverageSurface";
+import { SourcesSurface } from "../components/SourcesSurface";
 import { DiffSurface } from "../components/DiffSurface";
 import { FilesSurface } from "../components/FilesSurface";
 import { PlanSurface } from "../components/PlanSurface";
@@ -29,6 +32,7 @@ import { ViewportPanel } from "../components/ViewportPanel";
 import { taskSummary } from "../components/TaskRows";
 import { isLive } from "../data";
 import { flattenGroups, groupTasks } from "../taskGroups";
+import { failedCount } from "./commandItems";
 import type { ChatViewport } from "../useChatViewport";
 import { SURFACE_BY_ID, type SurfaceId } from "./surfaces";
 
@@ -62,6 +66,7 @@ export const SURFACE_RENDERERS: Record<
       onSettled={ctx.viewport.refetchSubagents}
     />
   ),
+  commands: (ctx) => <CommandsSurface commands={ctx.viewport.commands} />,
   diff: (ctx) => (
     <DiffSurface
       branch={ctx.viewport.branch}
@@ -70,6 +75,8 @@ export const SURFACE_RENDERERS: Record<
       softWrap={ctx.viewport.state().softWrap}
     />
   ),
+  sources: (ctx) => <SourcesSurface inventory={ctx.viewport.sources} />,
+  coverage: (ctx) => <CoverageSurface coverage={ctx.viewport.coverage} />,
   files: (ctx) => (
     <FilesSurface
       items={ctx.viewport.items}
@@ -147,6 +154,70 @@ export const SURFACE_META: Partial<
           {count().working > 0
             ? `${count().working} working`
             : `${count().total} done`}
+        </Text>
+      </Show>
+    );
+  },
+  sources: (ctx) => {
+    // **Two figures, because either alone misleads.** A source count says how much was
+    // read; an origin count says how much of it is independent, and five pages off one
+    // site is a different piece of evidence from five sites agreeing. The header has
+    // room for both only because both are short.
+    const count = createMemo(() => {
+      const inv = ctx.viewport.sources();
+      return { total: inv.items.length, origins: inv.originCount };
+    });
+    return (
+      <Show when={count().total > 0}>
+        <Text variant="micro" tone="dim" class="tabular-nums">
+          {`${count().total} · ${count().origins} orig`}
+        </Text>
+      </Show>
+    );
+  },
+  coverage: (ctx) => {
+    // **What is missing, then what is contested, then what is merely there.** A header
+    // has room for one figure, and the ranking is by which of them would make an
+    // operator open the pane — a named gap is the thing the map exists to surface, and
+    // a topic count is what they read once they are already inside.
+    const count = createMemo(() => {
+      const c = ctx.viewport.coverage();
+      return {
+        topics: c.topics.length,
+        gaps: c.topics.reduce((n, t) => n + t.gaps.length, 0),
+        conflicts: c.conflicts.length,
+      };
+    });
+    return (
+      <Show when={count().topics > 0 || count().conflicts > 0}>
+        <Text
+          variant="micro"
+          tone={count().gaps > 0 || count().conflicts > 0 ? "warn" : "dim"}
+          class="tabular-nums"
+        >
+          {count().gaps > 0
+            ? `${count().gaps} ${count().gaps === 1 ? "gap" : "gaps"}`
+            : count().conflicts > 0
+              ? `${count().conflicts} contested`
+              : `${count().topics}`}
+        </Text>
+      </Show>
+    );
+  },
+  commands: (ctx) => {
+    // **Failures first, and the total only where there are none.** A pane header has
+    // room for one figure, and "3 failed" is the one that would make an operator open
+    // it; the running total is what they read once they are already inside. The word
+    // carries it as well as the tone, so the figure still says which kind it is when
+    // the colour does not reach the reader (§12).
+    const count = createMemo(() => {
+      const all = ctx.viewport.commands();
+      return { total: all.length, failed: failedCount(all) };
+    });
+    return (
+      <Show when={count().total > 0}>
+        <Text variant="micro" tone={count().failed > 0 ? "alert" : "dim"}>
+          {count().failed > 0 ? `${count().failed} failed` : `${count().total}`}
         </Text>
       </Show>
     );

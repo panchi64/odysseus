@@ -98,6 +98,22 @@ export const SURFACES = [
     defaultWidth: 460,
   },
   {
+    // A **panel**, and it sits here — after the work and before its result — because
+    // that is what it is: the record of what the thread ran, between who was working
+    // and what changed. It is not a strip, despite each row being one line: a command's
+    // *output* is the reason to open this at all, and a stack of eight rows that cannot
+    // grow is a stack where the failure's stderr has nowhere to go.
+    id: "commands",
+    shape: "panel",
+    label: "Commands",
+    icon: "terminal",
+    // A command line and its output are both long and neither wraps well, so the floor
+    // is the View's rather than the diff's — one column of monospace, not two.
+    minWidth: 340,
+    minHeight: 240,
+    defaultWidth: 480,
+  },
+  {
     id: "diff",
     shape: "panel",
     label: "Changes",
@@ -127,6 +143,39 @@ export const SURFACES = [
     minWidth: 320,
     minHeight: 240,
     defaultWidth: 420,
+  },
+  {
+    // The research pair, and they sit **after** the code thread's surfaces rather than
+    // among them because the two sets never appear together: a thread reads the web or
+    // it runs a worktree, and a research thread's header offers Tasks, Plan, Agents and
+    // these two with nothing in between. Ordering them here rather than interleaved
+    // keeps the registry readable as the two arcs it actually holds.
+    //
+    // A **panel**: an inventory is read at length and every row can open onto a passage.
+    // As a strip it would be the first three sources again, which is the exact failure
+    // this surface exists to fix.
+    id: "sources",
+    shape: "panel",
+    label: "Sources",
+    icon: "research",
+    // A title, an origin and a snippet in one column. Narrower than the diff's floor
+    // because nothing here is two-up; wider than the View's because a snippet that
+    // wraps every four words is a snippet nobody reads.
+    minWidth: 340,
+    minHeight: 260,
+    defaultWidth: 480,
+  },
+  {
+    // A **panel**, and the widest of the two: a disagreement renders its positions side
+    // by side, which is the whole reason it is legible, and a surface that could only
+    // ever stack them would be showing two paragraphs instead of a comparison.
+    id: "coverage",
+    shape: "panel",
+    label: "Coverage",
+    icon: "layers",
+    minWidth: 360,
+    minHeight: 280,
+    defaultWidth: 520,
   },
 ] as const satisfies readonly SurfaceSpec[];
 

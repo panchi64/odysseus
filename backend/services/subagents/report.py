@@ -31,9 +31,24 @@ styled bubble in the forger's own thread. The load-bearing answer to "who sent t
 It lives in ``services/`` rather than beside the injection point because both of those
 readers are below the agent layer, and the alternative to one home is two copies of a
 marker that only works while they agree.
+
+**A report also has a structured half**, appended inside the same envelope and defined in
+the second section of this module: findings, conflicts and per-topic coverage as data, so
+a fan-out of researchers can be read as a coverage map rather than as N essays. Same
+reasoning for the same home — the writer, the parser and the brief that asks for it only
+work while they agree on one format.
 """
 
 from __future__ import annotations
+
+import json
+import logging
+import re
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, ValidationError
+
+logger = logging.getLogger(__name__)
 
 #: The opener the transcript matches on, and the closer that bounds the body.
 REPORT_OPEN = "<subagent-report>"
@@ -105,3 +120,194 @@ def direction_envelope(text: str) -> str:
 def direction_body(text: str) -> str | None:
     """The direction inside an envelope, or ``None`` when this is not one."""
     return _unwrap(_DIRECTION_HEADER, DIRECTION_CLOSE, text)
+
+
+# --- The report's structured half --------------------------------------------------
+#
+# A report was prose and nothing else, which is fine for the *model* reading it — prose is
+# what a model is for — and useless for everything else. The operator asks three questions
+# of a fan-out of researchers that prose cannot answer without being read end to end: what
+# was actually established, where the sources disagree, and which corners of the question
+# nobody covered. Those are the same three questions for every research thread, which is
+# what makes them a shape rather than a summary.
+#
+# **Beside the prose, never instead of it.** The block is appended inside the same
+# envelope, so the launching model reads the report exactly as it did before and a
+# sub-agent that emits no block — or a malformed one — costs a panel, not a report. That
+# degrade is the whole reason this parses leniently and logs rather than raising: a
+# report is the only thing that survives a sub-agent, and losing one to a stray comma
+# would be the worst possible trade.
+#
+# **It is a shape, not attribution.** A finding names the sources it rests on; it does not
+# link a sentence of the launching agent's eventual answer to a sentence of a source.
+# Claim-level attribution is an open design question with real trade-offs, and nothing
+# here should be read as having pre-empted it.
+
+#: Bounds the JSON block inside the report. Its own markers rather than a ``` fence: a
+#: research report quotes code and quotes markdown, and a delimiter a source can contain is
+#: a delimiter that eventually cuts the report in the wrong place.
+FINDINGS_OPEN = "<subagent-findings>"
+FINDINGS_CLOSE = "</subagent-findings>"
+
+_FINDINGS_BLOCK = re.compile(
+    re.escape(FINDINGS_OPEN) + r"\s*(?P<json>.*?)\s*" + re.escape(FINDINGS_CLOSE),
+    re.DOTALL,
+)
+
+Confidence = Literal["high", "medium", "low"]
+
+#: How well a topic was covered. ``none`` is a real and useful answer — a topic nobody
+#: reached is exactly what a coverage map exists to show, and a sub-agent that omitted the
+#: row instead would make a gap indistinguishable from a topic it never thought of.
+Depth = Literal["none", "thin", "adequate", "deep"]
+
+
+class _Lenient(BaseModel):
+    """Unknown keys are dropped rather than rejected. The author is a model writing JSON
+    by hand at the end of a long task; a field it invented is not a reason to throw the
+    report's structure away."""
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class ReportSource(_Lenient):
+    """Where a sub-agent read something. ``url`` for a page, ``ref`` for a passage out of
+    the operator's own corpus — the same split :class:`core.citations.Citation` carries,
+    because a report naming its sources and the run stream naming them have to be talking
+    about the same things."""
+
+    url: str | None = None
+    ref: str | None = None
+    title: str | None = None
+
+
+class Finding(_Lenient):
+    """One thing the sub-agent established, and what it rests on.
+
+    ``sources`` is what makes this a finding rather than an assertion: the count of
+    *independent* sources behind a claim is the thing a reader most wants and most rarely
+    gets, and it is a count only if the sources are listed.
+    """
+
+    statement: str
+    confidence: Confidence = "medium"
+    sources: list[ReportSource] = []
+    #: Which topic of the investigation this belongs to, matched by name against
+    #: :class:`TopicCoverage.topic`. Free text — the topics are the launching agent's own
+    #: words, and a vocabulary fixed here could not name them.
+    topic: str | None = None
+
+
+class ConflictPosition(_Lenient):
+    """One side of a disagreement, and who is on it."""
+
+    claim: str
+    sources: list[ReportSource] = []
+
+
+class Conflict(_Lenient):
+    """A question the sources answer differently.
+
+    First-class rather than synthesized away, which is the point: a summary that picks a
+    side silently is indistinguishable from sources that agreed, and the disagreement is
+    usually the most informative thing the research found. ``assessment`` is where the
+    sub-agent says which it finds more credible *and why* — it may take a side, as long as
+    the taking is visible.
+    """
+
+    question: str
+    positions: list[ConflictPosition] = []
+    assessment: str | None = None
+
+
+class TopicCoverage(_Lenient):
+    """How far the investigation actually got on one topic."""
+
+    topic: str
+    depth: Depth = "thin"
+    source_count: int = 0
+    #: What is missing, in the sub-agent's own words. A named gap is worth more than a
+    #: confident sentence covering it.
+    gaps: list[str] = []
+
+
+class ReportStructure(_Lenient):
+    """The report as data. Every list may be empty — a sub-agent that found nothing, hit
+    no contradiction and covered one topic is reporting honestly, not failing."""
+
+    findings: list[Finding] = []
+    conflicts: list[Conflict] = []
+    coverage: list[TopicCoverage] = []
+    #: Questions the sub-agent could not settle, including any it was not equipped to.
+    unresolved: list[str] = []
+
+
+#: What a reporting sub-agent is told about the block, appended to the briefs of the ones
+#: whose reports are worth a panel. Deliberately explicit that the prose still comes first:
+#: a sub-agent that replaced its report with JSON would have obeyed this and destroyed the
+#: thing the launching agent actually reads.
+FINDINGS_INSTRUCTION = (
+    "End your report with a machine-readable summary of it, after your prose and never "
+    f"instead of it. Put it between {FINDINGS_OPEN} and {FINDINGS_CLOSE}, as one JSON "
+    "object with these keys, each a list and each allowed to be empty:\n"
+    '- "findings": {"statement", "confidence" (high|medium|low), "topic", '
+    '"sources": [{"url", "ref", "title"}]} — one per thing you established, with every '
+    "source you established it from, not just the best one.\n"
+    '- "conflicts": {"question", "positions": [{"claim", "sources"}], "assessment"} — '
+    "one per question your sources answered differently. Do not resolve a disagreement "
+    "by leaving it out; say in `assessment` which you find more credible and why.\n"
+    '- "coverage": {"topic", "depth" (none|thin|adequate|deep), "source_count", "gaps"} '
+    "— one per topic you were asked about, including the ones you got nowhere on. A "
+    '"none" row is more useful than a missing one.\n'
+    '- "unresolved": plain strings, the questions you could not settle.\n'
+    "Everything in it must also be in your prose. It is the same report read by "
+    "something that cannot read prose, not a second, shorter report."
+)
+
+
+def findings_block(structure: ReportStructure) -> str:
+    """``structure`` as the block a report ends with — the writer's half of the parser
+    below, so tests and any future non-model producer share one format."""
+    payload = structure.model_dump(mode="json", exclude_none=True)
+    return f"{FINDINGS_OPEN}\n{json.dumps(payload, indent=2)}\n{FINDINGS_CLOSE}"
+
+
+def report_structure(text: str) -> ReportStructure | None:
+    """The structured block inside a report, or ``None`` when there isn't a usable one.
+
+    Takes the report with or without its envelope, because both readers have one in hand
+    at different points and neither should have to unwrap first.
+
+    **Never raises.** A sub-agent that emitted no block, emitted broken JSON, or emitted
+    something that is not an object at all costs the operator a panel and nothing else —
+    the prose report is untouched and is what the launching agent reads either way. The
+    failure is logged because a *persistently* unparseable block is a brief that needs
+    rewording, and that is invisible otherwise.
+    """
+    match = _FINDINGS_BLOCK.search(text)
+    if match is None:
+        return None
+    try:
+        payload = json.loads(match.group("json"))
+    except ValueError as exc:
+        logger.info("subagents: report findings block was not JSON (%s)", exc)
+        return None
+    if not isinstance(payload, dict):
+        logger.info("subagents: report findings block was not an object")
+        return None
+    try:
+        return ReportStructure.model_validate(payload)
+    except ValidationError as exc:
+        logger.info("subagents: report findings block did not validate (%s)", exc)
+        return None
+
+
+def report_prose(text: str) -> str:
+    """The report with its structured block taken out — what a human reads.
+
+    The operator gets the prose and the panel gets the structure, and neither should be
+    shown the other's copy: a card ending in forty lines of JSON is a card nobody reads to
+    the end. The *model* still sees the whole envelope, block included, which is
+    deliberate — it is the one reader that can use both.
+    """
+    return _FINDINGS_BLOCK.sub("", text).strip()

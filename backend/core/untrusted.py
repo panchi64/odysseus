@@ -51,6 +51,32 @@ def untrusted_fence(content: str, nonce: str, *, source: str | None = None) -> s
     return f"{begin}\n{content}\n{end}"
 
 
+def unfence(text: str) -> str:
+    """The content inside a fence, or ``text`` unchanged when it is not one.
+
+    The fence is how external text is handed to the *model*, and it is the right shape
+    there. It is the wrong shape everywhere else: the same snippet also reaches the
+    operator as a citation, and a row reading ``[BEGIN UNTRUSTED CONTENT 4f2a…]`` before
+    the sentence is marker noise in front of the thing they wanted to read. So a producer
+    keeps one fenced copy for the model and recovers the bare text here rather than
+    carrying a second, drifting copy of every snippet in the payload.
+
+    Deliberately shape-matched and not nonce-aware: this is a presentation unwrap on text
+    *we* fenced, never a security decision. Nothing downstream is more trusted for having
+    been through it.
+    """
+    lines = text.split("\n")
+    if (
+        len(lines) >= 2
+        and lines[0].startswith("[BEGIN UNTRUSTED CONTENT ")
+        and lines[0].endswith("]")
+        and lines[-1].startswith("[END UNTRUSTED CONTENT ")
+        and lines[-1].endswith("]")
+    ):
+        return "\n".join(lines[1:-1])
+    return text
+
+
 def wrap_untrusted(content: str, *, source: str | None = None) -> str:
     """Wrap externally-sourced ``content`` so the model treats it as data.
 

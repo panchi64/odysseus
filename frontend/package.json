@@ -22,6 +22,7 @@
     "@solidjs/vite-plugin-nitro-2": "^0.1.0",
     "katex": "^0.17.0",
     "marked": "^18.0.13",
+    "mermaid": "^12.0.0",
     "pdfjs-dist": "^6.3.289",
     "shiki": "^4.4.3",
     "solid-js": "^1.9.15",

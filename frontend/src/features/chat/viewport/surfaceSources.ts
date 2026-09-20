@@ -18,10 +18,12 @@
  * error rather than a button that never appears.
  */
 
-import type { PlanDocument } from "../model";
+import type { HostCommand, PlanDocument } from "../model";
 import type { TaskItem } from "~/lib/stream/events";
 import type { Subagent } from "../data";
 import type { BranchState } from "../data";
+import { hasCoverage } from "./coverageItems";
+import type { SourceInventory } from "./sourceItems";
 import { SURFACE_IDS, type SurfaceId } from "./surfaces";
 import type { ViewItem } from "./viewItems";
 
@@ -63,6 +65,10 @@ export interface SurfaceDeps {
   plan: () => PlanDocument | null;
   branch: () => BranchState | null | undefined;
   subagents: () => Subagent[];
+  commands: () => HostCommand[];
+  /** Every source the thread has read, already folded. Derived from the transcript
+   *  like `commands`, so this opens no fetch either — see the module note. */
+  sources: () => SourceInventory;
 }
 
 export function createSurfaceSources(
@@ -114,6 +120,20 @@ export function createSurfaceSources(
       arrival: () => "announce",
       claimKey: () => "",
     },
+    // A thread that has run nothing has no command log, and the first command it runs
+    // is what brings the surface into existence — derived from the transcript, so there
+    // is no fetch here and none is allowed (see the module note).
+    commands: {
+      available: () => deps.commands().length > 0,
+      // **Announce, even for a failure.** A failed command is worth knowing about and
+      // the operator already learns of it where it happened: the terminal in the
+      // transcript opens itself, in the turn they are reading. Stealing the panel on
+      // top of that would take the screen away from the thing it is telling them about
+      // — and would do it on every failing command in a thread that is *expected* to
+      // fail commands, which is most of a code thread's working day.
+      arrival: () => "announce",
+      claimKey: () => "",
+    },
     // Only a code thread has a branch at all; the fetch answers 404 for every other
     // kind, which is the ordinary case rather than a failure.
     diff: {
@@ -130,6 +150,30 @@ export function createSurfaceSources(
       available: () => deps.viewItems().some((i) => i.snapshot),
       // Nobody is ever waiting on a file listing.
       arrival: () => "silent",
+      claimKey: () => "",
+    },
+    // The first thing the thread reads brings the inventory into existence — derived
+    // from the transcript's citations, so there is no fetch here and none is allowed.
+    sources: {
+      available: () => deps.sources().items.length > 0,
+      // **Announce.** The answer being written above is what the operator is reading,
+      // and the sources are what they check it against *afterwards*. A panel that
+      // opened itself on the first search hit would take the screen away from the turn
+      // producing it, on every research thread, at the earliest possible moment.
+      arrival: () => "announce",
+      claimKey: () => "",
+    },
+    // **Only once a report has structure in it.** A thread with sub-agents still out
+    // has an Agents panel saying so; a Coverage panel with no coverage in it is a
+    // heading over nothing, and the arrival state it would show is the one fact the
+    // other panel already carries. Once one report lands, this is where the outstanding
+    // ones are named — because there the absence is load-bearing.
+    coverage: {
+      available: () => hasCoverage(deps.subagents()),
+      // A report landing is the fan-out working as designed, not something waiting on
+      // the operator. What *is* waiting on them — a parked sub-agent — interrupts
+      // through the approval dock, which is where they answer it.
+      arrival: () => "announce",
       claimKey: () => "",
     },
     // A thread's View is its captured versions plus any live head.
@@ -162,7 +206,7 @@ export interface ArrivalClaim {
  * empty View and had to close the panel to find the plan behind it.
  *
  * Registry order decides, because it is already declared in order of how much the surface
- * can be waiting on the operator (`surfaces.ts`: tasks, plan, agents, diff, view, files).
+ * can be waiting on the operator (`surfaces.ts`, in that file's own order).
  * A second priority list beside it would be one more thing to keep in step.
  *
  * Pure, and the claim is passed in: the one-shot bookkeeping is the room's (it is keyed

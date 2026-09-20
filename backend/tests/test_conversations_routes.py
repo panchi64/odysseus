@@ -185,6 +185,74 @@ async def test_list_distinguishes_a_parked_run_from_a_streaming_one(monkeypatch)
         assert (await client.get("/conversations")).json()[0]["activity"] is None
 
 
+async def test_a_finished_turn_is_distinguishable_from_a_thread_that_never_ran(monkeypatch):
+    """`activity` covers the three live statuses only, so a terminal run used to collapse
+    to the same null an idle thread reports — done, failed and never-started were one
+    row. `last_outcome` is the sibling that separates them."""
+    patch_model_resolution(monkeypatch, output_text="hello there")
+    async with client_app() as (client, _app):
+        conversation_id = await _start_conversation(client)
+
+        row = (await client.get("/conversations")).json()[0]
+        assert row["activity"] is None
+        assert row["last_outcome"] == "done"
+
+        # And on the read of the thread itself, which carries the listing row's shape.
+        detail = (await client.get(f"/conversations/{conversation_id}")).json()
+        assert detail["last_outcome"] == "done"
+
+
+async def test_a_failed_run_says_so_on_the_row(monkeypatch):
+    """The whole point: a thread whose last turn blew up looks different in the rail
+    from one sitting quietly, without opening it."""
+    patch_model_resolution(monkeypatch, output_text="hello there")
+    async with client_app() as (client, app):
+        conversation_id = await _start_conversation(client)
+
+        async def orch(_run):
+            raise RuntimeError("the turn fell over")
+
+        run = app.state.runs.submit(
+            kind="chat",
+            owner_id="operator",
+            orchestrator=orch,
+            conversation_id=conversation_id,
+        )
+        await run.wait()
+
+        row = (await client.get("/conversations")).json()[0]
+        assert row["activity"] is None
+        assert row["last_outcome"] == "error"
+
+
+async def test_a_live_run_keeps_the_previous_outcome_beside_it(monkeypatch):
+    """The two fields answer different questions and are read together: what this thread
+    is doing now, and how it last ended. A thread can be running having failed before."""
+    patch_model_resolution(monkeypatch, output_text="hello there")
+    async with client_app() as (client, app):
+        conversation_id = await _start_conversation(client)
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def orch(_run):
+            started.set()
+            await release.wait()
+
+        run = app.state.runs.submit(
+            kind="chat",
+            owner_id="operator",
+            orchestrator=orch,
+            conversation_id=conversation_id,
+        )
+        await started.wait()
+
+        row = (await client.get("/conversations")).json()[0]
+        assert row["activity"] == "running"
+        assert row["last_outcome"] == "done"  # the turn that created the thread
+
+        release.set()
+        await run.wait()
+
+
 async def test_rename_conversation(monkeypatch):
     patch_model_resolution(monkeypatch, output_text="hello there")
     async with client_app() as (client, _app):

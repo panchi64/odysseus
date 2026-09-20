@@ -22,10 +22,11 @@ import {
   createSurfaceSources,
   type SurfaceDeps,
 } from "./surfaceSources";
-import type { PlanDocument, PlanStatus } from "../model";
+import type { HostCommand, PlanDocument, PlanStatus } from "../model";
 import type { TaskItem } from "~/lib/stream/events";
 import type { BranchState } from "../data";
 import type { ViewItem } from "./viewItems";
+import { buildInventory } from "./sourceItems";
 
 const taskItem = (content: string): TaskItem => ({
   id: content,
@@ -39,6 +40,13 @@ const planDoc = (status: PlanStatus, revision = 1): PlanDocument => ({
   steps: ["read it", "change it"],
   status,
   revision,
+});
+
+const command = (phase: HostCommand["phase"]): HostCommand => ({
+  toolCallId: `c-${phase}`,
+  name: "shell_run_command",
+  command: "bun run test",
+  phase,
 });
 
 const viewItem = (withSnapshot: boolean): ViewItem =>
@@ -56,6 +64,8 @@ const sources = (over: Partial<SurfaceDeps> = {}) =>
     plan: () => null,
     branch: () => null,
     subagents: () => [],
+    commands: () => [],
+    sources: () => buildInventory([]),
     ...over,
   });
 
@@ -67,6 +77,21 @@ describe("availability", () => {
     expect(s.plan.available()).toBe(false);
     expect(s.diff.available()).toBe(false);
     expect(s.files.available()).toBe(false);
+    expect(s.commands.available()).toBe(false);
+  });
+
+  test("one command is a command log", () => {
+    // The first command a thread runs is what brings the surface into existence —
+    // there is no threshold, because two is not more of a log than one.
+    const s = sources({ commands: () => [command("ok")] });
+    expect(s.commands.available()).toBe(true);
+    // And it announces rather than steals, *including* when it failed: the terminal in
+    // the transcript already opened itself in the turn the operator is reading, and
+    // taking the screen away from that is taking it away from the thing being reported.
+    expect(s.commands.arrival()).toBe("announce");
+    expect(
+      sources({ commands: () => [command("error")] }).commands.arrival(),
+    ).toBe("announce");
   });
 
   test("an empty task list is not a task list", () => {

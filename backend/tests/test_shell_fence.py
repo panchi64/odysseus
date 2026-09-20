@@ -122,17 +122,23 @@ def _ctx(tmp_path: Path, root: Path, *, egress=None) -> RunContext[RunDeps]:
 
 
 class _Shell:
-    """The four tools, driven the way the engine drives them."""
+    """The four tools, driven the way the engine drives them.
+
+    The result comes back as the tool returned it — a dict when the command ran, a plain
+    string when the guard refused before anything was spawned. That difference is the
+    contract the operator's terminal reads too, so a test helper that stringified both
+    would be hiding the one thing worth asserting about a refusal.
+    """
 
     def __init__(self, toolset, ctx) -> None:
         self._toolset = toolset
         self.ctx = ctx
         self._tools: dict | None = None
 
-    async def call(self, name: str, **args) -> str:
+    async def call(self, name: str, **args):
         if self._tools is None:
             self._tools = await self._toolset.get_tools(self.ctx)
-        return str(await self._toolset.call_tool(name, args, self.ctx, self._tools[name]))
+        return await self._toolset.call_tool(name, args, self.ctx, self._tools[name])
 
 
 async def _shell(tmp_path: Path, *, confiner=unfenced, egress=None, approved=True) -> _Shell:
@@ -157,16 +163,17 @@ async def test_a_cd_moves_where_the_next_command_runs(tmp_path):
     before = await shell.call("run_command", command="pwd")
     await shell.call("run_command", command="cd sub")
     after = await shell.call("run_command", command="pwd")
-    assert after.strip().endswith("/sub")
-    assert after != before
+    assert after["stdout"].strip().endswith("/sub")
+    assert after["stdout"] != before["stdout"]
 
 
 async def test_a_failed_cd_leaves_the_directory_where_it_was(tmp_path):
     shell = await _shell(tmp_path)
     before = await shell.call("run_command", command="pwd")
     result = await shell.call("run_command", command="cd nowhere-at-all")
-    assert "[exit code:" in result
-    assert await shell.call("run_command", command="pwd") == before
+    assert result["ok"] is False and result["exit_code"] != 0
+    after = await shell.call("run_command", command="pwd")
+    assert after["stdout"] == before["stdout"]
 
 
 async def test_a_destructive_command_comes_back_as_a_retry(tmp_path):
@@ -174,25 +181,28 @@ async def test_a_destructive_command_comes_back_as_a_retry(tmp_path):
     with pytest.raises(ModelRetry):
         await shell.call("run_command", command="rm -rf /")
     # ...and the turn is still usable: a refusal spawned nothing to clean up.
-    assert "ok" in await shell.call("run_command", command="echo ok")
+    assert "ok" in (await shell.call("run_command", command="echo ok"))["stdout"]
 
 
 async def test_a_background_command_is_started_checked_and_stopped(tmp_path):
     shell = await _shell(tmp_path)
     started = await shell.call("start_command", command="echo up; sleep 30")
-    command_id = started.rsplit("ID: ", 1)[1].strip()
+    command_id = started["command_id"]
+    assert started["command"] == "echo up; sleep 30"
 
     for _ in range(50):  # the process has to reach its first write
         checked = await shell.call("check_command", command_id=command_id)
-        if "up" in checked:
+        if "up" in checked["stdout"]:
             break
         await asyncio.sleep(0.05)
-    assert "up" in checked and "[status: running]" in checked
+    assert "up" in checked["stdout"] and checked["status"] == "running"
+    assert checked["exit_code"] is None
 
     stopped = await shell.call("stop_command", command_id=command_id)
-    assert "[stopped]" in stopped
+    assert stopped["status"] == "stopped"
     # The id is spent: a second stop finds nothing rather than killing a reused pid.
-    assert "unknown command ID" in await shell.call("stop_command", command_id=command_id)
+    again = await shell.call("stop_command", command_id=command_id)
+    assert again["ok"] is False and command_id in again["error"]
 
 
 async def test_a_cancelled_command_takes_its_process_tree_with_it(tmp_path):
@@ -223,7 +233,8 @@ async def test_a_cancelled_command_takes_its_process_tree_with_it(tmp_path):
 
 async def test_an_unknown_background_id_is_answered_not_raised(tmp_path):
     shell = await _shell(tmp_path)
-    assert "unknown command ID" in await shell.call("check_command", command_id="nope")
+    answered = await shell.call("check_command", command_id="nope")
+    assert answered["ok"] is False and "nope" in answered["error"]
 
 
 async def test_the_operators_model_keys_are_not_in_the_environment(tmp_path, monkeypatch):
@@ -232,9 +243,9 @@ async def test_the_operators_model_keys_are_not_in_the_environment(tmp_path, mon
     monkeypatch.setenv("OPENAI_API_KEY", "sk-should-not-appear")
     monkeypatch.setenv("HARMLESS_VAR", "kept")
     shell = await _shell(tmp_path)
-    printed = await shell.call(
-        "run_command", command="echo ${OPENAI_API_KEY:-absent} $HARMLESS_VAR"
-    )
+    printed = (
+        await shell.call("run_command", command="echo ${OPENAI_API_KEY:-absent} $HARMLESS_VAR")
+    )["stdout"]
     assert "sk-should-not-appear" not in printed
     assert "absent" in printed and "kept" in printed
 
@@ -350,10 +361,94 @@ async def test_every_command_goes_through_the_fence_including_background_ones(tm
     shell = await _shell(tmp_path, confiner=recorder)
     await shell.call("run_command", command="echo one")
     started = await shell.call("start_command", command="sleep 5")
-    await shell.call("stop_command", command_id=started.rsplit("ID: ", 1)[1].strip())
+    await shell.call("stop_command", command_id=started["command_id"])
     # `check` and `stop` act on a process already fenced into existence; the two that
     # start something are the two that must be wrapped.
     assert len(recorder.calls) == 2
+
+
+# --- what the result says about the fence ----------------------------------------------
+#
+# Only the Auto level reviews a call, and only a review puts the declared reach and the
+# fence's verdict on the stream. Every other level runs the command with no such account
+# at all — so the two facts ride the result, where they are true at all five and survive a
+# cold reload. The tool never sees the level, which is exactly why this works.
+
+
+async def test_the_result_says_what_was_declared_and_that_it_was_fenced(tmp_path):
+    shell = await _shell(tmp_path)
+    result = await shell.call("run_command", command="echo fenced")
+    assert result["reach"] == "workspace" and result["fenced"] is True
+    # Nothing to explain: a reason beside a fenced command would be furniture.
+    assert "unfenced_reason" not in result
+
+
+async def test_a_host_declaration_is_unfenced_and_says_it_asked_to_be(tmp_path):
+    # One of the two explicit yeses. An operator reading "unfenced" with nothing beside it
+    # would be right to read it as the gate having broken, so the reason is not optional.
+    shell = await _shell(tmp_path)
+    result = await shell.call("run_command", command="echo hi", reach="host")
+    assert result["fenced"] is False
+    assert "host" in result["unfenced_reason"]
+
+
+async def test_a_workspace_command_that_reaches_the_network_says_which_way_it_contradicted(
+    tmp_path,
+):
+    # The other yes, and the one readable nowhere else: the contradiction is in the
+    # command's syntax, not in its arguments, so `reach: workspace` beside an unfenced
+    # command would otherwise look like a bug.
+    shell = await _shell(tmp_path)
+    result = await shell.call("run_command", command="echo https://example.com/thing")
+    assert result["reach"] == "workspace" and result["fenced"] is False
+    assert "network" in result["unfenced_reason"]
+
+
+async def test_a_command_naming_a_path_outside_the_worktree_names_it_in_the_reason(tmp_path):
+    shell = await _shell(tmp_path)
+    result = await shell.call("run_command", command="cat /etc/hosts")
+    assert result["fenced"] is False and "/etc/hosts" in result["unfenced_reason"]
+
+
+async def test_a_background_command_carries_the_same_two_facts(tmp_path):
+    shell = await _shell(tmp_path)
+    started = await shell.call("start_command", command="sleep 5")
+    assert started["reach"] == "workspace" and started["fenced"] is True
+    await shell.call("stop_command", command_id=started["command_id"])
+
+
+async def test_a_running_commands_output_reaches_the_operators_stream(tmp_path, monkeypatch):
+    # `tool.progress` is the frame a cold sandbox start already uses; what is new is that
+    # a command emits many of them, each carrying the *next* piece of output rather than
+    # the whole of it so far.
+    frames: list = []
+
+    async def emit(_self, event):
+        frames.append(event)
+        return event
+
+    monkeypatch.setattr(RunContext, "emit", emit)
+    shell = await _shell(tmp_path)
+    shell.ctx.tool_call_id = "call-1"
+    result = await shell.call("run_command", command="echo streaming; sleep 1.2; echo more")
+
+    bodies = [frame.body for frame in frames]
+    assert bodies and all(body.tool_call_id == "call-1" for body in bodies)
+    assert all(body.elapsed_s is not None for body in bodies)
+    streamed = "".join(body.partial or "" for body in bodies)
+    assert "streaming" in streamed and "more" in streamed
+    # No frame repeats what an earlier one already carried.
+    assert streamed.count("streaming") == 1
+    assert "streaming" in result["stdout"]
+
+
+async def test_a_call_with_nothing_to_attribute_a_frame_to_streams_nothing(tmp_path):
+    # Every other test in this file drives the tools with no `tool_call_id`, which is what
+    # a direct call outside a run looks like — and `RunContext.emit` raises there. So this
+    # asserts what those tests rely on: no call id, no progress, no failure.
+    shell = await _shell(tmp_path)
+    assert shell.ctx.tool_call_id is None
+    assert (await shell.call("run_command", command="echo quiet"))["ok"] is True
 
 
 async def test_the_first_command_of_a_conversation_asks_the_operator(tmp_path):
@@ -361,4 +456,5 @@ async def test_the_first_command_of_a_conversation_asks_the_operator(tmp_path):
     with pytest.raises(ApprovalRequired):
         await shell.call("run_command", command="echo hi")
     # Checking on something already approved into existence does not re-ask.
-    assert "unknown command ID" in await shell.call("check_command", command_id="whatever")
+    checked = await shell.call("check_command", command_id="whatever")
+    assert checked["ok"] is False and "whatever" in checked["error"]

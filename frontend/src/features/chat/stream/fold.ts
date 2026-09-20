@@ -31,10 +31,11 @@ import type { SetStoreFunction } from "solid-js/store";
 import { produce } from "solid-js/store";
 import { CONTEXT_OVERFLOW_AFTER_FOLD_DETAIL } from "~/lib/stream";
 import type { ContextWindow, RunEvent, TaskItem } from "~/lib/stream";
-import { permissionLevel } from "../model";
+import { ENGAGEMENT_ORDER, permissionLevel } from "../model";
 import type { PermissionLevel, PlanDocument } from "../model";
 import { toast } from "~/ui";
 import {
+  commandBoundary,
   formatArgs,
   stringifyResult,
   toStats,
@@ -45,12 +46,19 @@ import {
 } from "../data/mappers";
 import { refreshSessions } from "../data/sessions";
 import { revealTitle } from "../data/titleReveals";
-import type { ChatMessage, ConversationStats, ViewSnapshotRef } from "../model";
-import { terminalResult } from "../toolPresentation";
+import type {
+  ChatMessage,
+  Citation,
+  ConversationStats,
+  HostCommand,
+  ViewSnapshotRef,
+} from "../model";
+import { isTerminalTool } from "../toolPresentation";
 import { describeToolArgs, describeToolResult } from "../toolSummary";
 import {
   appendDelta,
   clearPark,
+  findHost,
   findReview,
   findTool,
   nextId,
@@ -137,7 +145,7 @@ export function createFolder(
         // Which tools those are is the table's answer, not a name test here — see
         // `ToolEntry.terminal`. (tool.started fires before approval.required, so this
         // seeds the pending terminal.)
-        if (terminalResult(ev.name)) {
+        if (isTerminalTool(ev.name)) {
           patchById(assistantId, (m) =>
             upsertHost(m, ev.tool_call_id, ev.name, {
               command:
@@ -165,27 +173,63 @@ export function createFolder(
         });
         break;
       case "tool.progress":
-        // A running tool's status note (e.g. the sandbox spinning up). Folds onto
-        // the generic tool card; a terminal has its own lifecycle and no block for
-        // this to land on, so the lookup simply misses.
+        // One frame, two readings, and **the block that already exists is what says
+        // which**. A terminal is a command printing as it runs, so its frames are
+        // *deltas* arriving every half-second and they APPEND — dropping the previous
+        // piece would leave a terminal showing only whatever the last half-second
+        // happened to print. Everything else sends a status note ("starting the
+        // sandbox"), which is one fact restated, so it REPLACES.
+        //
+        // Reading it off the block rather than off the tool name is what keeps this
+        // from being a second copy of the tool table: the event carries no name, and a
+        // call's own block already encodes the answer the table gave when the call
+        // started.
         patchById(assistantId, (m) => {
+          const host = findHost(m, ev.tool_call_id);
+          if (host) {
+            if (ev.partial)
+              host.command.streamed =
+                (host.command.streamed ?? "") + ev.partial;
+            // Seconds since the spawn, from the run rather than from a clock here.
+            // The settled result carries the authoritative figure and overwrites it.
+            if (ev.elapsed_s != null)
+              host.command.elapsedMs = Math.round(ev.elapsed_s * 1000);
+            return;
+          }
           const b = findTool(m, ev.tool_call_id);
-          if (b) b.tool.progress = ev.partial ?? undefined;
+          if (b) {
+            b.tool.progress = ev.partial ?? undefined;
+            if (ev.elapsed_s != null)
+              b.tool.elapsedMs = Math.round(ev.elapsed_s * 1000);
+          }
         });
         break;
       case "tool.completed": {
         // A call with a result is waiting on nobody — retire the prompt it parked on,
         // so a replay doesn't re-ask what was already answered.
         patchById(assistantId, (m) => clearPark(m, ev.tool_call_id));
-        const terminal = terminalResult(ev.name);
-        if (terminal) {
-          // The two terminal tools report differently — a record from the sandboxed
-          // one, a labelled string from the worktree shell — and `toTerminalOutcome`
-          // is where that difference is resolved.
-          const outcome = toTerminalOutcome(terminal, ev.result);
-          if (outcome)
+        if (isTerminalTool(ev.name)) {
+          // The result is the record: it has the streams apart, where the ticks that
+          // streamed in had them concatenated. So the accumulated text is dropped on
+          // the same patch that replaces it — leaving it would be two copies of one
+          // command's output, one of them worse.
+          const outcome = toTerminalOutcome(ev.result);
+          // No outcome and a sentence back means a guard refused the call outright —
+          // the wrong mode, a host that cannot fence — and it never ran. The cold read
+          // projects the same string the same way, so a reload agrees with what the
+          // operator watched; without this arm a refused command sat lit as running
+          // for the rest of the thread.
+          const patch: Partial<HostCommand> | null =
+            outcome ??
+            (typeof ev.result === "string" && ev.result
+              ? { phase: "denied", error: ev.result }
+              : null);
+          if (patch)
             patchById(assistantId, (m) =>
-              upsertHost(m, ev.tool_call_id, ev.name, outcome),
+              upsertHost(m, ev.tool_call_id, ev.name, {
+                ...patch,
+                streamed: undefined,
+              }),
             );
           break;
         }
@@ -197,6 +241,9 @@ export function createFolder(
             b.tool.outcome = describeToolResult(ev.name, ev.result);
             b.tool.progress = undefined; // the run is over — drop the spin-up note
             b.tool.images = toolImages(ev.images);
+            // The same read the cold mapper does, so a backgrounded command's
+            // declaration and fence survive a reload identically.
+            b.tool.boundary = commandBoundary(ev.result);
           }
         });
         break;
@@ -204,7 +251,7 @@ export function createFolder(
       case "tool.failed":
         // A failure settles the call too — same retirement as the completed case.
         patchById(assistantId, (m) => clearPark(m, ev.tool_call_id));
-        if (terminalResult(ev.name)) {
+        if (isTerminalTool(ev.name)) {
           patchById(assistantId, (m) =>
             upsertHost(m, ev.tool_call_id, ev.name, {
               phase: "error",
@@ -348,7 +395,7 @@ export function createFolder(
         // be visible only on a collapsed row above the prompt being answered. Both
         // surfaces take it, because the commands that earn that word are shell commands
         // and those are the ones that render as a terminal.
-        if (terminalResult(ev.name)) {
+        if (isTerminalTool(ev.name)) {
           patchById(assistantId, (m) => {
             const review = findReview(m, ev.tool_call_id)?.review;
             upsertHost(m, ev.tool_call_id, ev.name, {
@@ -716,8 +763,29 @@ export function createFolder(
       case "citation.added":
         patchById(assistantId, (m) => {
           const citations = m.citations ?? (m.citations = []);
-          if (!citations.some((c) => c.url === ev.url))
-            citations.push({ url: ev.url, title: ev.title ?? undefined });
+          // One source can arrive several times — listed by a search, then read by a
+          // fetch — and the backend says which sighting is the stronger claim. So this
+          // replaces rather than skips: keep the row's position (it is the display
+          // number) and take the higher rung's detail.
+          const next: Citation = {
+            url: ev.url,
+            title: ev.title ?? undefined,
+            key: ev.key,
+            kind: ev.kind,
+            engagement: ev.engagement,
+            snippet: ev.snippet ?? undefined,
+            published: ev.published ?? undefined,
+            retrievedAt: ev.retrieved_at ?? undefined,
+            sourceId: ev.source_id ?? undefined,
+            ref: ev.ref ?? undefined,
+          };
+          const at = citations.findIndex((c) => (c.key ?? c.url) === ev.key);
+          if (at < 0) citations.push(next);
+          else if (
+            ENGAGEMENT_ORDER[ev.engagement] >
+            ENGAGEMENT_ORDER[citations[at].engagement ?? "listed"]
+          )
+            citations[at] = next;
         });
         break;
       case "limit.notice":

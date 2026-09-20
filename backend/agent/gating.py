@@ -20,6 +20,14 @@ those land in the work log beside the call they judged. Without them the operato
 tool call they never approved and no account of why it ran, which is indistinguishable
 from the gate having silently failed open.
 
+**These two frames are the Auto level's own, and they are not where the reach and the
+fence are reported from.** Only a reviewing level produces them, so a command at Plan,
+Manual, Edit or Yolo would have carried no account of what held it. The declared reach and
+the fence's verdict therefore ride the executing tool's **result** as well
+(``tools/shell.py``), which is true at every level and is what a cold reload reads. What
+these frames add on top is the *ruling* — who cleared the call and on what ground — which
+is a fact about a review and exists nowhere else.
+
 **One review pass per batch, and it runs concurrently.** A model turn can defer several
 calls at once, and each is judged on its own — the deterministic stage may clear three and
 send the fourth to the model — but everything a review needs that is *not* per-call is

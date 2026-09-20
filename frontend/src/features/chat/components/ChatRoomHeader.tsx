@@ -1,10 +1,11 @@
-import { Show, type JSX } from "solid-js";
+import { Show, createMemo, type JSX } from "solid-js";
 import {
   Button,
   Frames,
   Icon,
   Menu,
   MetClock,
+  StatusFlag,
   Text,
   TypewriterText,
   type MenuItem,
@@ -12,6 +13,8 @@ import {
 import { REVEAL_SPEED_MS } from "../data";
 import type { ChatViewport } from "../useChatViewport";
 import type { BranchState } from "../data";
+import type { ChatActivity, ChatOutcome } from "../model";
+import { resolveRunState, runStateSpec } from "../runState";
 import { BranchChip } from "./BranchChip";
 import { ViewportSurfaceBar } from "./ViewportSurfaceBar";
 
@@ -47,6 +50,11 @@ export interface ChatRoomHeaderProps {
   createdAt: () => string | undefined;
   conversationId: () => string | null;
   streaming: () => boolean;
+  /** The backend's status for this thread's live run, when it has one. */
+  activity: () => ChatActivity | undefined;
+  /** How this thread's last terminal run ended, when the backend still remembers.
+   *  Rendered only at rest — `activity` is the live truth. */
+  lastOutcome: () => ChatOutcome | undefined;
   /** Length of the transcript, which is what makes compact and copy available. */
   messageCount: () => number;
   viewport: ChatViewport;
@@ -76,8 +84,26 @@ export interface ChatRoomHeaderProps {
  * way the system makes it: `micro` mono against a sans `readout`, which is the two-voice
  * split (§2) doing the work colour would otherwise be asked to do. A model name is
  * emitted by a process, so mono is also simply what it is.
+ *
+ * **The header now says what the thread is doing, which it never did.** The rail could
+ * report a run three threads away while the room you were reading reported nothing at
+ * all — the operator watching a long turn had the transcript's own throbber and no
+ * answer to "is this still going, and did the last one even finish". The flag rides in
+ * the eyebrow beside the model and the clock because those three answer the same class
+ * of question: what is true of this *thread*, rather than of any turn in it. It is a
+ * `StatusFlag`, so the hue lives in a 6px dot and only a warn or an alert reaches the
+ * word — the thing worth interrupting for is interrupting, and a finished run is not.
+ *
+ * It reads the same `runState.ts` table the rail does. Two surfaces wording one fact
+ * differently is how a header comes to call a run finished while the row for it is lit
+ * amber three inches to the left.
  */
 export function ChatRoomHeader(props: ChatRoomHeaderProps): JSX.Element {
+  const runState = createMemo(() => {
+    const s = resolveRunState(props.activity(), props.lastOutcome());
+    return s ? runStateSpec(s) : undefined;
+  });
+
   return (
     // Still `items-center`, against the title block as a whole rather than its first
     // line. With the eyebrow present that block is two lines tall, and top-aligning
@@ -93,7 +119,7 @@ export function ChatRoomHeader(props: ChatRoomHeaderProps): JSX.Element {
             so it follows the title; the model is true of the whole thread whether or
             not it has been named, so it leads. The two are near-exclusive anyway —
             the hint appears only for a staged worktree thread. */}
-        <Show when={props.model() ?? props.createdAt()}>
+        <Show when={props.model() ?? props.createdAt() ?? runState()}>
           {/* The mission clock rides the eyebrow beside the model because the two
               answer the same kind of question — what is true of this thread as a
               whole, rather than of any turn in it — and because §11 wants its one
@@ -101,6 +127,23 @@ export function ChatRoomHeader(props: ChatRoomHeaderProps): JSX.Element {
               It is the thread's own clock: how long this conversation has been
               open, not how recently it spoke. */}
           <span class="flex min-w-0 items-center gap-2">
+            {/* First in the row, because it is the only thing here that changes while
+                the operator is looking at it — and because a state that has to be
+                found after a model name is a state read second. `pulse` only while
+                work is genuinely in flight: a dot that blinks on a finished thread is
+                the interface reporting motion where there is none. */}
+            <Show when={runState()}>
+              {(s) => (
+                <StatusFlag
+                  status={s().status}
+                  dot
+                  pulse={s().live}
+                  class="shrink-0"
+                >
+                  {s().readout}
+                </StatusFlag>
+              )}
+            </Show>
             <Show when={props.model()}>
               {(model) => (
                 <Text variant="micro" tone="dim" class="truncate">

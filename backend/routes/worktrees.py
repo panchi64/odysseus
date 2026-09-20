@@ -3,8 +3,8 @@
 A code thread works on `ody/<conversation-id>` in a worktree beside the project, never
 in the operator's own checkout. These three endpoints are how that work gets back:
 
-- ``GET /worktrees/{conversation_id}`` — the diffstat and the patch, against the project's
-  base ref.
+- ``GET /worktrees/{conversation_id}`` — the diffstat, the patch, the **per-file rows with
+  their risk verdict**, and how far the branch has drifted from the project's base ref.
 - ``POST .../merge`` — **the one operation that writes the operator's tree**. It is not
   approval-gated in the agent sense because it cannot be: the agent never calls it. The
   operator pressing MERGE *is* the approval, which is why this is a route and not a tool.
@@ -30,6 +30,34 @@ from services.projects import ProjectView, WorktreeError, branch_for
 router = APIRouter(prefix="/worktrees", tags=["projects"])
 
 
+class FileChangeOut(CamelModel):
+    """One file in the diff, carrying the verdict the merge gate renders.
+
+    ``category`` and ``risk`` are decided in :mod:`services.projects.diffstat`, and so is
+    the order these arrive in. The screen shows them; it must not derive them — a client
+    that decided for itself whether ``uv.lock`` is a dependency change would be a second
+    answer to a question this codebase already answers once.
+    """
+
+    path: str
+    #: Where a rename came from; null otherwise.
+    old_path: str | None = None
+    #: ``added`` · ``modified`` · ``deleted`` · ``renamed`` · ``copied`` ·
+    #: ``type-changed`` · ``unmerged``.
+    status: str
+    insertions: int
+    deletions: int
+    #: Git could not count lines, so the two counts above are zero and mean nothing.
+    binary: bool
+    #: ``dependency`` · ``infrastructure`` · ``config`` · ``code`` · ``test`` ·
+    #: ``asset`` · ``docs``.
+    category: str
+    #: ``high`` · ``elevated`` · ``normal``.
+    risk: str
+    #: The one-phrase reason for the band, authored server-side and shown verbatim.
+    reason: str
+
+
 class BranchOut(CamelModel):
     conversation_id: str
     project_id: str
@@ -43,6 +71,18 @@ class BranchOut(CamelModel):
     #: means another code thread has it — the branch still exists and is still
     #: mergeable, it just isn't the one checked out right now.
     active: bool
+    #: The per-file rows, pre-ordered by how much the operator should look at each. Empty
+    #: for a thread with no branch yet, exactly like the counts above.
+    files: list[FileChangeOut] = []
+    #: Commits this branch has that the base does not.
+    ahead: int = 0
+    #: Commits the base has that this branch does not — staleness. A branch reviewed
+    #: against a base that has moved on is the failure mode this number exists to name.
+    behind: int = 0
+    #: The branch tip's committer date, ISO 8601 with offset; null when there is no
+    #: branch. A string rather than a datetime because it is git's own field, passed
+    #: through rather than re-derived.
+    last_commit_at: str | None = None
 
 
 class MergedOut(CamelModel):
@@ -88,6 +128,23 @@ async def read_branch(request: Request, conversation_id: str) -> BranchOut:
         deletions=diff.deletions if diff else 0,
         patch=diff.patch if diff else "",
         active=worktrees.holder(project.id) == conversation_id,
+        files=[
+            FileChangeOut(
+                path=change.path,
+                old_path=change.old_path,
+                status=change.status,
+                insertions=change.insertions,
+                deletions=change.deletions,
+                binary=change.binary,
+                category=change.category,
+                risk=change.risk,
+                reason=change.reason,
+            )
+            for change in (diff.files if diff else [])
+        ],
+        ahead=diff.ahead if diff else 0,
+        behind=diff.behind if diff else 0,
+        last_commit_at=diff.last_commit_at if diff else None,
     )
 
 

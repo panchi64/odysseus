@@ -1,7 +1,9 @@
 import { For, Show, createSignal, type JSX } from "solid-js";
 import { Button, Panel, Row, Stack, StatusFlag, Text, type Status } from "~/ui";
+import { duration } from "~/lib/format";
 import { grantKey, type GrantWidth } from "../commandScope";
 import type { ApprovalDecision, HostCommand, HostCommandPhase } from "../model";
+import { CommandBoundary, FenceNote } from "./CommandBoundary";
 import {
   ConversationGrantToggle,
   createGrantToggle,
@@ -138,19 +140,34 @@ function Terminal(props: {
   // Decided locally, before the optimistic transition off "pending".
   const decidedPending = () =>
     c().phase === "pending" && props.decided !== undefined;
+  // `timedOut` is in the list because a timeout's exit code is null — it never exited —
+  // and a killed command that printed nothing still has the one thing worth saying.
   const hasOutput = () =>
-    c().stdout != null ||
-    c().stderr != null ||
+    Boolean(c().stdout) ||
+    Boolean(c().stderr) ||
     c().error != null ||
+    c().fenceNote != null ||
+    c().timedOut === true ||
     c().exitCode != null;
 
   return (
     <Panel
       label="Host command"
       meta={
-        <StatusFlag status={flag().status} dot>
-          {flag().label}
-        </StatusFlag>
+        <Row gap={2} align="center">
+          {/* The backend's own measurement, taken around the spawn — never a stopwatch
+              started here, which would be timing the stream rather than the command.
+              While it runs the figure comes from the progress ticks, so a long command
+              counts up instead of sitting at nothing until it ends. */}
+          <Show when={c().elapsedMs !== undefined}>
+            <Text variant="meta" tone="dim" class="tabular-nums">
+              {duration(c().elapsedMs!)}
+            </Text>
+          </Show>
+          <StatusFlag status={flag().status} dot>
+            {flag().label}
+          </StatusFlag>
+        </Row>
       }
       flush
     >
@@ -232,11 +249,38 @@ function Terminal(props: {
           </Show>
         </Show>
 
-        {/* Approved and executing on the host — text readout, never a spinner. */}
+        {/* What it declared and what held it to that — on the card from the moment the
+            declaration exists, which is before it runs as well as after. */}
+        <CommandBoundary command={c()} />
+
+        {/* Approved and executing — text readout, never a spinner, and now the output
+            itself as it arrives. The run streams it in deltas every half-second, so a
+            command that takes a minute reads as a command working rather than as a
+            stalled turn.
+
+            **One stream here where the settled command has two.** Mid-flight the wire
+            carries stdout and stderr concatenated with no field to tell them apart, and
+            splitting them on a guess would file half a stack trace under the wrong
+            heading. The result is the record and separates them properly, which is why
+            this arm disappears the moment the call completes. */}
         <Show when={c().phase === "running"}>
-          <Text variant="micro" tone="info">
-            Running on host…
-          </Text>
+          <Show
+            when={c().streamed}
+            fallback={
+              <Text variant="micro" tone="info">
+                Running…
+              </Text>
+            }
+          >
+            <Text
+              as="div"
+              variant="micro"
+              tone="default"
+              class="max-h-64 overflow-y-auto whitespace-pre-wrap break-all"
+            >
+              {c().streamed}
+            </Text>
+          </Show>
         </Show>
 
         {/* Denied — it never ran. */}
@@ -283,9 +327,15 @@ function Terminal(props: {
                 {c().error}
               </Text>
             </Show>
-            <Show when={c().exitCode != null}>
+            {/* Beneath the streams, because it is about them: a permission error up
+                there is the fence holding, not the command breaking. */}
+            <FenceNote command={c()} />
+            {/* A timeout has no exit code — it never exited — so the marker has to be
+                able to stand without one, and the null is the fact rather than a
+                missing value. */}
+            <Show when={c().timedOut || c().exitCode != null}>
               <Text variant="micro" tone={c().exitCode === 0 ? "dim" : "alert"}>
-                {c().timedOut ? "TIMED OUT · " : ""}EXIT {c().exitCode}
+                {c().timedOut ? "TIMED OUT" : `EXIT ${c().exitCode}`}
               </Text>
             </Show>
           </Stack>

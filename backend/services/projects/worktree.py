@@ -55,12 +55,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from core.exceptions import InvalidInputError
 from core.fork import MergeReport
 
+from .diffstat import FileChange, file_changes
 from .fork import (
     add_child_worktree,
     child_path_for,
@@ -92,13 +93,31 @@ class WorktreeBusyError(Exception):
 
 @dataclass(frozen=True)
 class Diff:
-    """What a coding conversation has changed, against the project's base ref."""
+    """What a coding conversation has changed, against the project's base ref.
+
+    Three answers in one read, because the merge gate asks all three at once: the raw
+    patch (what changed), the per-file rows with their risk verdict (what to look at
+    first — see :mod:`services.projects.diffstat`), and how the branch stands against the
+    base (whether what you are reading is still current).
+    """
 
     branch: str
     files_changed: int
     insertions: int
     deletions: int
     patch: str
+    #: Per-file rows, already ordered by how much the operator should look at each.
+    files: list[FileChange] = field(default_factory=list)
+    #: Commits on the branch the base does not have.
+    ahead: int = 0
+    #: Commits the base has that the branch does not — the staleness number. A branch
+    #: cut days ago from a base that has moved is reviewing work against a tree that no
+    #: longer exists, and nothing on screen said so.
+    behind: int = 0
+    #: The branch tip's committer date, ISO 8601 with offset, or None for a branch with
+    #: no commits of its own yet. The other half of staleness: how long ago, not just
+    #: how far.
+    last_commit_at: str | None = None
 
 
 class WorktreeManager:
@@ -376,10 +395,17 @@ class WorktreeManager:
     async def diff(
         self, root: Path, *, base_ref: str, conversation_id: str, project_id: str
     ) -> Diff:
-        """What this conversation changed, as a patch plus a shortstat.
+        """What this conversation changed: the patch, the per-file rows, and how the
+        branch stands against the base.
 
         Snapshots first, so what the operator reviews includes the work the agent has
-        just done rather than only whatever happened to be committed already."""
+        just done rather than only whatever happened to be committed already.
+
+        The counts come from git rather than from walking the patch — the patch may be
+        megabytes, and git has already counted. ``-M`` so a moved file reads as a move
+        instead of a whole-file delete beside a whole-file add, which is the difference
+        between a two-line review and a two-hundred-line one.
+        """
         await self.snapshot(project_id, conversation_id=conversation_id)
         branch = branch_for(conversation_id)
         # Three dots: changes on the branch since it diverged, not changes the base has
@@ -387,13 +413,46 @@ class WorktreeManager:
         spec = f"{base_ref}...{branch}"
         patch = await run_git_ok(root, "diff", spec)
         stat = await run_git_ok(root, "diff", "--shortstat", spec)
+        numstat = await run_git_ok(root, "diff", "--numstat", "-M", "-z", spec)
+        name_status = await run_git_ok(root, "diff", "--name-status", "-M", "-z", spec)
+        ahead, behind = await self._divergence(root, base_ref=base_ref, branch=branch)
         return Diff(
             branch=branch,
             files_changed=_stat_field(stat, "file"),
             insertions=_stat_field(stat, "insertion"),
             deletions=_stat_field(stat, "deletion"),
             patch=patch,
+            files=file_changes(numstat, name_status),
+            ahead=ahead,
+            behind=behind,
+            last_commit_at=await self._last_commit_at(root, branch),
         )
+
+    async def _divergence(self, root: Path, *, base_ref: str, branch: str) -> tuple[int, int]:
+        """(ahead, behind) — commits the branch has that the base does not, and the
+        other way round.
+
+        ``rev-list --left-right --count base...branch`` prints them as ``behind ahead``:
+        the left side is what only the base has. Best-effort — a base ref that has since
+        been deleted or renamed is a reason to stop reporting staleness, not a reason to
+        fail the whole diff read the operator is standing in front of.
+        """
+        code, out, _ = await run_git(
+            root, "rev-list", "--left-right", "--count", f"{base_ref}...{branch}"
+        )
+        if code != 0:
+            return 0, 0
+        parts = out.split()
+        if len(parts) != 2 or not all(part.isdigit() for part in parts):
+            return 0, 0
+        return int(parts[1]), int(parts[0])
+
+    async def _last_commit_at(self, root: Path, branch: str) -> str | None:
+        """The branch tip's committer date, ISO 8601 with its offset. None when the
+        branch has no commit yet — a thread that acquired a checkout and has not written
+        anything."""
+        code, out, _ = await run_git(root, "log", "-1", "--format=%cI", branch)
+        return out.strip() or None if code == 0 else None
 
     async def merge(
         self, root: Path, *, base_ref: str, conversation_id: str, project_id: str

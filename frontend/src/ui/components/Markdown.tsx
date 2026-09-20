@@ -14,7 +14,9 @@ import { copyToClipboard } from "../clipboard";
 import { openHostPath } from "~/lib/hostOpen";
 import { markedLinks } from "./markdownLinks";
 import { markedMath } from "./markdownMath";
+import { markedMermaid } from "./markdownMermaid";
 import { hydrateRemoteImages } from "./remoteImages";
+import { disposeMermaid, hydrateMermaid } from "./hydrateMermaid";
 
 export interface MarkdownProps {
   /** Markdown source. Rendered with token-styled prose (.ody-prose). */
@@ -33,6 +35,7 @@ export interface MarkdownProps {
 
 marked.setOptions({ gfm: true, breaks: true });
 marked.use(markedMath);
+marked.use(markedMermaid);
 marked.use(markedLinks);
 
 /** Top-level block sources for `source`, in document order — the exact strings
@@ -113,6 +116,11 @@ function makeCopyButton(): HTMLButtonElement {
  * Everything else `marked` emits is markup it wrote itself from Markdown tokens,
  * so there is nothing left for a sanitizer pass to take out.
  *
+ * The one exception is a ```` ```mermaid ```` fence, which is markup written by
+ * something other than `marked` — a layout engine, from model-authored source.
+ * It is the one construct here that does get a sanitizer pass, and it gets two:
+ * see `hydrateMermaid`. Nothing it produces is ever `innerHTML`-ed.
+ *
  * The one control in here that acts on the *host* — a path the answer pointed
  * at, opened in the operator's editor — carries no authority from this side. It
  * arrives as a `data-open-path` string and the backend decides whether it names
@@ -164,6 +172,12 @@ export function Markdown(props: MarkdownProps): JSX.Element {
     // parse), so gating it on a code-affordance flag would leave the image blank
     // for any caller that turned copy buttons off.
     hydrateRemoteImages(ref);
+    // Same reasoning, one construct along: `markdownMermaid` emits an empty
+    // placeholder so the parse stays synchronous and mermaid stays out of the
+    // bundle, which leaves the drawing itself to this pass. Unconditional and
+    // ahead of the `copyCode` gate for the same reason the images are — a
+    // diagram is content, not a code affordance.
+    hydrateMermaid(ref);
     if (local.copyCode === false) return;
     const pres = ref.querySelectorAll<HTMLPreElement>("pre");
     pres.forEach((pre) => {
@@ -218,7 +232,14 @@ export function Markdown(props: MarkdownProps): JSX.Element {
     copyToClipboard(code?.textContent ?? "", "Code");
   };
 
-  onCleanup(() => ref?.removeEventListener("click", onClick));
+  onCleanup(() => {
+    ref?.removeEventListener("click", onClick);
+    // Each diagram `hydrateMermaid` mounted owns a detached `render()` root, and
+    // the hydrator only reaps disconnected ones on its *next* pass. Nothing
+    // guarantees there is a next pass — leaving a thread for Settings renders no
+    // further markdown — so the component that asked for them takes them down.
+    if (ref) disposeMermaid(ref);
+  });
 
   // Branch the whole element rather than conditionally setting `innerHTML`
   // alongside JSX children on one node (Solid's `innerHTML` prop writes the DOM

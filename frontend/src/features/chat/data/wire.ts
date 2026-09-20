@@ -16,6 +16,8 @@
 import type { ContextWindow, RunMetrics, SummarySection } from "~/lib/stream";
 import type {
   ChatActivity,
+  ChatOutcome,
+  CommandReach,
   SnapshotDiff,
   SnapshotFile,
   ToolInvocation,
@@ -33,6 +35,12 @@ export interface ConversationSummaryDTO {
    *  `awaiting_input`), or null when idle. Registry-derived server-side — the
    *  thread list renders it without opening each conversation. */
   activity?: ChatActivity | null;
+  /** How the most recent **terminal** run for this thread ended, or null when the
+   *  backend has nothing to say. Null is not "it never ran": the run registry is in
+   *  memory and bounded, so a restart or enough traffic drops the answer. Sibling of
+   *  `activity` above, not a replacement — both can be set at once, and `activity` is
+   *  the one that wins while it is. */
+  last_outcome?: ChatOutcome | null;
   /** The thread's mode, and — for a code thread — the basename of the directory it
    *  works in plus the project that directory belongs to. All three on the *listing*
    *  because the rail's shape depends on them: it shows one mode at a time and files
@@ -171,13 +179,35 @@ export interface ConversationDetailDTO extends ConversationSummaryDTO {
   permission_level?: string | null;
 }
 
-/** Shape of `run_host_command`'s result; mirrors the tool's return dict. */
+/**
+ * Shape of a command tool's result; mirrors the tool's return dict.
+ *
+ * One interface for both tools that run something, because both now answer the same
+ * way: the sandboxed host command and the worktree shell each hand back the streams
+ * and the exit code as fields. Every key is optional here and none is nullable-by-
+ * convention — the backend **omits** a key that has nothing to say rather than sending
+ * a null, so presence is the fact and `exit_code` is the one genuine null (a command
+ * that timed out never exited).
+ */
 export interface HostResult {
   ok?: boolean;
-  exit_code?: number;
+  exit_code?: number | null;
   stdout?: string;
   stderr?: string;
   timed_out?: boolean;
+  /** Wall clock around the spawn, in whole milliseconds. */
+  duration_ms?: number;
+  /** What the call declared, and whether an OS fence built from that declaration was
+   *  actually applied. Carried at every permission level, not only where a review ran
+   *  — which is why the terminal reads them off the result rather than off a review. */
+  reach?: CommandReach;
+  fenced?: boolean;
+  /** Present only when `fenced` is false: one operator-facing sentence saying why. */
+  unfenced_reason?: string;
+  /** Present only when the output shows a permission failure the fence itself caused,
+   *  so a denied write reads as the fence holding rather than as the command being
+   *  broken. */
+  fence_note?: string;
   error?: string;
 }
 
