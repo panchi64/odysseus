@@ -1,8 +1,9 @@
-import type { JSX } from "solid-js";
-import { Combobox } from "~/ui";
+import { Show, type JSX } from "solid-js";
+import { Combobox, Text, cx } from "~/ui";
 import {
   effectiveValue,
   modelPickerGroups,
+  modelsRefreshing,
   refreshEndpoints,
   refreshModels,
   selectModelByValue,
@@ -31,27 +32,43 @@ import {
  *  button. Opening the menu is already the operator saying "show me what I can pick",
  *  and a model that appeared since the app loaded — a local engine they just started —
  *  is exactly the one they opened it to find. The old button asked them to say it
- *  twice, and to somehow know the list in front of them was stale. */
+ *  twice, and to somehow know the list in front of them was stale.
+ *
+ *  **And it says so while it does.** That refresh is a per-endpoint provider probe
+ *  budgeted around three seconds, and until it answered the panel was the previous
+ *  list — or, on a workspace whose backend hasn't been asked yet, the flat assertion
+ *  that there are no models and the operator should go add an endpoint. Both are
+ *  claims the app is in no position to make mid-probe. The note sits beside the
+ *  trigger rather than inside the panel because the panel belongs to `Combobox`,
+ *  which is shared: a state this picker alone has would be a prop on every other
+ *  dropdown in the app that has nothing to refresh. */
 export function ModelPicker(props: { class?: string }): JSX.Element {
   return (
-    <Combobox
-      bare
-      groups={modelPickerGroups()}
-      value={effectiveValue()}
-      onChange={selectModelByValue}
-      onOpen={() => {
-        // Both: the catalog may have gained an endpoint (added in Settings in another
-        // tab), and the endpoints it already had may serve models they didn't before.
-        // Neither implies the other, and only the second needs asking the provider.
-        refreshEndpoints();
-        refreshModels();
-      }}
-      align="right"
-      placeholder="No model"
-      searchPlaceholder="Search models…"
-      emptyHint="No models — add an endpoint in settings"
-      aria-label="Active model"
-      class={props.class}
-    />
+    <div class={cx("flex min-w-0 items-center gap-1.5", props.class)}>
+      <Combobox
+        bare
+        groups={modelPickerGroups()}
+        value={effectiveValue()}
+        onChange={selectModelByValue}
+        onOpen={() => {
+          // Both: the catalog may have gained an endpoint (added in Settings in
+          // another tab), and the endpoints it already had may serve models they
+          // didn't before. Neither implies the other, and only the second needs
+          // asking the provider.
+          refreshEndpoints();
+          refreshModels();
+        }}
+        align="right"
+        placeholder="No model"
+        searchPlaceholder="Search models…"
+        emptyHint="No models — add an endpoint in settings"
+        aria-label="Active model"
+      />
+      <Show when={modelsRefreshing()}>
+        <Text variant="micro" tone="dim" class="shrink-0">
+          Checking…
+        </Text>
+      </Show>
+    </div>
   );
 }

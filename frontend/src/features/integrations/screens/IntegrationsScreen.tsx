@@ -24,6 +24,7 @@ import {
   type Status,
 } from "~/ui";
 import { timestamp } from "~/lib/format";
+import { createInFlight } from "~/lib/inFlight";
 import {
   configureIntegration,
   deleteIntegration,
@@ -99,7 +100,7 @@ function ConnectorCard(props: {
             size="sm"
             variant="ghost"
             leading="activity"
-            disabled={props.busy}
+            pending={props.busy}
             onClick={() => props.onTest(props.integration)}
           >
             {props.busy ? "Testing…" : "Test"}
@@ -271,7 +272,10 @@ export function IntegrationsScreen(): JSX.Element {
   const [editing, setEditing] = createSignal<Integration | null>(null);
   const [editUrl, setEditUrl] = createSignal("");
   const [editKey, setEditKey] = createSignal("");
-  const [testingId, setTestingId] = createSignal<string | null>(null);
+  // Keyed by connector: a test is a live call to somebody else's service, and a single
+  // id slot meant whichever test answered first cleared the other's "Testing…" and let
+  // the operator fire a duplicate at a connector that was still being probed.
+  const testing = createInFlight();
 
   const chosenPreset = () =>
     (presets() ?? []).find((p) => p.id === addPreset());
@@ -334,23 +338,24 @@ export function IntegrationsScreen(): JSX.Element {
   }
 
   async function runTest(integration: Integration) {
-    setTestingId(integration.id);
-    try {
-      // A rejected credential answers 200 with the reason — that outcome is what
-      // was asked for, so it is read off the connector rather than thrown.
-      const tested = await testIntegration(integration.id);
-      if (tested.status === "ok") {
-        toast.success(`"${tested.name}" answered — the credential works.`);
-      } else {
-        toast.error(tested.errorMessage ?? `"${tested.name}" did not answer.`);
+    await testing.run(integration.id, async () => {
+      try {
+        // A rejected credential answers 200 with the reason — that outcome is what
+        // was asked for, so it is read off the connector rather than thrown.
+        const tested = await testIntegration(integration.id);
+        if (tested.status === "ok") {
+          toast.success(`"${tested.name}" answered — the credential works.`);
+        } else {
+          toast.error(
+            tested.errorMessage ?? `"${tested.name}" did not answer.`,
+          );
+        }
+      } catch (err) {
+        toast.error(
+          integrationErrorMessage(err, `Could not test "${integration.name}".`),
+        );
       }
-    } catch (err) {
-      toast.error(
-        integrationErrorMessage(err, `Could not test "${integration.name}".`),
-      );
-    } finally {
-      setTestingId(null);
-    }
+    });
   }
 
   async function setActionPolicy(
@@ -439,7 +444,7 @@ export function IntegrationsScreen(): JSX.Element {
               {(int) => (
                 <ConnectorCard
                   integration={int}
-                  busy={testingId() === int.id}
+                  busy={testing.has(int.id)}
                   onSetActionPolicy={setActionPolicy}
                   onTest={runTest}
                   onConfigure={openConfig}

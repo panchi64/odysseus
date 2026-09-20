@@ -470,10 +470,20 @@ export function createChatStream(
    *  Sequential and unconditional on purpose: `compactNow` reports its own failure and
    *  the send below re-blocks on the same bound if nothing was freed, so the operator
    *  ends up where they started rather than somewhere new. Nothing here decides whether
-   *  the fold was enough — that judgement is the backend's, on the next request. */
+   *  the fold was enough — that judgement is the backend's, on the next request.
+   *
+   *  The thread is captured before the fold and checked after it, because the fold holds
+   *  a summarizer call — seconds on a local model — and the operator is free to leave
+   *  mid-flight. `continueTurn` re-reads the bound id, so without this the pair would
+   *  send a "Continue." turn into whichever thread the room had moved to, carrying the
+   *  *old* thread's `continuesMessageId` and retiring a stop marker on a branch node that
+   *  does not exist there. The turn the operator asked to resume is still resumable from
+   *  its own thread when they come back to it. */
   async function compactAndContinue(messageId?: string): Promise<void> {
-    if (activeConversationId === null) return;
+    const conversationId = activeConversationId;
+    if (conversationId === null) return;
     await branching.compactNow();
+    if (activeConversationId !== conversationId) return;
     await continueTurn(messageId);
   }
 
@@ -620,6 +630,16 @@ export function createChatStream(
     switchVersion: branching.switchVersion,
     rewind: branching.rewind,
     compactNow: branching.compactNow,
+    /** True while a hand-started fold is in flight on the thread the room is showing.
+     *
+     *  Composed here rather than inside the branching ops because the answer needs the
+     *  *reactive* half of the bound id: the ops read `activeConversationId` imperatively,
+     *  and a `compacting` built on that would never re-run on a thread switch — it would
+     *  keep reporting the thread the operator left. */
+    compacting: (): boolean => {
+      const id = boundConversationId();
+      return id !== null && branching.isCompacting(id);
+    },
     removeMessage: branching.removeMessage,
     toggleMessagePin: branching.toggleMessagePin,
   };

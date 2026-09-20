@@ -33,6 +33,16 @@ export interface SessionModeSpec {
   description: string;
   icon: IconName;
   workspace: ModeWorkspace;
+  /** Whether a finished answer in this mode is read back against its own sources.
+   *
+   *  **A mirror of `services/modes.py`, and it has to move with it.** The backend owns
+   *  the rule — the pass costs a background model call per answer, so only a mode whose
+   *  whole output is a synthesis of things it read declares it — and the flag is not on
+   *  the wire. The interface needs it anyway: the control that asks for a reading has to
+   *  know whether asking can produce one. Without it a normal thread that happened to
+   *  run a web search offers the check, the POST does no model call and answers with the
+   *  same empty list, and the button sits there forever looking broken. */
+  attributesClaims: boolean;
 }
 
 /** By id — the declaration, and what `sessionModeSpec` looks up. Keyed rather than a
@@ -45,6 +55,7 @@ const SPECS = {
     description: "General work in this thread's own sandbox.",
     icon: "chat",
     workspace: "sandbox",
+    attributesClaims: false,
   },
   research: {
     id: "research",
@@ -52,6 +63,7 @@ const SPECS = {
     description: "Reading the web and the corpus, with sources cited.",
     icon: "research",
     workspace: "sandbox",
+    attributesClaims: true,
   },
   code: {
     id: "code",
@@ -59,6 +71,7 @@ const SPECS = {
     description: "A git worktree of a directory on this machine.",
     icon: "code",
     workspace: "worktree",
+    attributesClaims: false,
   },
 } satisfies Record<SessionMode, SessionModeSpec>;
 

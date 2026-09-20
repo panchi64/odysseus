@@ -2,6 +2,7 @@ import { Show, splitProps, type JSX } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import { cx } from "../cx";
 import { Icon, type IconProps } from "../primitives/Icon";
+import { Frames } from "./Frames";
 
 export type ButtonVariant = "primary" | "default" | "ghost" | "danger";
 export type ButtonSize = "sm" | "md" | "lg";
@@ -27,6 +28,16 @@ export interface ButtonProps extends Omit<
    *  rest of the design system's color discipline. Pair with `aria-pressed`.
    *  No effect on other variants. */
   active?: boolean;
+  /** An action this button started is still running. Swaps the leading icon for the
+   *  throbber and disables the control, so the one thing a slow action must not do —
+   *  look identical to an idle one — takes a prop rather than a hand-rolled label swap
+   *  at each call site.
+   *
+   *  It disables rather than merely decorating, because a second press during a slow
+   *  action is never what the operator meant: at best it is a wasted round trip, at
+   *  worst a duplicate write. Callers that want a different label while working still
+   *  pass one; this is about the affordance, not the word. */
+  pending?: boolean;
 }
 
 /* `primary` is an inverted Swiss-modernist slab — the brightest thing in its
@@ -76,15 +87,24 @@ export function Button(props: ButtonProps): JSX.Element {
     "type",
     "block",
     "active",
+    "pending",
+    "disabled",
     "class",
     "children",
   ]);
   const variant = local.variant ?? "default";
+  // Pulled out of `rest` on purpose: `rest` is spread *after* these attributes, so a
+  // `disabled` left in it would overwrite the one `pending` derives — with `undefined`,
+  // re-enabling the control mid-action.
+  const disabled = () => local.pending || local.disabled || undefined;
   return (
     <Dynamic
       component={local.href ? "a" : "button"}
       href={local.href}
       type={local.href ? undefined : (local.type ?? "button")}
+      disabled={local.href ? undefined : disabled()}
+      aria-disabled={local.href && disabled() ? "true" : undefined}
+      aria-busy={local.pending || undefined}
       class={cx(
         "inline-flex items-center justify-center rounded-ctl font-sans font-medium whitespace-nowrap transition-colors",
         "disabled:cursor-not-allowed disabled:opacity-40",
@@ -97,12 +117,17 @@ export function Button(props: ButtonProps): JSX.Element {
       )}
       {...rest}
     >
-      <Show when={local.leading}>
-        <Icon
-          name={local.leading!}
-          size={local.iconSize ?? iconSize[local.size ?? "md"]}
-          stroke={local.iconSize ? 24 / local.iconSize : undefined}
-        />
+      {/* The throbber takes the leading icon's place rather than sitting beside it: a
+          control that grew a glyph while working would shift its own label, and the
+          leading icon is exactly the slot whose job is "what this button is about". */}
+      <Show when={!local.pending} fallback={<Frames />}>
+        <Show when={local.leading}>
+          <Icon
+            name={local.leading!}
+            size={local.iconSize ?? iconSize[local.size ?? "md"]}
+            stroke={local.iconSize ? 24 / local.iconSize : undefined}
+          />
+        </Show>
       </Show>
       {local.children}
       <Show when={local.trailing}>

@@ -189,7 +189,7 @@ export function PaletteBody(props: PaletteBodyProps): JSX.Element {
                         entry={hit.setting}
                         id={rowId(row.index)}
                         selected={row.index === cursor()}
-                        busy={actions.busy() === hit.setting.id}
+                        busy={actions.busy(hit.setting.id)}
                         editing={actions.editing() === hit.setting.id}
                         draft={actions.draft()}
                         onDraft={actions.setDraft}

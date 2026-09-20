@@ -12,6 +12,7 @@ import {
   Text,
   toast,
 } from "~/ui";
+import { createInFlight } from "~/lib/inFlight";
 import { createListView } from "~/lib/list";
 import {
   connectMcpServer,
@@ -47,7 +48,10 @@ const TOOLBAR_THRESHOLD = 5;
 export function McpScreen(): JSX.Element {
   const servers = useMcpServers();
   const [registerOpen, setRegisterOpen] = createSignal(false);
-  const [connecting, setConnecting] = createSignal<string | null>(null);
+  // Keyed by server, because dialling is per-server and the screen outlives any one
+  // attempt: a single id slot let the first server's cleanup clear the second's
+  // "Connecting…" and re-offer its Retry while it was still mid-handshake.
+  const connecting = createInFlight();
   const [authTarget, setAuthTarget] = createSignal<McpServer | null>(null);
 
   async function setToolPolicy(
@@ -70,25 +74,24 @@ export function McpScreen(): JSX.Element {
   }
 
   async function retryConnection(server: McpServer) {
-    setConnecting(server.id);
-    try {
-      // A refused connection is a 200 carrying the reason, not a thrown error —
-      // so the outcome is read off the server that comes back.
-      const updated = await connectMcpServer(server.id);
-      if (updated.status === "connected") {
-        toast.success(
-          `"${updated.name}" connected — ${updated.tools.length} tools discovered.`,
-        );
-      } else {
-        toast.error(
-          updated.errorMessage ?? `Could not connect to "${updated.name}".`,
-        );
+    await connecting.run(server.id, async () => {
+      try {
+        // A refused connection is a 200 carrying the reason, not a thrown error —
+        // so the outcome is read off the server that comes back.
+        const updated = await connectMcpServer(server.id);
+        if (updated.status === "connected") {
+          toast.success(
+            `"${updated.name}" connected — ${updated.tools.length} tools discovered.`,
+          );
+        } else {
+          toast.error(
+            updated.errorMessage ?? `Could not connect to "${updated.name}".`,
+          );
+        }
+      } catch (err) {
+        toast.error(mcpErrorMessage(err, `Could not reach "${server.name}".`));
       }
-    } catch (err) {
-      toast.error(mcpErrorMessage(err, `Could not reach "${server.name}".`));
-    } finally {
-      setConnecting(null);
-    }
+    });
   }
 
   async function saveCredentials(serverId: string, creds: McpAuthCredentials) {
@@ -207,7 +210,7 @@ export function McpScreen(): JSX.Element {
                 {(srv) => (
                   <McpServerCard
                     server={srv}
-                    busy={connecting() === srv.id}
+                    busy={connecting.has(srv.id)}
                     onSetToolPolicy={setToolPolicy}
                     onRetry={(s) => void retryConnection(s)}
                     onConfigureAuth={(s) => setAuthTarget(s)}

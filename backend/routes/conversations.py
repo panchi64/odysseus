@@ -1292,6 +1292,24 @@ async def set_auto_compact_override(
     return await _compaction_state(request, conversation_id)
 
 
+def _nothing_to_fold(keep_turns: int) -> str:
+    """Why this conversation had nothing to fold, in the operator's terms.
+
+    "There is nothing to compact" is true and useless: the thread plainly has turns in
+    it, so the only reading left is that the button is broken. What it is actually
+    reporting is the retained tail — compaction keeps the last ``keep_turns`` exchanges
+    word for word, so a thread that is not *longer* than the tail has nothing above it to
+    summarize — and naming that turns a dead end into a setting the operator can change."""
+    if keep_turns <= 0:
+        return "There is nothing to fold — this conversation has no turns yet."
+    return (
+        f"Nothing to fold yet. Compaction keeps the last {keep_turns} "
+        f"{'exchange' if keep_turns == 1 else 'exchanges'} word for word, so a thread "
+        "needs more than that before there is anything above them to summarize. The "
+        "retained count is in Settings → Chat."
+    )
+
+
 @router.post("/{conversation_id}/compact", response_model=ConversationDetail)
 async def compact_conversation_now(
     conversation_id: str, request: Request, body: RetitleRequest | None = None
@@ -1309,9 +1327,10 @@ async def compact_conversation_now(
     live turn recording its own messages. Returns the refreshed detail so the client renders
     the new divider from the same shape a cold read gives it.
 
-    ``503`` when the summarizer couldn't produce a summary; ``409`` when nothing was folded
-    — either the thread is too short to have anything to fold, or the operator has just
-    started a regenerate/edit and the leaf is a branch point."""
+    ``409`` when the thread had nothing foldable — it is no longer than the retained tail
+    — and the detail says so in those terms rather than as a bare refusal. ``503`` when
+    there *was* something to fold and the fold still did not land: the summarizer wrote
+    nothing, or the leaf moved while it ran."""
     store = deps.store(request)
     summary = await store.get_summary(conversation_id, OPERATOR_ID)
     if summary is None:
@@ -1343,8 +1362,24 @@ async def compact_conversation_now(
             keep_turns=auto.keep_turns,
         )
         if outcome is None:
+            # ``compact_conversation`` answers ``None`` to three different questions — the
+            # thread had nothing foldable, the summarizer wrote nothing, or the leaf moved
+            # underneath it — and reporting all three as "nothing to compact" is what makes
+            # a fold that genuinely failed look like a button that does not work. Re-asking
+            # for the plan separates the first from the other two. It is a fresh
+            # measurement, not a cached one, and deliberately so: in the moved-leaf case
+            # the tree *has* changed, and what the operator needs to be told is whether
+            # the thread as it stands now has anything to fold. Only the failure path
+            # pays for it.
+            plan = await store.compaction_plan(conversation_id, keep_turns=auto.keep_turns)
+            if plan is None:
+                raise HTTPException(status_code=409, detail=_nothing_to_fold(auto.keep_turns))
             raise HTTPException(
-                status_code=409, detail="there is nothing to compact in this conversation"
+                status_code=503,
+                detail=(
+                    "The fold did not land — the summarizer returned nothing, or the "
+                    "conversation moved while it ran. Try again."
+                ),
             )
     finally:
         deps.release_conversation(request, conversation_id)

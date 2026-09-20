@@ -29,6 +29,7 @@ import {
 } from "~/ui";
 import { isApiError } from "~/lib/api";
 import { relativeTime, timestamp } from "~/lib/format";
+import { createInFlight } from "~/lib/inFlight";
 import {
   useRagSources,
   useIndexStats,
@@ -57,6 +58,15 @@ export function RagConfigScreen(): JSX.Element {
   const stats = useIndexStats();
   const [newPath, setNewPath] = createSignal("");
   const [rebuilding, setRebuilding] = createSignal(false);
+
+  // Reindex is the slowest action on this screen and the one that looks the most like
+  // nothing happened. The endpoint is documented as 202 but the route awaits the whole
+  // re-crawl and re-embed, so the call sits open for seconds to minutes — per source,
+  // since the operator can and does start one folder and then another.
+  const reindexing = createInFlight();
+  // Keyed by the path, so the second Enter on an unchanged field is refused while the
+  // first POST is still open; one field, so the control reads `any()`.
+  const addingSource = createInFlight();
 
   const all = (): RagSource[] => sources() ?? [];
   const surfaces = () => all().filter((s) => s.kind === "surface");
@@ -91,13 +101,15 @@ export function RagConfigScreen(): JSX.Element {
   async function handleAddSource() {
     const path = newPath().trim();
     if (!path) return;
-    try {
-      await addRagSource(path);
-      setNewPath("");
-      toast.success("Source added — indexing started", { duration: 5000 });
-    } catch (err) {
-      reportError("Could not add source", err);
-    }
+    await addingSource.run(path, async () => {
+      try {
+        await addRagSource(path);
+        setNewPath("");
+        toast.success("Source added — indexing started", { duration: 5000 });
+      } catch (err) {
+        reportError("Could not add source", err);
+      }
+    });
   }
 
   async function handleRemove(id: string, label: string, docCount: number) {
@@ -126,12 +138,19 @@ export function RagConfigScreen(): JSX.Element {
   }
 
   async function handleReindex(id: string, label: string) {
-    try {
-      await reindexSource(id);
+    await reindexing.run(id, async () => {
+      // Announced before the call, not after it. The request only answers once the
+      // re-crawl is finished, so the old order told the operator work was starting at
+      // the exact moment it had stopped — and said nothing at all for the minutes in
+      // between. Two toasts, one per edge, and the row throbs for the span between them.
       toast.info(`Reindexing ${label}…`);
-    } catch (err) {
-      reportError("Could not reindex", err);
-    }
+      try {
+        await reindexSource(id);
+        toast.success(`${label} reindexed`);
+      } catch (err) {
+        reportError("Could not reindex", err);
+      }
+    });
   }
 
   /** One indexed-source row, shared by both the surfaces and folders panels.
@@ -144,6 +163,8 @@ export function RagConfigScreen(): JSX.Element {
       {
         label: "Reindex",
         icon: "refresh",
+        pending: reindexing.has(source.id),
+        hint: "Already reindexing — this can take a few minutes.",
         onSelect: () => void handleReindex(source.id, source.label),
       },
       {
@@ -187,6 +208,7 @@ export function RagConfigScreen(): JSX.Element {
                     size="sm"
                     leading="refresh"
                     aria-label="Reindex this surface"
+                    pending={reindexing.has(source.id)}
                     onClick={() => void handleReindex(source.id, source.label)}
                   />
                 </Tooltip>
@@ -219,12 +241,12 @@ export function RagConfigScreen(): JSX.Element {
               <StatusFlag status="alert">{`${errorSources().length} ERROR`}</StatusFlag>
             </Show>
             <Button
-              variant={rebuilding() ? "default" : "primary"}
+              variant="primary"
               leading="refresh"
               onClick={() => void startRebuild()}
-              disabled={rebuilding()}
+              pending={rebuilding()}
             >
-              {rebuilding() ? "Rebuilding..." : "Rebuild index"}
+              {rebuilding() ? "Rebuilding…" : "Rebuild index"}
             </Button>
           </Row>
         }
@@ -302,6 +324,7 @@ export function RagConfigScreen(): JSX.Element {
               variant="primary"
               leading="plus"
               disabled={!newPath().trim()}
+              pending={addingSource.any()}
               onClick={() => void handleAddSource()}
             >
               Add
@@ -347,6 +370,7 @@ export function RagConfigScreen(): JSX.Element {
                       <Button
                         variant="ghost"
                         leading="refresh"
+                        pending={reindexing.has(source.id)}
                         onClick={() =>
                           void handleReindex(source.id, source.label)
                         }

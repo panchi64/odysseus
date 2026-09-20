@@ -55,6 +55,20 @@ async function fetchProjects(): Promise<ProjectsDTO> {
   return api.get<ProjectsDTO>("/projects");
 }
 
+/** Activation bookkeeping — deliberately plain variables rather than signals, so
+ *  reading them can never make a computation re-run.
+ *
+ *  `POST /projects/{id}/activate` is a round trip, and the operator picks again as
+ *  soon as the switcher looks like it ignored them. Both replies then arrive, and
+ *  whichever lands last writes the echo *and* the `X-Ody-Project` header every
+ *  subsequent request is scoped by — so a slow first pick can silently re-scope the
+ *  whole app to the project they abandoned, taking every refetch with it. Only the
+ *  operator's newest pick is allowed to adopt its own answer; an older reply is read
+ *  and dropped. `activations` is the same fact for the listing effect above: how many
+ *  writes are still in the air. */
+let picks = 0;
+let activations = 0;
+
 const store = createRoot(() => {
   const session = useSession();
 
@@ -81,6 +95,14 @@ const store = createRoot(() => {
   createEffect(() => {
     const dto = data.latest;
     if (!dto || unscoped()) return;
+    // Not while an activation is in the air. A listing fetched before the write
+    // describes the selection the operator is in the middle of leaving, and adopting
+    // it here would put the old project back into the scope header for every request
+    // that follows. The activation reseats from its own response and ticks a fresh
+    // listing, so nothing is lost by skipping this one. Read untracked on purpose:
+    // this effect must not re-run when the count falls, or it would adopt the very
+    // listing it just declined.
+    if (activations > 0) return;
     setActiveId(dto.activeId);
     setProjectScope(dto.activeId);
   });
@@ -120,16 +142,31 @@ function adopt(dto: ProjectsDTO): void {
 }
 
 /** Switch the active project, or pass `null` to clear it. The backend persists the
- *  selection and returns the whole listing; we reseat from that. */
+ *  selection and returns the whole listing; we reseat from that — unless the operator
+ *  has since picked something else, in which case this answer is stale the moment it
+ *  arrives and adopting it would undo their newer choice. Resolves either way: the
+ *  call did reach the backend, and the surface that made it has nothing to report. */
 export async function setActiveProject(
   projectId: string | null,
 ): Promise<void> {
   store.setUnscoped(false);
-  const dto = projectId
-    ? await api.post<ProjectsDTO>(`/projects/${projectId}/activate`, {})
-    : await api.post<ProjectsDTO>("/projects/deactivate", {});
-  adopt(dto);
-  store.setTick((n) => n + 1);
+  const mine = ++picks;
+  activations += 1;
+  try {
+    const dto = projectId
+      ? await api.post<ProjectsDTO>(`/projects/${projectId}/activate`, {})
+      : await api.post<ProjectsDTO>("/projects/deactivate", {});
+    if (mine !== picks) return;
+    adopt(dto);
+    store.setTick((n) => n + 1);
+  } catch (err) {
+    // A superseded pick's failure is not news either: the operator has moved on, and
+    // "could not switch project" over the project they *are* now in reads as a broken
+    // switcher rather than as the history it is.
+    if (mine === picks) throw err;
+  } finally {
+    activations -= 1;
+  }
 }
 
 /** ALL PROJECTS — deliberately unscoped, which is a different request from having

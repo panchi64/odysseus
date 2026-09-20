@@ -163,15 +163,24 @@ export async function logout(): Promise<void> {
   setStatus("locked");
 }
 
-/** Wipe the vault key from the backend's memory and end all sessions. */
+/** Wipe the vault key from the backend's memory and end all sessions.
+ *
+ *  The local half is unconditional, as it always was: whatever the backend did or
+ *  didn't manage, this client is done holding a token. What changed is that the
+ *  failure is no longer swallowed. LOCK is the one control in the app whose whole
+ *  promise is about what happens *after* the operator walks away, and a locked-looking
+ *  screen over a vault key still resident in the backend's memory is precisely the
+ *  state they must not be left believing in. The caller surfaces it. */
 export async function lock(): Promise<void> {
+  let failure: unknown = null;
   try {
     await api.post("/auth/lock");
-  } catch {
-    /* best effort — clear locally regardless */
+  } catch (err) {
+    failure = err;
   }
   clearToken();
   setStatus("locked");
+  if (failure) throw failure;
 }
 
 // A rejected token (expired session / re-locked vault) returns us to locked.
