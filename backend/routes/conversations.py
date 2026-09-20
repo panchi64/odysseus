@@ -60,6 +60,18 @@ class ConversationSummary(BaseModel):
     updated_at: datetime
     message_count: int
     preview: str | None = None
+    # Two or three sentences on what the agent did in this thread, written by the deferred
+    # background sweep once the thread has been idle a while and shown in the re-entry band
+    # when the operator comes back to it. Null until a thread has earned one.
+    #
+    # It rides the **listing** payload beside `preview`, deliberately: the band is drawn
+    # over a row the session list already loaded, and a short summary is the same class and
+    # size of payload as the excerpt already sitting next to it — a per-row fetch would be
+    # the same bytes over one round trip each. There is no SSE event for it either, for the
+    # matching reason: the band only shows on a thread that has gone quiet, so the next
+    # listing read is soon enough and a live push would arrive at a client with nothing to
+    # put it on.
+    work_summary: str | None = None
     model: str | None = None  # the model the conversation last ran on
     # The live run driving this thread, as its `RunStatus` value (`running`,
     # `queued`, `awaiting_input`); None when nothing is in flight. Derived from the
@@ -321,6 +333,7 @@ def _summary(
         updated_at=view.updated_at,
         message_count=view.message_count,
         preview=view.preview,
+        work_summary=view.work_summary,
         model=view.model,
         activity=activity,
         last_outcome=last_outcome,

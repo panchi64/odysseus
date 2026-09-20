@@ -12,7 +12,12 @@
  */
 
 import { asCompactionReason } from "../compactionReason";
-import { describeToolArgs, describeToolResult } from "../toolSummary";
+import {
+  NARRATION_ARG,
+  describeToolArgs,
+  describeToolResult,
+  toolNarration,
+} from "../toolSummary";
 import type {
   AssistantBlock,
   ChatMessage,
@@ -26,9 +31,15 @@ import { citationsFromToolResult } from "./citations";
 import { commandBoundary, toHostCommand } from "./hostCommands";
 import { toVersionChipBlock } from "./viewSnapshots";
 
-/** Format tool args as a compact `k=v` summary for the call card. */
+/** Every argument as `k=v`, for the expanded card.
+ *
+ *  **Except the narration**, which the collapsed row already leads with. It is the
+ *  one argument written for the operator rather than for the tool, so printing it
+ *  again in the raw dump would put the same sentence on screen twice — and the dump
+ *  exists to show what the *tool* received, which by then no longer includes it. */
 export function formatArgs(args: Record<string, unknown>): string {
   return Object.entries(args)
+    .filter(([k]) => k !== NARRATION_ARG)
     .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`)
     .join(", ");
 }
@@ -54,6 +65,7 @@ export function toTool(dto: ToolCallDTO): ToolInvocation {
     name: dto.name,
     args: formatArgs(dto.args),
     detail: describeToolArgs(dto.name, dto.args),
+    narration: toolNarration(dto.args),
     status: dto.status,
     // Only a call that succeeded has an outcome to report; a failure's story is
     // its error, which the card shows in full.

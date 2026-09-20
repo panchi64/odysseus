@@ -43,6 +43,8 @@ from typing import Any
 
 from pydantic_ai_harness.playwright import EgressPolicy
 
+from core.periodic import PeriodicTask
+
 from .host import HostBrowser
 from .live import ControlledBrowserSession, LiveBrowser
 
@@ -74,7 +76,6 @@ class BrowserSessionManager:
     ) -> None:
         self._host = host
         self._idle_ttl = idle_ttl_s
-        self._reap_interval = reap_interval_s
         self._max_live = max(1, max_live)
         self._state_dir = state_dir
         self._sessions: dict[str, LiveBrowser] = {}
@@ -88,7 +89,12 @@ class BrowserSessionManager:
         # it instead of quietly launching a replacement window on their screen. Cleared
         # the moment a session attaches again, which only something explicit can cause.
         self._closed: set[str] = set()
-        self._reaper: asyncio.Task[None] | None = None
+        self._reaper = PeriodicTask(
+            "browser-reaper",
+            interval_s=reap_interval_s,
+            work=self._sweep,
+            logger=logger,
+        )
 
     # ── lookup ───────────────────────────────────────────────────────────────────
 
@@ -296,27 +302,21 @@ class BrowserSessionManager:
         }
 
     async def start(self) -> None:
-        self._reaper = asyncio.create_task(self._reaper_loop())
+        await self._reaper.start()
 
     async def stop(self) -> None:
-        reaper, self._reaper = self._reaper, None
-        if reaper is not None:
-            reaper.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await reaper
+        """Put the reaper down, then tear every live session down.
+
+        The order matters and the loop helper deliberately owns only the first half: a
+        sweep still running while sessions are being torn down would be two things
+        closing the same browser.
+        """
+        await self._reaper.stop()
         async with self._lock:
             sessions = list(self._sessions.values())
             self._sessions.clear()
         for live in sessions:
             await live.teardown()
-
-    async def _reaper_loop(self) -> None:
-        while True:
-            await asyncio.sleep(self._reap_interval)
-            try:
-                await self._sweep()
-            except Exception:  # noqa: BLE001 — the reaper must survive a bad sweep
-                logger.debug("browser: sweep failed", exc_info=True)
 
     async def _sweep(self) -> None:
         """Reap what nobody is using — and every session at once when the window is gone.

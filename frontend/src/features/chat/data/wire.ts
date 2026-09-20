@@ -30,6 +30,14 @@ export interface ConversationSummaryDTO {
   updated_at: string;
   message_count: number;
   preview: string | null;
+  /** Two or three sentences on what the agent did here, written by the backend's
+   *  utility model once the thread had been idle a while and replaced wholesale each
+   *  time it is rewritten. Null until the first sweep has covered the thread.
+   *
+   *  On the *listing* rather than only the detail because the band that shows it reads
+   *  the shared session list, and it is the same class of payload as `preview` beside
+   *  it — a capped excerpt, not a document. */
+  work_summary?: string | null;
   model: string | null;
   /** The live run's status for this thread (`running`, `queued`,
    *  `awaiting_input`), or null when idle. Registry-derived server-side — the

@@ -99,6 +99,9 @@ export function ChatSection(): JSX.Element {
   // recent thread the fold is allowed to take.
   const [keepTurns, setKeepTurns] = createSignal("");
   const [savingAutoCompact, setSavingAutoCompact] = createSignal(false);
+  // How long a thread must sit untouched before the backend writes its recap.
+  const [workSummaryMins, setWorkSummaryMins] = createSignal("");
+  const [savingWorkSummary, setSavingWorkSummary] = createSignal(false);
   // Where the composer's context ring stops being grey. Two fractions, edited as
   // percentages and saved together, because the pair is only valid in order.
   const [warnPct, setWarnPct] = createSignal("");
@@ -128,6 +131,7 @@ export function ChatSection(): JSX.Element {
     setAutoCompactEnabled(s.autoCompactEnabled);
     setAutoCompactPct(String(Math.round(s.autoCompactThreshold * 100)));
     setKeepTurns(String(s.autoCompactKeepTurns));
+    setWorkSummaryMins(String(s.workSummaryIdleMinutes));
     setWarnPct(String(Math.round(s.contextWarnThreshold * 100)));
     setAlertPct(String(Math.round(s.contextAlertThreshold * 100)));
   });
@@ -245,6 +249,26 @@ export function ChatSection(): JSX.Element {
       toast.error("Unable to update auto-compaction settings.");
     } finally {
       setSavingAutoCompact(false);
+    }
+  };
+  const saveWorkSummary = async () => {
+    // Floored at 1: a zero-minute wait would summarize a thread between two turns of
+    // one sitting, which is the case the delay exists to avoid. The ceiling is the
+    // backend's and is repeated here only for immediate feedback.
+    const mins = wholeNumber(workSummaryMins(), { min: 1, max: 1440 });
+    if (mins === null) {
+      toast.error("Enter a whole number of minutes between 1 and 1440.");
+      return;
+    }
+    setSavingWorkSummary(true);
+    try {
+      const saved = await saveChatSettings({ workSummaryIdleMinutes: mins });
+      setWorkSummaryMins(String(saved.workSummaryIdleMinutes));
+      toast.success("Thread recap updated");
+    } catch {
+      toast.error("Unable to update the thread recap setting.");
+    } finally {
+      setSavingWorkSummary(false);
     }
   };
 
@@ -553,6 +577,43 @@ export function ChatSection(): JSX.Element {
               onClick={() => void saveAutoCompact()}
             >
               {savingAutoCompact() ? "Saving…" : "Save"}
+            </Button>
+          </Row>
+        </Stack>
+
+        <Stack gap={3}>
+          <SettingHeader title="Thread recap">
+            When you come back to a conversation after a while, a short account
+            of what was done sits above the transcript. It is written once the
+            thread has been quiet for the time below, so it never costs anything
+            while you are still working, and it is rewritten from scratch each
+            time the thread goes quiet again — there is only ever the newest
+            one. The recap itself appears only after an hour away, on the
+            grounds that anything sooner is still on screen.
+          </SettingHeader>
+          <Row gap={4} align="end">
+            <Stack gap={1}>
+              <Text variant="micro" tone="dim">
+                WRITE IT AFTER (minutes idle)
+              </Text>
+              <div class="w-32">
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  min="1"
+                  max="1440"
+                  value={workSummaryMins()}
+                  onInput={(e) => setWorkSummaryMins(e.currentTarget.value)}
+                  placeholder="15"
+                />
+              </div>
+            </Stack>
+            <Button
+              variant="primary"
+              disabled={savingWorkSummary()}
+              onClick={() => void saveWorkSummary()}
+            >
+              {savingWorkSummary() ? "Saving…" : "Save"}
             </Button>
           </Row>
         </Stack>

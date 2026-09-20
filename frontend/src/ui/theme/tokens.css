@@ -184,6 +184,13 @@
   --text-dim: #6e6e6e; /* 3.9:1 on bg */
   --text: #a8a8a8; /* 8.3:1 on bg */
   --text-bright: #ffffff; /* 21:1 on bg */
+  /* Prose only. See the note beside `--prose-size`: a value tuned for a rail row
+     is not a value for five paragraphs, and that is as true of colour as it is of
+     size. Ink steps it up a long way because light-on-dark is where the
+     difference bites — thin strokes on black bleed into the ground, and 8.3:1
+     that reads as crisp on a one-line label reads as haze over a screenful.
+     13.9:1 on bg. */
+  --text-reading: #d2d2d2;
 
   /* The signature accent is mode-dependent (§5.2). Phosphor green is the
      product's lineage and belongs on black. */
@@ -277,6 +284,12 @@
   --text-dim: #8a8a85; /* 3.5:1 on bg */
   --text: #3d3d3a; /* 10.9:1 on bg */
   --text-bright: #000000; /* 21:1 on bg */
+  /* Paper's step is small on purpose, and the asymmetry with Ink is the point.
+     Halation is a property of light on dark; dark on light has none, so 10.9:1 is
+     already a comfortable long-form value and driving it toward black would make
+     a screenful harsher rather than easier. This firms the reading voice just
+     enough to be a voice. 12.5:1 on bg. */
+  --text-reading: #343431;
 
   /* The same instrument-precise idea as phosphor green, executed for a light
      substrate, where green turns acidic and illegible. 10.0:1 on white.

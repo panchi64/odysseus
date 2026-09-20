@@ -473,6 +473,35 @@ class Settings(BaseSettings):
     retitle_timeout_s: float = 60.0
     retitle_max_tokens: int = 4096
 
+    # The per-conversation **work summary** — two or three sentences saying what the agent
+    # did in a thread, shown in the re-entry band when the operator comes back to it
+    # (`services/work_summaries.py`, `agent/work_summary.py`). Unlike the title, it is
+    # written by a deferred background sweep rather than by the turn: an account of the work
+    # is only worth writing once the work has stopped moving, and regenerating it per turn
+    # would spend a utility-model call on a band nobody is looking at while they are still
+    # typing in the thread.
+    #
+    # `work_summary_idle_minutes` is how long a thread must have been quiet before it is a
+    # candidate — the *default*, overridden at runtime by the operator through
+    # `PUT /chat/settings`, since how long a pause has to be before it counts as leaving is
+    # a property of how somebody works and not of the deploy. 15 is the pause after which a
+    # thread usually needs re-reading rather than just scrolling back.
+    # `work_summary_sweep_interval_s` is only how often the query runs; it costs nothing
+    # when nothing is stale, so it is well under the idle window rather than equal to it —
+    # a sweep period as long as the window would make the band's arrival lag the operator's
+    # return by up to a second window.
+    # `work_summary_max_per_sweep` bounds the model calls one pass may start, so the first
+    # sweep on a workspace full of old threads backfills over several minutes instead of
+    # stampeding the background endpoint. `work_summary_timeout_s` and
+    # `work_summary_max_tokens` are the titler's bounds for the titler's reason: the call
+    # is best-effort, and a runtime that ignores the reasoning-off lever needs room for a
+    # `<think>` block *and* the sentences behind it.
+    work_summary_idle_minutes: int = 15
+    work_summary_sweep_interval_s: float = 60.0
+    work_summary_max_per_sweep: int = 5
+    work_summary_timeout_s: float = 60.0
+    work_summary_max_tokens: int = 4096
+
     # Uploads (UP-*). A file is accepted, stored encrypted at rest, and its text
     # extracted off the request path. `upload_max_bytes` caps a single file.
     # Uploads are rate-limited to protect the service (UP-4): a per-operator token

@@ -17,6 +17,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import Engine
 
+from agent.work_summary import summarize_work
 from core.api_scopes import CORE_CLAIMS, ScopeTable
 from core.auth import AuthManager, AuthMiddleware
 from core.config import Settings, get_settings
@@ -43,6 +44,7 @@ from routes import (
     tokens,
     tools,
 )
+from routes.deps import OPERATOR_ID
 from runs import LaneLimits, PrefixLedger, RunRegistry
 from services.api_token_store import ApiTokenStore
 from services.approval_grants import ApprovalGrantStore
@@ -59,6 +61,7 @@ from services.sealing import seal_legacy_column
 from services.settings_store import SettingsStore
 from services.task_list import ConversationTasks
 from services.tool_policy import AvailabilityCheck, CategoryAvailability
+from services.work_summaries import WorkSummaryService
 from tools import (
     CORE_GATED_TOOLS,
     InstructionProvider,
@@ -286,6 +289,28 @@ async def _wire(app: FastAPI, settings: Settings, lifecycle: LifecycleRegistry) 
     else:
         logger.info("sandbox: code execution disabled (no container runtime)")
         logger.info("preview: disabled (no container runtime)")
+
+    # The deferred work-summary sweep — what the agent did in a thread, written once the
+    # thread has been idle a while and shown when the operator comes back to it. Beside the
+    # sandbox reaper because it is the same kind of unit (a periodic job over
+    # `core/periodic.py`), and after the store and registry it reads from.
+    app.state.work_summaries = WorkSummaryService(
+        store=app.state.conversations,
+        settings_store=app.state.settings_store,
+        models=registry,
+        runs=app.state.runs,
+        vault=vault,
+        settings=settings,
+        owner_id=OPERATOR_ID,
+        # Introduced here rather than imported by the service: `agent` sits above
+        # `services`, and assembly is the layer allowed to know both.
+        summarize=summarize_work,
+    )
+    await lifecycle.start(
+        "work-summaries",
+        start=app.state.work_summaries.start,
+        stop=app.state.work_summaries.stop,
+    )
 
     # Transitional: capabilities still hand-wired above register on the container so
     # converted manifests can resolve them. Each of these lines moves into its own

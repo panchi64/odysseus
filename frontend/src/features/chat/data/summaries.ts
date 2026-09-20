@@ -71,6 +71,7 @@ export function toSummary(dto: ConversationSummaryDTO): ChatSummary {
     createdAt: dto.created_at,
     messageCount: dto.message_count,
     preview: dto.preview ?? undefined,
+    workSummary: dto.work_summary ?? undefined,
     model: dto.model ?? undefined,
     activity: dto.activity ?? undefined,
     lastOutcome: dto.last_outcome ?? undefined,

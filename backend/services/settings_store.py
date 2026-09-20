@@ -35,6 +35,19 @@ AUTO_COMPACT_KEEP_TURNS_KEY = "chat.auto_compact_keep_turns"
 # store's fallback rule can't drift.
 AUTO_COMPACT_KEEP_TURNS_MAX = 20
 
+# The per-conversation work summary (services/work_summaries.py): how many minutes a thread
+# must have been quiet before the background sweep writes an account of what the agent did
+# in it. An operator setting rather than config-only for the same reason keep-turns is one —
+# how long a pause has to be before it counts as *leaving* a thread is a property of how
+# somebody works, and the band is either there when they come back or it is useless.
+WORK_SUMMARY_IDLE_MINUTES_KEY = "chat.work_summary_idle_minutes"
+
+# The ceiling on that idle window. A sanity bound, not a safety one: a window measured in
+# days would mean the band never appears on a thread worked on in a normal week, which is
+# indistinguishable from the feature being off — and switching it off is not what a number
+# is for. A day is comfortably past any real "I stepped away" pause.
+WORK_SUMMARY_IDLE_MINUTES_MAX = 1440
+
 # The context gauge's severity boundaries (runs/events.py `ContextThresholds`): the two
 # fullness fractions at which the ring under the composer turns amber and then red.
 # Presentation, but not only presentation — the same `level` is what any overflow warning
@@ -276,12 +289,15 @@ def _positive_int_or(raw: str | None, default: int) -> int:
     return value if value >= 1 else default
 
 
-def _bounded_int_or(raw: str | None, default: int, *, maximum: int) -> int:
-    """:func:`_int_or` for a setting that is capped as well as floored at 0 — a stored value
-    above ``maximum`` is corruption or a client that skipped the route's bound, and falls
-    back rather than being silently clamped to a number the operator never chose."""
+def _bounded_int_or(raw: str | None, default: int, *, maximum: int, minimum: int = 0) -> int:
+    """:func:`_int_or` for a setting that is capped as well as floored — a stored value
+    outside the range is corruption or a client that skipped the route's bound, and falls
+    back rather than being silently clamped to a number the operator never chose.
+
+    ``minimum`` defaults to 0, which is :func:`_int_or`'s own floor, so a caller only names
+    it for a setting where 0 is meaningless rather than merely minimal."""
     value = _int_or(raw, default)
-    return value if value <= maximum else default
+    return value if minimum <= value <= maximum else default
 
 
 @dataclass(frozen=True)
@@ -372,6 +388,31 @@ async def set_auto_compact(
     await store.set(owner_id, AUTO_COMPACT_THRESHOLD_KEY, str(settings.threshold))
     await store.set(owner_id, AUTO_COMPACT_KEEP_TURNS_KEY, str(settings.keep_turns))
     return settings
+
+
+async def get_work_summary_idle_minutes(store: SettingsStore, owner_id: str) -> int:
+    """How long a thread must be quiet before the sweep writes its work summary — the
+    stored value where set (and valid), else the config default.
+
+    A single key rather than a group, so it is read on its own rather than batched: the
+    sweeper asks for exactly this on every pass, and the compaction group next door is
+    read by a different caller for a different reason. ``minimum=1`` because a zero-minute
+    window is not a faster setting but a broken one — every thread would be a candidate the
+    instant its turn finished, and the sweep would summarize conversations mid-conversation.
+    """
+    raw = await store.get(owner_id, WORK_SUMMARY_IDLE_MINUTES_KEY)
+    return _bounded_int_or(
+        raw,
+        get_settings().work_summary_idle_minutes,
+        minimum=1,
+        maximum=WORK_SUMMARY_IDLE_MINUTES_MAX,
+    )
+
+
+async def set_work_summary_idle_minutes(store: SettingsStore, owner_id: str, minutes: int) -> int:
+    """Persist the operator's idle window. Returns the stored value."""
+    await store.set(owner_id, WORK_SUMMARY_IDLE_MINUTES_KEY, str(minutes))
+    return minutes
 
 
 async def get_context_thresholds(store: SettingsStore, owner_id: str) -> ContextThresholds:

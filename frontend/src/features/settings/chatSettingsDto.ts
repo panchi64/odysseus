@@ -21,6 +21,7 @@ export interface ChatSettingsDTO {
   auto_compact_enabled: boolean;
   auto_compact_threshold: number;
   auto_compact_keep_turns: number;
+  work_summary_idle_minutes: number;
   context_warn_threshold: number;
   context_alert_threshold: number;
   agent_request_limit: number;
@@ -35,6 +36,7 @@ export function toChatSettings(dto: ChatSettingsDTO): ChatSettings {
     autoCompactEnabled: dto.auto_compact_enabled,
     autoCompactThreshold: dto.auto_compact_threshold,
     autoCompactKeepTurns: dto.auto_compact_keep_turns,
+    workSummaryIdleMinutes: dto.work_summary_idle_minutes,
     contextWarnThreshold: dto.context_warn_threshold,
     contextAlertThreshold: dto.context_alert_threshold,
     agentRequestLimit: dto.agent_request_limit,
@@ -56,6 +58,8 @@ export function toChatSettingsBody(
     body.auto_compact_threshold = patch.autoCompactThreshold;
   if (patch.autoCompactKeepTurns !== undefined)
     body.auto_compact_keep_turns = patch.autoCompactKeepTurns;
+  if (patch.workSummaryIdleMinutes !== undefined)
+    body.work_summary_idle_minutes = patch.workSummaryIdleMinutes;
   if (patch.contextWarnThreshold !== undefined)
     body.context_warn_threshold = patch.contextWarnThreshold;
   if (patch.contextAlertThreshold !== undefined)

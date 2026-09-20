@@ -71,6 +71,25 @@ class Conversation(SQLModel, table=True):
     # it any more, so it is null on every new row and drains to null on every old one — a
     # migration can't do the sealing itself, because it runs before unlock with no key.
     title: str | None = None
+    # AEAD ciphertext of the thread's **work summary** — two or three sentences saying what
+    # was asked, what the agent actually did, and where things stand, written by a
+    # background sweep once the thread has been idle a while and shown in the re-entry band
+    # when the operator comes back to it. It is user content of the most concentrated kind
+    # (it names the files, commands and sources a thread touched), so it is sealed exactly
+    # as the title above is. **No cleartext twin**: the column is new, so nothing was ever
+    # written here unsealed and `services/sealing.py` has nothing to backfill.
+    #
+    # A single value, replaced whole on every regeneration rather than appended to — the
+    # band shows one account of the thread, and a history of superseded ones would be a
+    # second thing to seal, to bound and to decide staleness for.
+    work_summary_enc: str | None = None
+    # When the summary above was generated. It is the whole of the staleness rule: a summary
+    # is stale when this is null or older than `updated_at`, so a thread that has spoken
+    # since it was last summarised is a candidate again and one that has not is skipped for
+    # free. A timestamp rather than a message id or a hash because the sweeper's other
+    # condition — "idle for N minutes" — already reads `updated_at`, and comparing two
+    # columns of the same kind is one query rather than a load per thread.
+    work_summary_at: datetime | None = None
     # Tip of the path the operator is currently viewing. Walking it parent-by-parent
     # to the root is the active history. Null only for an empty conversation; a
     # cold load that finds it dangling falls back to the deepest leaf by seq.

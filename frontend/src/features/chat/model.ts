@@ -102,6 +102,16 @@ export interface ToolInvocation {
    *  the command — for the collapsed row. Undefined when no argument stands out,
    *  in which case the row shows `args` instead. */
   detail?: string;
+  /** Why the model made this call, in its own words — the `narration` argument the
+   *  backend injects into every tool above `read`.
+   *
+   *  It takes the collapsed row's detail slot when present, because it answers a
+   *  question the argument never could: `Read agent.py` says what happened and
+   *  "Checking how the run loop handles a cancel" says what it was *for*, which is
+   *  the thing an operator reading a turn back is actually after. Absent for a
+   *  read-only call (never asked for) and for a model that declined to write one
+   *  (the argument is optional on purpose), so the detail remains the fallback. */
+  narration?: string;
   status: ToolStatus;
   /** Latest progress note while `status='running'` (`tool.progress`), e.g. the
    *  sandbox spinning up. Reassures the operator the wait is work, not a stall. */
@@ -714,6 +724,13 @@ export interface ChatSummary {
   messageCount: number;
   /** Last-message snippet for preview cards. */
   preview?: string;
+  /** What the agent did in this thread, in two or three sentences the backend's
+   *  utility model wrote once the thread had been idle a while.
+   *
+   *  One value, replaced each time it is regenerated — there is no history of these.
+   *  Absent until the backend's sweep has run, which is the ordinary state of a thread
+   *  that is still being worked on, so every reader has to render without it. */
+  workSummary?: string;
   /** The model the conversation last ran on (its most recent answer's model). */
   model?: string;
   /** Set while a run drives this thread; absent when it's idle. */

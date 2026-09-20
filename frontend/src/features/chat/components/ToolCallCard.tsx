@@ -67,9 +67,21 @@ export function ToolCallCard(props: {
     props.tool.status === "error",
   );
   const shown = createMemo(() => toolPresentation(props.tool.name));
-  // The salient argument when one stood out, else the full summary — never
-  // nothing, so a row is always about something.
-  const detail = () => props.tool.detail ?? props.tool.args;
+  // What the row is *about*, in preference order: the model's own reason for the
+  // call, the salient argument, then the full summary — never nothing.
+  //
+  // The narration leads because it answers a different question from the other two.
+  // `Read agent.py` says what happened; "Checking how the run loop handles a cancel"
+  // says what it was for, and reading a turn back is almost always the second
+  // question. The argument is a keystroke away in the open card either way.
+  const detail = () =>
+    props.tool.narration ?? props.tool.detail ?? props.tool.args;
+  /* A sentence is the row's meaning rather than its metadata, so it takes the
+     ordinary text tone where an argument fragment stays dim. Same slot, same size,
+     same voice — the column still parses as one sequence, which is the whole reason
+     every row here shares `ProcessRow`'s anatomy. */
+  const detailTone = (): "dim" | "default" =>
+    props.tool.narration ? "default" : "dim";
   // Copy the most useful payload available: result, else error, else the args.
   const copyTool = (e: MouseEvent): void => {
     e.stopPropagation();
@@ -132,7 +144,11 @@ export function ToolCallCard(props: {
           fallback={
             <Show when={detail()}>
               <Sep />
-              <Text variant="micro" tone="dim" class="min-w-0 truncate">
+              <Text
+                variant="micro"
+                tone={detailTone()}
+                class="min-w-0 truncate"
+              >
                 {detail()}
               </Text>
             </Show>

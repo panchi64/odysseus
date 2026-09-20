@@ -50,6 +50,7 @@ from runs import (
 )
 from services.conversation_view import tool_images
 from tools.emit import RunEventEmitted
+from tools.narration import strip_narration
 
 from .emit import ChassisEvent, OverheadMeasured, PrefixWatched
 from .meta import LoopBreaker
@@ -181,8 +182,17 @@ def _on_tool_event(
         # dedupe above, so the re-fired event of a deferred call isn't counted a second
         # time. Counting it twice would halve the effective repeat threshold for every
         # tool an approval grant auto-approves, since those hops share one LoopBreaker.
+        #
+        # The guard is shown the call's *question*, without the narration the model wrote
+        # to go with it: that sentence is prose, rewritten a little every time, and two
+        # spellings of the same reason for the same call are still the same call. Leaving
+        # it in the signature would make every repeat look novel and quietly switch the
+        # guard off. The frame below carries the whole thing, narration included — the
+        # operator is the one reader it was written for.
         if loop_breaker is not None:
-            loop_breaker.check(part.tool_name, part.args_as_dict(), part.tool_call_id)
+            loop_breaker.check(
+                part.tool_name, strip_narration(part.args_as_dict()), part.tool_call_id
+            )
         run.emit(
             ToolStarted(
                 tool_call_id=part.tool_call_id,

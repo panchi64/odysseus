@@ -502,9 +502,9 @@ async def test_start_stop_manages_the_reaper_task(tmp_path):
     # the runtime-less default backend it has nothing to talk to, which is the point.
     manager = _manager(tmp_path, vault)
     await manager.start()
-    assert manager._reaper is not None
+    assert manager._reaper.running
     await manager.stop()  # cancels the reaper and tears down any live sessions
-    assert manager._reaper is None
+    assert not manager._reaper.running
 
 
 async def test_reaper_spares_fresh_and_busy_sessions(tmp_path):

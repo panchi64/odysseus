@@ -41,6 +41,7 @@ from services.modes import mode_spec
 from services.permissions import permission_spec
 from tools import (
     InstructionProvider,
+    NarrationCapability,
     RunDeps,
     build_agent_toolsets,
     dormant_index_instructions,
@@ -125,6 +126,13 @@ def build_agent(
             # instructions and no hooks — every category still arrives through the namespaced,
             # gated stack (`tools/harness_events.py`).
             harness_events_capability(),
+            # The other half of the `narration` argument the describing stage offers every
+            # acting tool: this takes the sentence back off the call before Pydantic AI
+            # validates it against a function signature that never declared it. Registered
+            # unconditionally, because the property is added per tool rather than per run
+            # and a capability that was sometimes absent would turn a schema the model was
+            # handed into a retry loop (`tools/narration.py`).
+            NarrationCapability(),
             # The prefix watch reads the request the same two observers above do, and is
             # listed last among the observers so it fingerprints what actually ships — after
             # the system prompt is reasserted and, because the library orders

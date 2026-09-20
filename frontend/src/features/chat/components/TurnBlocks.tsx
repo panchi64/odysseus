@@ -168,12 +168,17 @@ export function TurnBlocks(
             >
               {(l) => (
                 <WorkLog
-                  groups={l().groups}
-                  open={logOpen(l().groups[0].id)}
-                  onToggle={() => toggleLog(l().groups[0].id)}
+                  entries={l().entries}
+                  open={logOpen(l().entries[0].group.id)}
+                  onToggle={() => toggleLog(l().entries[0].group.id)}
                   top={top()}
                   forceOpen={props.forceOpen}
+                  /* A live call is pinned inside the log now rather than lifted
+                     out of it, so the rail's LED has to reach in here too. */
+                  activeIds={activeIds()}
+                  streaming={props.streaming}
                   onResolveHostCommands={props.onResolveHostCommands}
+                  onOpenInView={props.onOpenInView}
                   chipLookup={chipLookup()}
                   seenIndex={seenIndex()}
                 />

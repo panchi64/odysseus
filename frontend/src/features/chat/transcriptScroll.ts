@@ -16,6 +16,20 @@
  * Reading `pinned` reactively would make re-attaching (by scrolling down) snap the view
  * itself, which takes the scroll away from the operator at the moment they were using it;
  * the next arriving fragment catches up instead.
+ *
+ * **Why detaching is decided by movement rather than by distance.** This used to yield
+ * on position alone — within `ATTACHED_PX` of the bottom counted as attached, full stop —
+ * and that made the bottom of a streaming transcript impossible to leave. A scroll-up
+ * smaller than the threshold left the follow attached, so the next fragment (milliseconds
+ * later, on the very next frame) put the view straight back at the bottom. The operator
+ * could only escape by flicking hard enough to clear the whole threshold in one gesture,
+ * which is precisely the complaint: the transcript felt locked to the newest step.
+ *
+ * So the rule is now *any upward movement the follow did not cause detaches it*, and the
+ * threshold survives only as the way back in. That is decided from the outcome — where
+ * the container ended up — rather than from input events, which is what keeps a wheel, a
+ * trackpad, a dragged scrollbar, a Page Up and a touch drag all behaving the same without
+ * this file knowing which one happened.
  */
 
 import {
@@ -27,10 +41,22 @@ import {
 } from "solid-js";
 import type { ChatMessage } from "./model";
 
-/** Within this many pixels of the bottom counts as still attached. */
+/** Scrolling back to within this many pixels of the bottom re-attaches the follow.
+ *
+ *  It is a *re-attachment* threshold only. It used to double as the detachment rule —
+ *  anything inside it counted as attached — which is what made a small scroll-up
+ *  impossible: the follow simply undid it on the next frame. Nothing reads this to
+ *  decide whether to let go any more. */
 const ATTACHED_PX = 80;
 /** Past roughly one screenful the jump-to-latest control appears. */
 const JUMP_PX = 240;
+/** Upward movement under this many pixels is rounding, not a gesture.
+ *
+ *  Sub-pixel layout and the browser's own clamping move `scrollTop` by fractions on
+ *  their own; anything above that came from the operator, however small. Two pixels is
+ *  deliberately almost nothing — the point of the rewrite is that there is no longer a
+ *  distance an operator has to out-scroll. */
+const DRIFT_PX = 2;
 
 /**
  * Everything in the in-flight turn that can grow, added up.
@@ -94,6 +120,47 @@ export function streamTick(messages: ChatMessage[]): number {
   return n;
 }
 
+/** Where the container was, and where it is now. */
+export interface FollowReading {
+  /** Whether the follow is currently attached. */
+  pinned: boolean;
+  /** `scrollTop` as of the previous reading — or as of the follow's own last write. */
+  lastTop: number;
+  /** `scrollHeight` as of the previous reading. */
+  lastHeight: number;
+  top: number;
+  height: number;
+  clientHeight: number;
+}
+
+/**
+ * Whether the follow should still be attached, given how the container just moved.
+ *
+ * Pure, and exported, because this is the whole of the behaviour worth testing and the
+ * one rule that has been wrong before. Three cases, in this order:
+ *
+ * 1. **The container moved up and did not shrink.** The follow only ever scrolls *down*
+ *    (to the bottom), so upward movement under a stable height is the operator, whatever
+ *    device they used. Let go immediately — there is no minimum gesture.
+ * 2. **We are at the bottom.** Take the follow back. This is the only way in besides the
+ *    jump control and starting a turn.
+ * 3. **Neither.** Leave it as it was. Growing content moves the *bottom* away rather than
+ *    moving the view, so a detached transcript stays detached while an answer streams on
+ *    underneath it.
+ *
+ * The shrink guard in case 1 exists because closing a fold can take `scrollHeight` below
+ * `scrollTop`, and the browser then clamps the view upward on its own. That is the one
+ * upward movement the operator did not ask for, and reading it as a gesture would drop
+ * the follow every time a work log collapsed.
+ */
+export function nextPinned(reading: FollowReading): boolean {
+  const shrank = reading.height < reading.lastHeight;
+  if (!shrank && reading.top < reading.lastTop - DRIFT_PX) return false;
+  const distance = reading.height - reading.top - reading.clientHeight;
+  if (distance < ATTACHED_PX) return true;
+  return reading.pinned;
+}
+
 export interface TranscriptFollow {
   /** `ref` for the scrolling transcript container. */
   ref: (el: HTMLDivElement) => void;
@@ -126,11 +193,20 @@ export function createTranscriptFollow(source: {
   // and tokens arrive several to a frame, so coalescing here costs nothing visible and
   // takes the flush off the delta path.
   let frame: number | null = null;
+  // The container as of the last thing that moved it — a scroll the operator made, or
+  // the follow's own write. `nextPinned` compares against these to tell the two apart:
+  // recording the write here is what stops the follow reading its own scroll event back
+  // as movement, and is why no flag and no event-source sniffing is needed.
+  let lastTop = 0;
+  let lastHeight = 0;
   const followBottom = () => {
     if (frame !== null) return;
     frame = requestAnimationFrame(() => {
       frame = null;
-      if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
+      if (!scrollEl) return;
+      scrollEl.scrollTop = scrollEl.scrollHeight;
+      lastTop = scrollEl.scrollTop;
+      lastHeight = scrollEl.scrollHeight;
     });
   };
   onCleanup(() => {
@@ -143,10 +219,20 @@ export function createTranscriptFollow(source: {
   };
   const onScroll = () => {
     if (!scrollEl) return;
-    const distance =
-      scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight;
-    setPinned(distance < ATTACHED_PX);
-    setShowJump(distance > JUMP_PX);
+    const { scrollTop: top, scrollHeight: height, clientHeight } = scrollEl;
+    setPinned(
+      nextPinned({
+        pinned: untrack(pinned),
+        lastTop,
+        lastHeight,
+        top,
+        height,
+        clientHeight,
+      }),
+    );
+    setShowJump(height - top - clientHeight > JUMP_PX);
+    lastTop = top;
+    lastHeight = height;
   };
 
   // Ticks on every fragment that grows the in-flight turn, so the follow effect

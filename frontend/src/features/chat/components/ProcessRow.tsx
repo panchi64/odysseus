@@ -7,6 +7,7 @@ import {
   type JSX,
   type Setter,
 } from "solid-js";
+import { Dynamic } from "solid-js/web";
 import { Icon, Text, cx, type IconName } from "~/ui";
 
 export interface AdoptedOpen {
@@ -83,6 +84,12 @@ export function Sep(): JSX.Element {
  *  recognizable, a truncated verb is not. */
 export function ProcessRow(props: {
   open: boolean;
+  /** Whether there is anything behind the chevron. Defaults to true.
+   *
+   *  A row with nothing to reveal keeps its whole anatomy — the column reads as a
+   *  sequence because every row is the same shape — but drops the chevron and the
+   *  button, since a control that opens onto nothing is worse than no control. */
+  foldable?: boolean;
   onToggle: () => void;
   /** The family glyph. Omitted only where the row has no kind to name. */
   icon?: IconName;
@@ -113,23 +120,35 @@ export function ProcessRow(props: {
         props.class,
       )}
     >
-      <button
-        type="button"
-        aria-expanded={props.open}
-        onClick={(e) => {
-          // A row nested inside its own clickable wrapper would otherwise toggle
-          // twice and appear inert.
-          e.stopPropagation();
-          props.onToggle();
-        }}
+      <Dynamic
+        component={props.foldable === false ? "div" : "button"}
+        type={props.foldable === false ? undefined : "button"}
+        aria-expanded={props.foldable === false ? undefined : props.open}
+        onClick={
+          props.foldable === false
+            ? undefined
+            : (e: MouseEvent) => {
+                // A row nested inside its own clickable wrapper would otherwise
+                // toggle twice and appear inert.
+                e.stopPropagation();
+                props.onToggle();
+              }
+        }
         class="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left"
         title={props.title}
       >
-        <Icon
-          name={props.open ? "chevron-down" : "chevron-right"}
-          size={12}
-          class="text-dim"
-        />
+        {/* The chevron's slot is held open even with nothing to reveal, so the
+            glyph and label of every row in the column still line up. */}
+        <Show
+          when={props.foldable !== false}
+          fallback={<span class="w-3 shrink-0" aria-hidden="true" />}
+        >
+          <Icon
+            name={props.open ? "chevron-down" : "chevron-right"}
+            size={12}
+            class="text-dim"
+          />
+        </Show>
         <Show when={props.icon}>
           {(name) => (
             <Icon
@@ -147,7 +166,7 @@ export function ProcessRow(props: {
           {props.label}
         </Text>
         {props.children}
-      </button>
+      </Dynamic>
       {/* `children()` and not `props.trailing` read twice. Solid props are
           getters, so reading one in `Show`'s condition AND again as the span's
           child builds the whole cluster twice and throws the first copy away —

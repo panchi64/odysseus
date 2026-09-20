@@ -22,6 +22,12 @@ A third problem is ours only in the sense that we chose the library: the harness
 them — while we run with subtasks off, so the runtime rejects every one of them. Schema
 the model is charged for and can only be punished for using is worse than no schema.
 
+One thing here goes the other way, and it is the only one: a tool that does more than read
+is offered a ``narration`` property it never declared, so the work log can show the model's
+reason for a call beside the call's arguments (:data:`NARRATION_PROPERTY`). It is offered
+here and removed again before validation, in ``tools/narration.py`` — the two halves have to
+be read together.
+
 Everything here is a pure function over a ``ToolDefinition``: the same input gives the
 same output, and applying it twice changes nothing the first pass didn't. That matters
 because the rewrite runs on a prepare stage, once per model request, over definitions
@@ -37,6 +43,7 @@ import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from functools import lru_cache
+from types import MappingProxyType
 from typing import Any
 
 from pydantic_ai import ToolDefinition
@@ -63,6 +70,32 @@ _BACKTICKED = re.compile(r"(?P<ticks>`+)(?P<body>[^`\n]+?)(?P=ticks)")
 #: argument validator, and the harness function keeps its ``None`` default — so dropping
 #: it from the schema only stops it being offered.
 _UNOFFERED_PROPERTIES: Mapping[str, frozenset[str]] = {"browse": frozenset({"timeout_ms"})}
+
+#: The argument every tool above a pure read is offered, and the only property this module
+#: *adds* rather than takes away. The work log shows the operator a call's raw arguments,
+#: which say what is about to happen and never why — a `run_command` with a test invocation
+#: reads the same whether the model is checking its own change or thrashing. One sentence of
+#: the model's own intent, written at the moment it decided, is the cheapest thing that
+#: closes that gap.
+#:
+#: It is **offered in the schema and stripped before validation** (``tools/narration.py``),
+#: because the alternative does not exist: Pydantic AI validates a call against the Python
+#: signature with extras forbidden, so a property no function declares fails validation and
+#: sends the model round a retry loop. Adding a real parameter to every tool function is not
+#: available either — most of them are ``pydantic_ai_harness``'s, not ours.
+#:
+#: **Deliberately not in ``required``.** A model that omits it should degrade to a call with
+#: no narration, which the work log renders exactly as it did before; making it required buys
+#: a retry on a field that is decoration.
+NARRATION_ARG = "narration"
+NARRATION_TEXT = (
+    "One short sentence, present tense, addressed to the operator, saying why you are "
+    'making *this* call right now — not what the tool does. E.g. "Checking whether the '
+    'migration already ran before I add another."'
+)
+NARRATION_PROPERTY: Mapping[str, Any] = MappingProxyType(
+    {"type": "string", "description": NARRATION_TEXT}
+)
 
 #: Fields, enum values and prose that ``pydantic_ai_harness``'s ``Planning`` emits for a
 #: subtasks mode we do not run. The toolset rejects all of them at call time.
@@ -114,6 +147,29 @@ def drop_properties(schema: Mapping[str, Any], names: Iterable[str]) -> dict[str
         out["required"] = [name for name in required if name not in dropped]
         if not out["required"]:
             del out["required"]
+    return out
+
+
+def add_property(
+    schema: Mapping[str, Any], name: str, subschema: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Offer one more top-level property, **without** making it required.
+
+    The mirror of :func:`drop_properties`, and deliberately not its exact inverse: nothing
+    is ever added to ``required``. Everything this stage injects is a property the tool's
+    own function does not declare, so a model that omits one has to land on a call that
+    still validates.
+
+    Like every function here it copies rather than edits — the caller's schema belongs to a
+    toolset other code reads — and applying it twice with the same subschema changes nothing
+    the first pass did not. A schema with no ``properties`` object grows one; that is the
+    shape Pydantic AI gives a tool that takes no arguments, and it is the case where a
+    narration is most worth having, since such a call's arguments say nothing at all.
+    """
+    out = copy.deepcopy(dict(schema))
+    properties = out.setdefault("properties", {})
+    if isinstance(properties, dict):
+        properties[name] = copy.deepcopy(dict(subschema))
     return out
 
 

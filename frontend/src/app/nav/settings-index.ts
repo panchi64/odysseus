@@ -139,6 +139,18 @@ export function useSettingsIndex(): Accessor<SettingEntry[]> {
       write: (next) => saveChat({ autoCompactKeepTurns: next }),
     },
     {
+      id: "chat.work-summary-idle-minutes",
+      label: "Write a thread recap after",
+      keywords: ["recap", "summary", "idle", "thread", "minutes", "re-entry"],
+      group: CHAT,
+      kind: "number",
+      unit: " min idle",
+      min: 1,
+      max: 1440,
+      read: () => chat()?.workSummaryIdleMinutes,
+      write: (next) => saveChat({ workSummaryIdleMinutes: next }),
+    },
+    {
       id: "chat.context-warn",
       label: "Context gauge warning",
       keywords: ["context", "ring", "gauge", "amber", "threshold", "percent"],
