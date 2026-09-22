@@ -479,6 +479,7 @@ behind it — an overlay over the transcript, a dialog over a working page.
 ### Permitted animations
 
 - Eased (human): the reveal above, hover and focus transitions, height on disclosure, ambient state colour (240ms, §10.9).
+- **The trace-in** (`.ody-trace-*`) — a sub-row branching off the row above it. The construction reveal's sentence at the size of one line: the elbow hanging the row off its parent draws itself down and then across (overlapping, so it reads as one L), and the row resolves out of the ordinary blur-fade as the stroke reaches it; ~220ms end to end. One surface uses it: the collapsed work log's latest step, keyed so each new step replays it. Like the construction reveal, it stops meaning anything if it spreads.
 - Stepped (machine): caret blink, the braille throbber (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`) as a "working now" indicator, live-state pulse, value tick-over, **the reasoning wall** (§10.9).
 
 The chat transcript is where the two registers are visible at once, and it is the reference implementation: the mono reasoning wall lands hard, the sans answer beneath it eases in token by token.

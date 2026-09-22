@@ -29,8 +29,8 @@ Last comes the **describing stage** (``describe.py``), which owns no policy at a
 rewrites each definition's model-facing text into the namespaced names this stack has
 just produced, and drops the library scaffolding and unreachable schema a
 harness-supplied tool arrives with. It runs after the gates so a description can never
-decide whether a tool is offered. It is also where a tool that does more than read is
-offered its ``narration`` argument — one sentence of the model's own reason for a call, for
+decide whether a tool is offered. It is also where every tool is offered its
+``narration`` argument — one sentence of the model's own reason for a call, for
 the work log to show beside the arguments — which ``tools/narration.py`` takes back off
 before anything validates it.
 """
@@ -44,7 +44,7 @@ from pydantic_ai import AbstractToolset, CombinedToolset, RunContext, ToolDefini
 
 from services.permissions import beyond_scope
 from services.tool_policy import permission_disabled_tools
-from services.tool_sensitivity import Sensitivity, declared_sensitivity, sensitivity_of
+from services.tool_sensitivity import declared_sensitivity
 
 from .builtin import builtin_toolset
 from .code import code_toolset
@@ -125,19 +125,27 @@ def _approval_gate(
 
 
 def _narrated(tool_def: ToolDefinition) -> ToolDefinition:
-    """Offer this tool a ``narration`` argument, if it does anything more than read.
+    """Offer this tool a ``narration`` argument — every tool, reads included.
 
-    Classified with the same pair the approval gate above uses — the tool's own declaration
-    first, the name registry behind it — so the set of tools that explain themselves and the
-    set that can stop a run to ask cannot drift apart. A read is left silent on purpose:
-    its name and arguments already say what it is doing, the operator has nothing to weigh,
-    and the property is charged on every request whether or not the model writes one.
+    Reads used to be left silent, on the theory that a read's name and arguments already
+    say what it is doing. They say *what*, never *why*, and the work log now leads with the
+    run's most recent reason: a turn that spends ten calls reading would show no reason at
+    all for most of its length. The property is charged on every request whether or not the
+    model writes one (``tests/test_tool_schema_cost.py`` records the price).
+
+    Unconditional on purpose: a gate here keyed on sensitivity would be a second list of
+    which tools explain themselves, rotting separately from the catalog.
+
+    **Except a tool that already declares a ``narration`` of its own** — an MCP server's or
+    an integration's, which this repo does not write. Overwriting it would hand the model
+    our description for their argument, and the strip would then take the value away from
+    a tool that needed it. Such a tool keeps its own; ``tools/narration.py`` recognises ours
+    by its exact subschema and leaves every other one alone.
 
     The property comes off again before validation (``tools/narration.py``); a tool function
     never sees it.
     """
-    sensitivity = declared_sensitivity(tool_def.metadata) or sensitivity_of(tool_def.name)
-    if not sensitivity.above(Sensitivity.READ):
+    if NARRATION_ARG in (tool_def.parameters_json_schema.get("properties") or {}):
         return tool_def
     return replace(
         tool_def,
@@ -198,7 +206,7 @@ def build_agent_toolsets(
         ctx: RunContext[RunDeps], tool_defs: list[ToolDefinition]
     ) -> list[ToolDefinition]:
         """Restate each tool in the names and vocabulary this catalog actually offers, offer
-        the acting ones a place to say why, and stamp the owner its events are attributed to.
+        each one a place to say why, and stamp the owner its events are attributed to.
 
         The stamp goes on every tool rather than only the harness-derived ones, because the
         alternative is a per-category list that silently rots: a lifted harness toolset whose

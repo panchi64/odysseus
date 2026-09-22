@@ -1,7 +1,7 @@
 """The per-call ``narration``: offered in the schema, gone again before validation.
 
 The argument exists in two places that have to agree — ``tools/describe.py`` puts a
-property on every acting tool's schema, ``tools/narration.py`` takes it back off the raw
+property on every tool's schema, ``tools/narration.py`` takes it back off the raw
 arguments before Pydantic AI validates them — and the failure mode if they disagree is not
 subtle: the library validates a call against the tool function's own signature with extras
 forbidden, so a narration that survives to validation is a ``ValidationError``, which the
@@ -27,8 +27,8 @@ from pydantic_ai.usage import RunUsage
 from agent import ParkedTurn, build_chat_orchestrator, build_resume_orchestrator
 from runs import Run, RunRegistry, RunStream
 from services.tool_sensitivity import SENSITIVITY_METADATA_KEY, Sensitivity
-from tools import NarrationCapability, RunDeps, strip_narration
-from tools.describe import NARRATION_ARG
+from tools import NarrationCapability, RunDeps, build_agent_toolsets, strip_narration
+from tools.describe import NARRATION_ARG, NARRATION_TEXT
 
 #: What the model writes when it calls the tool below — the thing the operator is meant to
 #: read in the work log, and the thing the tool function must never be handed.
@@ -40,10 +40,9 @@ _TOOL_DEF = ToolDefinition(name="danger_delete_thing")
 def _recording_categories(seen: list[dict[str, object]]):
     """One acting tool that writes down every keyword argument it was called with.
 
-    It declares itself a workspace write, which is both halves of what this test needs: it
-    is above a read, so the describing stage offers it a narration, and it is inside the
-    ceiling a thread's default level permits, so the call runs instead of parking for an
-    approval that has nothing to do with the argument under test.
+    It declares itself a workspace write, which is inside the ceiling a thread's default
+    level permits, so the call runs instead of parking for an approval that has nothing to
+    do with the argument under test. (The narration it is offered like every other tool.)
     """
     toolset: FunctionToolset[RunDeps] = FunctionToolset()
 
@@ -173,6 +172,44 @@ async def test_arguments_this_capability_cannot_read_are_passed_straight_through
     # than a stripper does; rewriting it here would replace a precise error with a vague one.
     for payload in ('{"name": "wid', "not json at all", "[1, 2, 3]"):
         assert await _stripped(payload) == payload
+
+
+async def test_a_tool_that_declares_its_own_narration_keeps_it():
+    """Every tool is offered the property now, including tools this repo does not write —
+    an MCP server's, an integration's. One that already takes a ``narration`` must get it:
+    stripping it would hand the tool a call missing an argument it asked for."""
+    own = {"type": "string", "description": "The caption to attach."}
+    tool_def = ToolDefinition(
+        name="external_annotate",
+        parameters_json_schema={"type": "object", "properties": {NARRATION_ARG: own}},
+    )
+    payload = {NARRATION_ARG: "A caption"}
+    ctx = await _context()
+    kept = await NarrationCapability().before_tool_validate(
+        ctx,
+        call=ToolCallPart(tool_name="external_annotate", args=payload, tool_call_id="c"),
+        tool_def=tool_def,
+        args=payload,
+    )
+    assert kept == payload
+
+
+async def test_the_describing_stage_leaves_a_declared_narration_as_the_tool_wrote_it():
+    toolset: FunctionToolset[RunDeps] = FunctionToolset()
+
+    @toolset.tool_plain
+    def annotate(narration: str) -> str:
+        """Attach a caption.
+
+        Args:
+            narration: The caption to attach.
+        """
+        return narration
+
+    offered = await build_agent_toolsets({"ext": toolset})[0].get_tools(await _context())
+    schema = offered["ext_annotate"].tool_def.parameters_json_schema
+    assert schema["properties"][NARRATION_ARG]["description"] != NARRATION_TEXT
+    assert NARRATION_ARG in schema.get("required", [])
 
 
 def test_strip_narration_gives_the_loop_guard_the_question_without_the_prose():

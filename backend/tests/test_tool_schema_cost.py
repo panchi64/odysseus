@@ -8,10 +8,10 @@ assembled catalog (core plus every manifest's export), through the same
 operator reads stay one unit.
 
 Since the dormant categories landed there are two numbers, not one. A **fresh request**
-carries ~30k characters across 34 tools — call it ~7.4k tokens — because five categories
+carries ~35.6k characters across 34 tools — call it ~8.7k tokens — because five categories
 (``browse``, ``calendar``, ``mail``, ``research``, ``vault``) ship with their schemas
 withheld until the model asks for the group. The **corpus** behind it, every dormant group
-revealed, is ~58k across 70; ``browse`` alone is 18 tools and most of the difference, which
+revealed, is ~68k across 70; ``browse`` alone is 18 tools and most of the difference, which
 is why it is dormant. A Plan-level turn is handed less of the corpus than an acting one, because
 everything above ``read`` is withheld outright rather than offered and refused — but not
 the ``plan`` and ``tasks`` categories, which a read-only turn needs precisely because it
@@ -49,7 +49,7 @@ from tools import RunDeps, build_agent_toolsets, core_categories
 from ._helpers import full_tool_categories
 
 #: What a fresh request's catalog may cost, in characters of serialized schema. Set a
-#: little above today's ~30k so an ordinary addition lands quietly and a category-sized one
+#: little above today's ~35.6k so an ordinary addition lands quietly and a category-sized one
 #: does not. Characters rather than tokens for the same reason the measurement itself uses
 #: them: no tokenizer, no provider, no drift.
 #:
@@ -65,17 +65,22 @@ from ._helpers import full_tool_categories
 #: took a fresh request from 25.9k to 30.1k characters and the corpus from 49.2k to 58.0k:
 #: roughly 250 characters per acting tool, paid on every request whether or not the model
 #: writes a sentence. Nothing here is deferrable — the property has to be on the schema of
-#: whatever tool the model is about to call — and the two cheaper shapes were declined:
-#: a shorter instruction gets narrations that describe the tool instead of the reason, and
-#: putting the property on *every* tool including the reads would cost half as much again
-#: for calls whose arguments already say everything the operator needs.
-CATALOG_CEILING_CHARS = 33_000
+#: whatever tool the model is about to call — and a shorter instruction was declined
+#: because it gets narrations that describe the tool instead of the reason.
+#:
+#: **Raised a third time, from 33k, when the reads got it too.** The work log's collapsed
+#: header now leads with the run's most recent reason, and a turn that spends ten calls
+#: reading showed none for most of its length — a read's arguments say *what*, never *why*.
+#: It took a fresh request to 35.6k characters and the corpus to 68.4k. The frontend could
+#: have derived a phrase ("Reading agent.py") for free; that was declined because it restates
+#: the arguments rather than giving the model's reason, which is the thing being paid for.
+CATALOG_CEILING_CHARS = 38_000
 
 #: The same for the whole corpus — every dormant group revealed. Deferral moves a group's
 #: cost from every turn to the turns that want it; it does not make the group free, and a
 #: ceiling that only watched the fresh request would let the dormant half grow unwatched.
-#: Raised from 50k alongside the ceiling above, and for the same one reason.
-CORPUS_CEILING_CHARS = 60_000
+#: Raised from 50k, then from 60k, alongside the ceiling above and for the same reasons.
+CORPUS_CEILING_CHARS = 72_000
 
 
 class _AllOnline:

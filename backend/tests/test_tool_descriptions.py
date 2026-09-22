@@ -20,7 +20,6 @@ from pydantic_ai.usage import RunUsage
 
 from prompts.agent import INSTRUCTIONS
 from runs import Run, RunStream
-from services.tool_sensitivity import Sensitivity, declared_sensitivity, sensitivity_of
 from tools import RunDeps, build_agent_toolsets
 from tools.catalog import tool_catalog
 from tools.describe import (
@@ -127,47 +126,20 @@ async def test_the_explanation_rule_is_stated_once_in_the_standing_brief():
         assert "operator reads when deciding" not in (tool_def.description or ""), name
 
 
-async def test_every_acting_tool_is_offered_somewhere_to_say_why():
+async def test_every_tool_is_offered_somewhere_to_say_why():
     """The work log shows a call's arguments, which say what is about to happen and never
-    why. The narration is that missing half, so the claim worth pinning is over the whole
-    assembled catalog: a new category of write tools that forgot to be classified would
-    otherwise ship silent."""
+    why. The narration is that missing half — and the collapsed log leads with the run's
+    latest one — so the claim worth pinning is over the whole assembled catalog, reads
+    included: a read-heavy turn would otherwise show no reason for most of its length."""
     offered = await _offered()
-    acting = {
-        name
-        for name, tool_def in offered.items()
-        if (declared_sensitivity(tool_def.metadata) or sensitivity_of(name)).above(
-            Sensitivity.READ
-        )
-    }
-    assert acting, "nothing in the catalog acts; this test is no longer measuring anything"
-    for name in acting:
+    assert offered, "the catalog is empty; this test is no longer measuring anything"
+    for name in offered:
         properties = offered[name].parameters_json_schema["properties"]
-        assert NARRATION_ARG in properties, f"{name} acts and cannot say why"
+        assert NARRATION_ARG in properties, f"{name} cannot say why"
         assert properties[NARRATION_ARG]["description"] == NARRATION_TEXT, name
         # Optional by construction: a model that leaves it out gets a call that runs with
         # no narration, not a retry prompt about a property nothing declares.
         assert NARRATION_ARG not in offered[name].parameters_json_schema.get("required", []), name
-
-
-async def test_no_read_only_tool_is_charged_for_a_narration():
-    """A read's name and arguments already say what it is doing and there is nothing for
-    the operator to weigh, so the property would be schema on every request buying nothing.
-    The saving is real — it is most of the catalog — and it is the reason the line is drawn
-    at the sensitivity rather than everywhere."""
-    offered = await _offered()
-    reads = {
-        name
-        for name, tool_def in offered.items()
-        if not (declared_sensitivity(tool_def.metadata) or sensitivity_of(name)).above(
-            Sensitivity.READ
-        )
-    }
-    assert reads, "nothing in the catalog only reads; this test is no longer measuring anything"
-    for name in reads:
-        assert NARRATION_ARG not in offered[name].parameters_json_schema.get("properties", {}), (
-            name
-        )
 
 
 async def test_every_tool_named_as_leaking_is_one_the_catalog_offers():

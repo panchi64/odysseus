@@ -1,6 +1,6 @@
 """Taking the model's ``narration`` back off a call before anything tries to validate it.
 
-The other half of the argument ``tools/describe.py`` adds. A tool above a pure read is
+The other half of the argument ``tools/describe.py`` adds. Every tool is
 offered a ``narration`` property — one sentence saying why *this* call, now — so the work
 log can show intent beside arguments. No tool function declares it, and nothing below this
 file should have to: the sentence is for the operator, not for the capability.
@@ -38,7 +38,7 @@ from pydantic_ai.capabilities import AbstractCapability, RawToolArgs
 from pydantic_ai.messages import ToolCallPart
 
 from .deps import RunDeps
-from .describe import NARRATION_ARG
+from .describe import NARRATION_ARG, NARRATION_PROPERTY
 
 
 def strip_narration(args: Mapping[str, Any]) -> dict[str, Any]:
@@ -70,9 +70,26 @@ class NarrationCapability(AbstractCapability[RunDeps]):
         tool_def: ToolDefinition,
         args: RawToolArgs,
     ) -> RawToolArgs:
+        if _declares_its_own(tool_def):
+            return args
         if isinstance(args, dict):
             return strip_narration(args) if NARRATION_ARG in args else args
         return _strip_from_json(args)
+
+
+def _declares_its_own(tool_def: ToolDefinition) -> bool:
+    """Whether ``narration`` is a real argument of this tool rather than the one we offer.
+
+    The describing stage leaves such a tool's property alone (``toolsets._narrated``), so
+    what sits in the schema is either exactly :data:`NARRATION_PROPERTY` or theirs. Keyed on
+    the subschema rather than on a name list because the tools that do this are an MCP
+    server's or an integration's — discovered per operator, never enumerable here. A key
+    the model sent to a tool whose schema has no such property at all is still stripped:
+    that is the retry loop this capability exists to prevent.
+    """
+    properties = tool_def.parameters_json_schema.get("properties") or {}
+    own = properties.get(NARRATION_ARG)
+    return own is not None and own != NARRATION_PROPERTY
 
 
 def _strip_from_json(payload: str) -> str:

@@ -22,11 +22,11 @@ A third problem is ours only in the sense that we chose the library: the harness
 them — while we run with subtasks off, so the runtime rejects every one of them. Schema
 the model is charged for and can only be punished for using is worse than no schema.
 
-One thing here goes the other way, and it is the only one: a tool that does more than read
-is offered a ``narration`` property it never declared, so the work log can show the model's
-reason for a call beside the call's arguments (:data:`NARRATION_PROPERTY`). It is offered
-here and removed again before validation, in ``tools/narration.py`` — the two halves have to
-be read together.
+One thing here goes the other way, and it is the only one: every tool is offered a
+``narration`` property it never declared, so the work log can show the model's reason for a
+call beside the call's arguments (:data:`NARRATION_PROPERTY`). It is offered here and
+removed again before validation, in ``tools/narration.py`` — the two halves have to be read
+together.
 
 Everything here is a pure function over a ``ToolDefinition``: the same input gives the
 same output, and applying it twice changes nothing the first pass didn't. That matters
@@ -71,7 +71,7 @@ _BACKTICKED = re.compile(r"(?P<ticks>`+)(?P<body>[^`\n]+?)(?P=ticks)")
 #: it from the schema only stops it being offered.
 _UNOFFERED_PROPERTIES: Mapping[str, frozenset[str]] = {"browse": frozenset({"timeout_ms"})}
 
-#: The argument every tool above a pure read is offered, and the only property this module
+#: The argument every tool is offered, and the only property this module
 #: *adds* rather than takes away. The work log shows the operator a call's raw arguments,
 #: which say what is about to happen and never why — a `run_command` with a test invocation
 #: reads the same whether the model is checking its own change or thrashing. One sentence of

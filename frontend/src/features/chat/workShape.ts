@@ -53,6 +53,9 @@ export interface WorkShape {
   /** The run's most recent step. Undefined only for a run with nothing in it,
    *  which never reaches the header. */
   latest?: WorkStep;
+  /** The block `latest` was read off. The indented row keys its reveal on this, so
+   *  a new step replays the arrival and a re-render of the same one does not. */
+  latestId?: string;
   /** How many rows expanding would reveal — one per group, which is exactly what
    *  the open log renders. */
   steps: number;
@@ -75,15 +78,12 @@ function stepOf(block: AssistantBlock): WorkStep | undefined {
       return { icon: THINK_ICON, label: "Reasoning" };
     case "tool": {
       const { icon, label } = toolEntry(block.tool.name);
-      // The model's own reason where it wrote one, else the salient argument.
-      // Never `tool.args`: the card falls back to the full `k=v` dump because an
-      // open card has room for it, and a header does not — a serialized argument
+      // The salient argument — never the narration, which the header already leads
+      // with (`reasonOf`), so the row under it would only say it twice. Never
+      // `tool.args` either: the card falls back to the full `k=v` dump because an
+      // open card has room for it, and this row does not — a serialized argument
       // blob here would push the one readable word off the end of the row.
-      return {
-        icon,
-        label,
-        detail: block.tool.narration ?? block.tool.detail,
-      };
+      return { icon, label, detail: block.tool.detail };
     }
     case "host_command": {
       const { icon, label } = toolEntry(HOST_TOOL);
@@ -113,19 +113,59 @@ function stepOf(block: AssistantBlock): WorkStep | undefined {
   }
 }
 
-/** The shape of a run of work groups — what the collapsed work log leads with.
- *
- *  Scanned from the end, because the answer is the *last* step and a run can be
- *  forty blocks long. There is no failure count here on purpose: `isCollapsible`
- *  pins a failed call inline, so a failure cannot be inside a fold, and a field
- *  that is structurally always zero is a field that will eventually be believed. */
-export function workShape(groups: BlockGroup[]): WorkShape {
+/** Why a block was run, in the model's words, or `undefined` for a kind that has
+ *  no reason to give. A host command's `explanation` already folds in the shell's
+ *  narration (`commandReason`), so both terminals speak here. */
+function reasonOf(block: AssistantBlock): string | undefined {
+  switch (block.kind) {
+    case "tool":
+      return block.tool.narration;
+    case "host_command":
+      return block.command.explanation;
+    default:
+      return undefined;
+  }
+}
+
+/** The last block in a run that `pick` answers for, scanned from the end — a run
+ *  can be forty blocks long and both questions asked of it are about the *last*
+ *  of something. */
+function lastOf<T>(
+  groups: BlockGroup[],
+  pick: (block: AssistantBlock) => T | undefined,
+): { value: T; id: string } | undefined {
   for (let g = groups.length - 1; g >= 0; g--) {
     const blocks = groups[g].blocks;
     for (let b = blocks.length - 1; b >= 0; b--) {
-      const step = stepOf(blocks[b]);
-      if (step) return { latest: step, steps: groups.length };
+      const value = pick(blocks[b]);
+      if (value !== undefined) return { value, id: blocks[b].id };
     }
   }
-  return { steps: groups.length };
+  return undefined;
+}
+
+/** The run's most recent *reason* — the model's own sentence for why it made a
+ *  call, which the collapsed header leads with.
+ *
+ *  Its own scan rather than a field on `WorkShape`, because it is asked of a
+ *  different set: the reason is read over the whole run (a pinned live call's
+ *  narration is the freshest intent), the shape over the fold only. It also scans
+ *  past steps that carry no reason at all (reasoning, injected context, a
+ *  review): pinning it to the last step would blank the header every time the
+ *  model paused to think, and the intent it last stated is still the one it is
+ *  acting on. */
+export function latestReason(groups: BlockGroup[]): string | undefined {
+  return lastOf(groups, reasonOf)?.value;
+}
+
+/** The shape of a run of work groups — the latest step and the fold's size.
+ *
+ *  There is no failure count here on purpose: `isCollapsible` pins a failed call
+ *  inline, so a failure cannot be inside a fold, and a field that is structurally
+ *  always zero is a field that will eventually be believed. */
+export function workShape(groups: BlockGroup[]): WorkShape {
+  const last = lastOf(groups, stepOf);
+  return last
+    ? { latest: last.value, latestId: last.id, steps: groups.length }
+    : { steps: groups.length };
 }

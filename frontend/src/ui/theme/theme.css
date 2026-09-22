@@ -850,6 +850,29 @@ body {
   pointer-events: none;
 }
 
+/* ==========================================================================
+   THE TRACE-IN — a sub-row branching off the row above it (§8).
+   The construction reveal's sentence at the size of one line: the elbow that
+   hangs the row off its parent draws itself first — down, then across, the
+   two strokes overlapping so they read as one L — and the row resolves out of
+   the ordinary blur-fade as the stroke reaches it. ~220ms end to end, under
+   the ceiling; nothing waits on it. Keyed by the caller, so each new step
+   replays it and a re-render of the same step does not. The existing
+   `ody-frame-close` / `ody-frame-draw` keyframes are the strokes; reduced
+   motion is covered by the global rule, delays included.
+   ========================================================================== */
+.ody-trace-down {
+  transform-origin: top;
+  animation: ody-frame-close 110ms var(--ease) both;
+}
+.ody-trace-across {
+  transform-origin: left;
+  animation: ody-frame-draw 90ms var(--ease) 70ms both;
+}
+.ody-trace-body {
+  animation: ody-reveal-fade var(--motion-base) var(--ease) 40ms both;
+}
+
 /* GLASS — a translucent surface over whatever is behind it. `isolation` gives
    the panel its own stacking context so the frame marks can sit above the
    surface without escaping into the page; the two tokens are per mode. */

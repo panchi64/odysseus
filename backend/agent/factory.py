@@ -127,7 +127,7 @@ def build_agent(
             # gated stack (`tools/harness_events.py`).
             harness_events_capability(),
             # The other half of the `narration` argument the describing stage offers every
-            # acting tool: this takes the sentence back off the call before Pydantic AI
+            # tool: this takes the sentence back off the call before Pydantic AI
             # validates it against a function signature that never declared it. Registered
             # unconditionally, because the property is added per tool rather than per run
             # and a capability that was sometimes absent would turn a schema the model was

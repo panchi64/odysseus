@@ -103,7 +103,7 @@ export interface ToolInvocation {
    *  in which case the row shows `args` instead. */
   detail?: string;
   /** Why the model made this call, in its own words — the `narration` argument the
-   *  backend injects into every tool above `read`.
+   *  backend injects into every tool.
    *
    *  It takes the collapsed row's detail slot when present, because it answers a
    *  question the argument never could: `Read agent.py` says what happened and

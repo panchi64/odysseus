@@ -24,7 +24,7 @@ import type { HostResult, ToolCallDTO } from "./wire";
  *  Two arguments can carry it and which one depends on the tool. `code_run_host_command`
  *  declares an `explanation` of its own, because that sentence is *approval copy* — the
  *  operator decides on it, so it is part of the call rather than decoration. The worktree
- *  shell declares no such thing and relies on the `narration` every acting tool is offered
+ *  shell declares no such thing and relies on the `narration` every tool is offered
  *  (`tools/narration.py`).
  *
  *  Reading only the first is what this used to do, and it meant code mode's primary tool —

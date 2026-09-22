@@ -1,7 +1,7 @@
 import { For, Show, createMemo, type JSX } from "solid-js";
 import { Collapse } from "~/ui";
 import type { WorkLogEntry } from "../blocks";
-import { workShape } from "../workShape";
+import { latestReason, workShape } from "../workShape";
 import {
   BlockRow,
   fullWidthTop,
@@ -9,13 +9,14 @@ import {
   type TopSpacing,
 } from "./BlockRow";
 import { WorkLogHeader } from "./WorkLogHeader";
+import { WorkLogLatest } from "./WorkLogLatest";
 
 /** The turn's account of what it did: one log per turn, in order, under one
  *  header.
  *
- *  The header leads with the run's *last step*, in the same `glyph · Label ·
- *  detail` anatomy the rows inside use — not a step count, and no longer a
- *  per-tool tally. See `WorkLogHeader`.
+ *  The header leads with the run's latest *reason* — the model's narration — and,
+ *  while shut, hangs the latest step beneath it in the rows' own `glyph · Label ·
+ *  detail` anatomy. See `WorkLogHeader` and `WorkLogLatest`.
  *
  *  **Some rows the fold may not hide, and they stay in place rather than outside.**
  *  A call in flight, a failure, a screenshot and a refusal are all pinned
@@ -45,15 +46,21 @@ export function WorkLog(
     streaming?: boolean;
   } & RowHandlers,
 ): JSX.Element {
-  const shape = createMemo(() => workShape(props.entries.map((e) => e.group)));
-  /* What the header counts. A pinned row is already on screen, so counting it
-     among what "opening this would reveal" overstates the fold — the operator
-     reads `5 steps`, opens it, and two rows appear. */
-  const hidden = createMemo(
-    () => props.entries.filter((e) => !e.pinned).length,
+  /* Two readings of the run, over two different sets.
+     The reason is read over *everything*: a live call is pinned, and its
+     narration is the freshest account of what the run is doing right now.
+     The latest step and the count are read over the *fold* only: a pinned row is
+     already on screen, so repeating it as the indented row would show it twice,
+     and counting it among what "opening this would reveal" overstates the fold —
+     the operator reads `5 steps`, opens it, and two rows appear. */
+  const summary = createMemo(() =>
+    latestReason(props.entries.map((e) => e.group)),
+  );
+  const folded = createMemo(() =>
+    workShape(props.entries.filter((e) => !e.pinned).map((e) => e.group)),
   );
   /* Every row is on screen already, so the chevron would open onto nothing. */
-  const foldable = createMemo(() => hidden() > 0);
+  const foldable = createMemo(() => folded().steps > 0);
   /** Whether the foldable segments are showing. `forceOpen` is the turn's expand-all. */
   const open = () => props.open || props.forceOpen === true;
 
@@ -79,12 +86,27 @@ export function WorkLog(
   return (
     <div class={fullWidthTop(props.top)}>
       <WorkLogHeader
-        shape={shape()}
-        steps={hidden()}
+        summary={summary()}
+        steps={folded().steps}
         open={props.open}
         foldable={foldable()}
         onToggle={() => props.onToggle()}
       />
+      {/* Keyed on the block, so each step the run folds in replays its trace-in and
+          a re-render of the same step does not. Shut only: open, the same step is
+          the last row of the list below.
+
+          The step itself is read through the inner `Show`, not captured here: a
+          keyed child runs untracked, and the same block can change in place — a
+          folded review goes from `reviewing` to its decision under one id — so a
+          value snapshotted at mount would sit stale for the rest of the turn. */}
+      <Show when={!open() && folded().latestId} keyed>
+        {(_id: string) => (
+          <Show when={folded().latest}>
+            {(step) => <WorkLogLatest step={step()} />}
+          </Show>
+        )}
+      </Show>
       <div class="mt-2">
         <For each={segments()}>
           {(segment, s) => {

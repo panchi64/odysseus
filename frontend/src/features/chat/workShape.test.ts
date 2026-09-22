@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { workShape } from "./workShape";
+import { latestReason, workShape } from "./workShape";
 import { groupBlocks } from "./blocks";
 import type { AssistantBlock, HostCommandPhase, ToolStatus } from "./model";
 
@@ -8,8 +8,17 @@ function tool(
   name: string,
   detail?: string,
   status: ToolStatus = "ok",
+  narration?: string,
 ): AssistantBlock {
-  return { kind: "tool", id, tool: { id, name, args: "", status, detail } };
+  return {
+    kind: "tool",
+    id,
+    tool: { id, name, args: "", status, detail, narration },
+  };
+}
+
+function narrated(id: string, narration: string, detail?: string) {
+  return tool(id, "files_read_file", detail, "ok", narration);
 }
 
 function think(id: string): AssistantBlock {
@@ -33,6 +42,10 @@ function host(id: string, phase: HostCommandPhase): AssistantBlock {
  *  the same way the work log builds the groups it hands over. */
 function shape(blocks: AssistantBlock[]) {
   return workShape(groupBlocks(blocks));
+}
+
+function reason(blocks: AssistantBlock[]) {
+  return latestReason(groupBlocks(blocks));
 }
 
 describe("workShape reports the run's last step", () => {
@@ -167,6 +180,51 @@ describe("a folded review names the call it judged", () => {
 
   test("a review still in flight says so rather than reading as settled", () => {
     expect(shape([review("r1")]).latest?.detail).toBe("reviewing");
+  });
+});
+
+describe("the header's reason and the row beneath it", () => {
+  test("it is the latest narration, and the step keeps its argument", () => {
+    // The header leads with the reason; the indented row under it names the act.
+    // Repeating the narration in the row would say the same sentence twice.
+    const blocks = [
+      narrated("a", "Checking the old loop", "old.py"),
+      narrated("b", "Finding where cancel is handled", "engine.py"),
+    ];
+    expect(reason(blocks)).toBe("Finding where cancel is handled");
+    expect(shape(blocks).latest).toEqual({
+      icon: "file",
+      label: "Read",
+      detail: "engine.py",
+    });
+  });
+
+  test("a trailing step with no reason keeps the last stated one", () => {
+    // Thinking between calls must not blank the header: the intent the model last
+    // stated is still the one it is acting on.
+    const blocks = [
+      narrated("a", "Checking the old loop", "old.py"),
+      think("b"),
+    ];
+    expect(reason(blocks)).toBe("Checking the old loop");
+    expect(shape(blocks).latest?.label).toBe("Reasoning");
+  });
+
+  test("a host command's explanation is its reason", () => {
+    const block = host("a", "ok");
+    if (block.kind === "host_command")
+      block.command.explanation = "Listing the tree";
+    expect(reason([block])).toBe("Listing the tree");
+  });
+
+  test("a run nobody explained has no reason rather than a made-up one", () => {
+    expect(reason([tool("a", "web_search", "q")])).toBeUndefined();
+  });
+
+  test("latestId follows the newest step, so its row can replay its arrival", () => {
+    expect(
+      shape([tool("a", "web_search"), tool("b", "web_search")]).latestId,
+    ).toBe("b");
   });
 });
 
