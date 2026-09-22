@@ -41,6 +41,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import Column, Engine, func
+from sqlalchemy.types import TypeDecorator
 from sqlmodel import Session, SQLModel, select
 
 from core.db import in_session
@@ -120,9 +121,16 @@ class BackupImportReport:
 def _column_kind(column: Column) -> str:
     """How a column's value is carried in JSON. Driven by the declared type, not by
     sniffing values, so the encoding is exact both ways (a JSON column holding a string
-    that *looks* like a timestamp is never re-parsed as one)."""
+    that *looks* like a timestamp is never re-parsed as one).
+
+    A decorated type is read through to what it decorates: SQLModel declares every
+    ``datetime`` field as its own ``UTCDateTime`` decorator over ``DateTime``, and a
+    decorator reports no ``python_type`` of its own."""
+    column_type = column.type
+    if isinstance(column_type, TypeDecorator):
+        column_type = column_type.impl_instance
     try:
-        python_type = column.type.python_type
+        python_type = column_type.python_type
     except NotImplementedError:  # JSON and other structural columns
         return "json"
     if python_type is bytes:

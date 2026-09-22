@@ -22,7 +22,7 @@ empty is dropped, so the second boot does nothing and the third finds no table a
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 from sqlalchemy import Engine, inspect, text
@@ -197,9 +197,10 @@ async def _drop_when_drained(engine: Engine) -> None:
 def _as_datetime(value: object) -> datetime | None:
     """SQLite hands a DateTime column back as a datetime through SQLAlchemy's type, but a
     raw text SELECT bypasses that — so a stored string is parsed here rather than reaching
-    a column that will not take it."""
-    if isinstance(value, datetime):
-        return value
+    a column that will not take it. A stored timestamp is UTC with no zone written on it,
+    and the columns it is copied into refuse a naive value, so the zone is put back."""
     if isinstance(value, str):
-        return datetime.fromisoformat(value)
+        value = datetime.fromisoformat(value)
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
     return None

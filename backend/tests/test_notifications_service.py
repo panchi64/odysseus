@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
+from datetime import timedelta
 from pathlib import Path
 
 from sqlmodel import select
@@ -281,9 +282,11 @@ async def test_rehydrated_and_live_notifications_sort_together(tmp_path):
     await service._worker.join()
     await service.stop()
 
-    # The round-trip really is lossy — otherwise this test would prove nothing.
+    # SQLModel now declares a datetime field as its own UTC-restoring column type, so the
+    # round-trip is no longer lossy through the ORM — the normalization on read is what
+    # still covers a row written before that, and this pins that the two populations sort.
     persisted = await in_session(engine, lambda session: session.exec(select(Notification)).all())
-    assert persisted[0].created_at.tzinfo is None
+    assert persisted[0].created_at.utcoffset() in (None, timedelta(0))
 
     cold = NotificationService(engine, vault)
     await cold.start()
