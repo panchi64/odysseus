@@ -200,6 +200,71 @@ async def test_parked_turn_keeps_parallel_tool_calls_on_resume():
     assert "tool.completed" in _types(resumed)
 
 
+async def test_a_parked_call_does_not_hold_back_the_plain_call_beside_it():
+    """One step, two calls: one the level parks, one it clears. The library runs the plain
+    call while the gated one is set aside, so the operator watching the work log sees it
+    finish *before* being asked about the other — and the park names only the call that is
+    actually waiting, and a resume does not run the finished one a second time."""
+    from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+
+    ran: list[str] = []
+    toolset: FunctionToolset[RunDeps] = FunctionToolset()
+
+    @toolset.tool_plain(requires_approval=True)
+    def delete_thing(name: str) -> str:
+        ran.append("delete")
+        return f"deleted {name}"
+
+    @toolset.tool_plain(metadata={"sensitivity": "read"})
+    def look(name: str) -> str:
+        ran.append("look")
+        return f"saw {name}"
+
+    async def stream_fn(messages, info):
+        if any(
+            getattr(part, "tool_name", None) == "danger_delete_thing"
+            and type(part).__name__ == "ToolReturnPart"
+            for message in messages
+            for part in getattr(message, "parts", ())
+        ):
+            yield "done"
+            return
+        yield {
+            0: DeltaToolCall(
+                name="danger_delete_thing", json_args='{"name": "x"}', tool_call_id="gated"
+            ),
+            1: DeltaToolCall(name="danger_look", json_args='{"name": "x"}', tool_call_id="plain"),
+        }
+
+    reg = RunRegistry()
+    run = reg.submit(
+        kind="chat",
+        owner_id="operator",
+        orchestrator=build_chat_orchestrator(
+            "go",
+            model=FunctionModel(stream_function=stream_fn),
+            categories={"danger": toolset},
+        ),
+    )
+    await run.wait()
+    assert run.status is RunStatus.awaiting_input
+
+    bodies = [e.body for e in run.stream.replay()]
+    completed = next(
+        i for i, b in enumerate(bodies) if b.type == "tool.completed" and b.tool_call_id == "plain"
+    )
+    asked = next(i for i, b in enumerate(bodies) if b.type == "approval.required")
+    assert completed < asked
+    parked: ParkedTurn = run.parked_payload
+    assert [c.tool_call_id for c in parked.requests.approvals] == ["gated"]
+    assert ran == ["look"]
+
+    resumed = await reg.resume(run.id, build_resume_orchestrator(parked, {"gated": ToolApproved()}))
+    await resumed.wait()
+    assert resumed.status is RunStatus.done
+    assert ran == ["look", "delete"]
+
+
 class TestTheOneLineSummary:
     """`summarize_call` renders a call for a human reading a notification, not for a log.
 

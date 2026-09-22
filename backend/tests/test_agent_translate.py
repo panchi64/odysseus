@@ -150,10 +150,60 @@ async def test_the_capabilities_need_nothing_of_ours_to_report():
 
     # The brief's named contributor was announced, once, with its text.
     injected = [b for b in _bodies(run) if b.type == "context.injected"]
-    assert [(b.contributor, b.text) for b in injected] == [
-        ("repo", "CLAUDE.md says be brief.")
-    ]
+    assert [(b.contributor, b.text) for b in injected] == [("repo", "CLAUDE.md says be brief.")]
     # And the request's non-conversation weight reached the run, where the gauge reads it.
     assert run.context_overhead is not None
     assert run.context_overhead.system >= len("CLAUDE.md says be brief.")
     assert any(block.id == "repo" for block in run.context_overhead.blocks)
+
+
+async def test_a_scripts_calls_carry_the_script_that_made_them():
+    """A call a `run_code` script made reaches the stream as the ordinary `tool.*` frames,
+    each naming the script's own call — the one field a client nests the row by."""
+    from pydantic_ai.messages import ToolCallPart
+
+    from agent.emit import NestedToolFinished, NestedToolStarted
+    from agent.translate import _on_chassis_event
+
+    run = _run()
+    part = ToolCallPart(tool_name="web_search", args={"query": "q"}, tool_call_id="s__1")
+    assert _on_chassis_event(NestedToolStarted(parent_tool_call_id="s", part=part), run)
+    assert _on_chassis_event(
+        NestedToolFinished(
+            parent_tool_call_id="s",
+            content={"hits": 1},
+            tool_call_id="s__1",
+            tool_name="web_search",
+        ),
+        run,
+    )
+    assert _on_chassis_event(
+        NestedToolFinished(
+            parent_tool_call_id="s", error="nope", tool_call_id="s__2", tool_name="files_read_file"
+        ),
+        run,
+    )
+
+    started, completed, failed = _bodies(run)
+    assert (started.type, started.tool_call_id, started.args) == (
+        "tool.started",
+        "s__1",
+        {"query": "q"},
+    )
+    assert (completed.type, completed.result) == ("tool.completed", {"hits": 1})
+    assert (failed.type, failed.error) == ("tool.failed", "nope")
+    assert {b.parent_tool_call_id for b in (started, completed, failed)} == {"s"}
+
+
+async def test_a_direct_calls_frames_name_no_parent():
+    agent = Agent(TestModel(custom_output_text="ok"))
+
+    @agent.tool_plain
+    def add(a: int, b: int) -> int:
+        return a + b
+
+    run = _run()
+    async with agent.iter("add") as agent_run:
+        await stream_agent_run(agent_run, run)
+    frames = [b for b in _bodies(run) if b.type.startswith("tool.")]
+    assert frames and all(b.parent_tool_call_id is None for b in frames)

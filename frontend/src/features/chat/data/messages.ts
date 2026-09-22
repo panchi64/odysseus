@@ -25,7 +25,8 @@ import type {
   ToolImage,
   ToolInvocation,
 } from "../model";
-import { isTerminalTool } from "../toolPresentation";
+import { isTerminalTool, toolEntry } from "../toolPresentation";
+import { placeToolCall } from "../toolTree";
 import type { MessageDTO, ToolCallDTO, ToolImageDTO } from "./wire";
 import { citationsFromToolResult } from "./citations";
 import { commandBoundary, toHostCommand } from "./hostCommands";
@@ -59,13 +60,37 @@ export function toolImages(
   return images.map((i) => ({ mediaType: i.media_type, data: i.data }));
 }
 
+/** A call as its arguments describe it — everything a `tool.started` frame and a
+ *  persisted row agree on before either says how the call went. One reading for both,
+ *  so a live row and a reloaded one cannot word the same call differently. */
+export function startedTool(
+  id: string,
+  name: string,
+  args: Record<string, unknown>,
+): ToolInvocation {
+  const scriptKey = toolEntry(name).script;
+  const raw = scriptKey ? args[scriptKey] : undefined;
+  const script = typeof raw === "string" ? raw : undefined;
+  const shown =
+    script === undefined
+      ? args
+      : Object.fromEntries(
+          Object.entries(args).filter(([k]) => k !== scriptKey),
+        );
+  return {
+    id,
+    name,
+    args: formatArgs(shown),
+    detail: describeToolArgs(name, args),
+    narration: toolNarration(args),
+    script,
+    status: "running",
+  };
+}
+
 export function toTool(dto: ToolCallDTO): ToolInvocation {
   return {
-    id: dto.id,
-    name: dto.name,
-    args: formatArgs(dto.args),
-    detail: describeToolArgs(dto.name, dto.args),
-    narration: toolNarration(dto.args),
+    ...startedTool(dto.id, dto.name, dto.args),
     status: dto.status,
     // Only a call that succeeded has an outcome to report; a failure's story is
     // its error, which the card shows in full.
@@ -116,17 +141,21 @@ export function toMessage(dto: MessageDTO): ChatMessage {
       id: `${dto.id}-reasoning`,
       text: dto.reasoning,
     });
+  const toolBlockId = (callId: string) => `${dto.id}-${callId}`;
   for (const t of dto.tools) {
+    // A call a script made nests on the script's card, by the same rule the live fold
+    // places it with — including a terminal command, which reads as a compact row there.
+    if (t.parent_tool_call_id)
+      placeToolCall(blocks, toolBlockId, toTool(t), t.parent_tool_call_id);
     // The same question the live fold asks, off the same table — so a reload cannot
     // turn a terminal back into a generic tool card.
-    if (isTerminalTool(t.name))
+    else if (isTerminalTool(t.name))
       blocks.push({
         kind: "host_command",
-        id: `${dto.id}-${t.id}`,
+        id: toolBlockId(t.id),
         command: toHostCommand(t),
       });
-    else
-      blocks.push({ kind: "tool", id: `${dto.id}-${t.id}`, tool: toTool(t) });
+    else placeToolCall(blocks, toolBlockId, toTool(t));
     // A settled `ask_user` carries what it asked and what it was told. Rebuilt as the
     // same answered question block the live `question.answered` fold produces, so a
     // reload renders the exchange rather than leaving it as prose inside a tool row.

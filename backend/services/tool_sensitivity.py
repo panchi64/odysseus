@@ -250,8 +250,21 @@ SENSITIVITY_CLASSES: Mapping[Sensitivity, frozenset[str]] = {
 }
 
 
+#: Tools the chassis offers on every agent from outside the category catalog, by the name
+#: the library gives them — so they carry no ``category_`` prefix, never appear on the
+#: operator's tool settings page, and are exempt from the check that pins every classified
+#: name to a catalog tool.
+#:
+#: ``run_code`` is a read, and that is a statement about the tool rather than about the
+#: script: running the script touches nothing, since the sandbox has no filesystem, no
+#: network and no clock. Everything a script *does* it does by calling another tool, and
+#: each of those calls is gated on its own (``agent/code_mode.py``).
+CHASSIS_TOOLS: Mapping[str, Sensitivity] = {"run_code": Sensitivity.READ}
+
+
 _BY_NAME: Mapping[str, Sensitivity] = {
-    name: sensitivity for sensitivity, names in SENSITIVITY_CLASSES.items() for name in names
+    **{name: sensitivity for sensitivity, names in SENSITIVITY_CLASSES.items() for name in names},
+    **CHASSIS_TOOLS,
 }
 
 

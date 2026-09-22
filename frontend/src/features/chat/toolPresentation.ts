@@ -50,6 +50,10 @@ export interface ToolEntry extends ToolPresentation {
    *  left and no second reading — a flag is the honest shape of the question that
    *  remains. */
   terminal?: true;
+  /** The argument that holds a program the call runs. The open card shows it as code
+   *  and leaves it out of the argument dump, which would otherwise print the whole
+   *  script as one `code=…` line. */
+  script?: string;
 }
 
 /** The glyph for a category, for any tool without its own row below. Every
@@ -218,6 +222,12 @@ const TOOLS: Record<string, ToolEntry> = {
     keys: ["conversation_id"],
   },
   research_start: { icon: "research", label: "Research", keys: ["question"] },
+
+  // A harness tool, like `search_tools` below, so it declares no category: a Python
+  // script whose own tool calls are rows of their own, nested on this one's card. No
+  // detail key — a script has no one argument that says what it is about, so the
+  // narration leads and the open card shows the code.
+  run_code: { icon: "code", label: "Script", keys: [], script: "code" },
 
   // The one row here the agent does not own: the harness offers this so a model
   // that has been handed only an index of the tool groups it is *not* carrying can

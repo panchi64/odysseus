@@ -34,6 +34,7 @@ from pydantic_ai.models import ModelRequestContext
 from pydantic_ai.tools import ToolDefinition
 
 from runs import BriefBlock, ToolGroupOverhead, TurnOverhead
+from services.tool_sensitivity import CHASSIS_TOOLS
 
 from .assembled import declared_function_tools
 from .emit import OverheadMeasured
@@ -152,12 +153,22 @@ def _tool_groups(function_tools: list[ToolDefinition]) -> tuple[ToolGroupOverhea
     the readout's rows line up exactly with the rows on the operator's tool settings page
     — the point of the split being that "``external`` is 40% of your window" is only
     useful if there is a single switch labelled ``external`` to go and find. A tool
-    registered outside the namespacing (none today) lands under its own first word, which
-    is wrong-ish but harmless: it is still a row, still counted once, still summing."""
+    registered outside the namespacing lands under its own first word, which is wrong-ish
+    but harmless: it is still a row, still counted once, still summing.
+
+    **The chassis's own tools are the exception, each its own row under its whole name**
+    (``services/tool_sensitivity.CHASSIS_TOOLS``). ``run_code``'s first word would file it
+    as ``run``, which names nothing — and its description is the signature of every tool a
+    script may call, so it is the row that grows with the catalog and the one an operator
+    reading the readout most needs to find by name."""
     chars: dict[str, int] = {}
     counts: dict[str, int] = {}
     for definition in function_tools:
-        category = definition.name.split("_", 1)[0]
+        category = (
+            definition.name
+            if definition.name in CHASSIS_TOOLS
+            else definition.name.split("_", 1)[0]
+        )
         chars[category] = chars.get(category, 0) + len(
             json.dumps(
                 {

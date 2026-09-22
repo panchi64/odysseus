@@ -32,6 +32,7 @@ from pydantic_ai import (
     TextPartDelta,
     ThinkingPart,
     ThinkingPartDelta,
+    ToolCallPart,
 )
 
 from core.citations import Citable
@@ -52,7 +53,13 @@ from services.conversation_view import tool_images
 from tools.emit import RunEventEmitted
 from tools.narration import strip_narration
 
-from .emit import ChassisEvent, OverheadMeasured, PrefixWatched
+from .emit import (
+    ChassisEvent,
+    NestedToolFinished,
+    NestedToolStarted,
+    OverheadMeasured,
+    PrefixWatched,
+)
 from .meta import LoopBreaker
 
 #: How much of a source's snippet rides the wire. A citation is a *pointer* — the text
@@ -130,7 +137,74 @@ def _on_chassis_event(event: object, run: Run) -> bool:
     if isinstance(event, PrefixWatched):
         run.prefix_verdict = event.verdict
         return True
+    if isinstance(event, NestedToolStarted):
+        run.emit(_started_frame(event.part, parent=event.parent_tool_call_id))
+        return True
+    if isinstance(event, NestedToolFinished):
+        call_id, name = event.tool_call_id or "", event.tool_name or ""
+        if event.error is not None:
+            run.emit(
+                ToolFailed(
+                    tool_call_id=call_id,
+                    name=name,
+                    error=event.error,
+                    parent_tool_call_id=event.parent_tool_call_id,
+                )
+            )
+        else:
+            _emit_result(
+                run,
+                call_id,
+                name,
+                event.content,
+                event.user_content,
+                parent=event.parent_tool_call_id,
+            )
+        return True
     return False
+
+
+def _started_frame(part: ToolCallPart, *, parent: str | None = None) -> ToolStarted:
+    """The ``tool.started`` frame for one call — a direct one, or one a script made."""
+    return ToolStarted(
+        tool_call_id=part.tool_call_id,
+        name=part.tool_name,
+        args=part.args_as_dict(),
+        parent_tool_call_id=parent,
+    )
+
+
+def _emit_result(
+    run: Run,
+    tool_call_id: str,
+    name: str,
+    content: Any,
+    user_content: Any,
+    *,
+    parent: str | None = None,
+) -> None:
+    """``tool.completed`` for a call that returned, then the sources it surfaced.
+
+    One function for a direct call and for a call a script made, so a web search run from
+    inside ``run_code`` cites its pages exactly as one the model called would.
+    ``user_content`` is what the tool handed back *for the model* rather than as its
+    result — pixels, today. It rides the frame beside the call id, so the warm render
+    pairs an image to its call exactly; the cold projection has to recover the same
+    pairing positionally (see ``_attach_tool_images``)."""
+    run.emit(
+        ToolCompleted(
+            tool_call_id=tool_call_id,
+            name=name,
+            result=jsonable(content),
+            images=[
+                ToolImage(media_type=image.media_type, data=image.data)
+                for image in tool_images(user_content)
+            ],
+            parent_tool_call_id=parent,
+        )
+    )
+    for citation in citations_from_tool_result(content):
+        run.emit(citation)
 
 
 def _on_model_event(event: object, run: Run, mark_first_token: Callable[[], None]) -> None:
@@ -193,13 +267,7 @@ def _on_tool_event(
             loop_breaker.check(
                 part.tool_name, strip_narration(part.args_as_dict()), part.tool_call_id
             )
-        run.emit(
-            ToolStarted(
-                tool_call_id=part.tool_call_id,
-                name=part.tool_name,
-                args=part.args_as_dict(),
-            )
-        )
+        run.emit(_started_frame(part))
     elif isinstance(event, FunctionToolResultEvent):
         part = event.part
         if loop_breaker is not None:
@@ -221,23 +289,13 @@ def _on_tool_event(
                 )
             )
         else:
-            # `event.content` is what the tool handed back *for the model* rather than as
-            # its result — pixels, today. It rides the event beside the call id, so the
-            # warm render pairs an image to its call exactly; the cold projection has to
-            # recover the same pairing positionally (see `_attach_tool_images`).
-            run.emit(
-                ToolCompleted(
-                    tool_call_id=part.tool_call_id,
-                    name=part.tool_name,
-                    result=jsonable(part.content),
-                    images=[
-                        ToolImage(media_type=image.media_type, data=image.data)
-                        for image in tool_images(getattr(event, "content", None))
-                    ],
-                )
+            _emit_result(
+                run,
+                part.tool_call_id,
+                part.tool_name,
+                part.content,
+                getattr(event, "content", None),
             )
-            for citation in citations_from_tool_result(part.content):
-                run.emit(citation)
 
 
 async def stream_agent_run(

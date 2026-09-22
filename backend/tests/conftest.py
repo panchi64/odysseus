@@ -47,6 +47,27 @@ core.crypto._PASSWORD_HASHER = core.crypto.PasswordHasher(
     time_cost=1, memory_cost=8, parallelism=1
 )
 
+# Every agent carries `run_code` (`agent/code_mode.py`), and `TestModel`'s default of
+# calling *every* tool it is offered would call it too — with the placeholder string it
+# fills every string argument with, which is not a program, so each such turn would spend
+# its retries on a `NameError` and die. The tests that use that default are about the
+# catalog, not about scripts; the ones that are about scripts name `run_code` and write
+# real code (`test_run_code.py`). So "call everything" leaves `run_code` out, and an
+# explicit `call_tools=[...]` list is untouched.
+from pydantic_ai.models.test import TestModel as _TestModel  # noqa: E402
+
+_call_everything = _TestModel._get_tool_calls
+
+
+def _call_everything_but_scripts(self, model_request_parameters):
+    calls = _call_everything(self, model_request_parameters)
+    if self.call_tools == "all":
+        return [(name, tool) for name, tool in calls if name != "run_code"]
+    return calls
+
+
+_TestModel._get_tool_calls = _call_everything_but_scripts
+
 
 def egress_policy(data_dir, domains: tuple[str, ...] = ("pypi.org",)):
     """A real :class:`~services.egress.EgressPolicy` over a throwaway database.

@@ -69,6 +69,7 @@ from services.permissions import (
     Reviewer,
     ReviewOutcome,
     TranscriptEntry,
+    TurnBoundary,
     blocked_message,
     capability_of,
     decide,
@@ -81,8 +82,6 @@ from services.registry import ModelRegistry
 from services.sandbox import fence
 from tools.deps import RunDeps
 from tools.workspace import resolve_run_workspace
-
-from .history import TurnStart
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +136,7 @@ async def settle_deferred(
     deps: RunDeps,
     messages: list[ModelMessage],
     permission: str,
-    turn_start: TurnStart | None = None,
+    turn_start: TurnBoundary | None = None,
     budget: ReviewBudget | None = None,
 ) -> tuple[dict[str, ToolApproved | ToolDenied], list[ToolCallPart]]:
     """Rule on every call this hop deferred, returning ``(settled, manual)``.
@@ -280,7 +279,7 @@ async def review_batch(
     deps: RunDeps,
     messages: list[ModelMessage],
     grants: Sequence[GrantInfo] = (),
-    turn_start: TurnStart | None = None,
+    turn_start: TurnBoundary | None = None,
     budget: ReviewBudget | None = None,
 ) -> dict[str, ReviewOutcome]:
     """Review every call the level sent to review, by ``tool_call_id``.

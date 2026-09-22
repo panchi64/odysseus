@@ -70,6 +70,11 @@ export function hasLayers(blocks: AssistantBlock[] | undefined): boolean {
   return (blocks ?? []).some((b) => WORK.has(b.kind));
 }
 
+/** What a call came back with, for the plain-text export. */
+function callOutcome(t: ToolInvocation): string {
+  return t.error ? `error: ${t.error}` : (t.result ?? "");
+}
+
 /** Flatten a turn to one plain-text block for COPY MESSAGE — reasoning, each
  *  tool/host call as `name(args) -> outcome`, decisions, then the answer, all in
  *  the order they happened. */
@@ -87,14 +92,21 @@ export function assembleTranscript(
         break;
       case "tool": {
         const t = b.tool;
-        const outcome = t.error ? `error: ${t.error}` : (t.result ?? "");
         // The narration leads, and it is carried separately because `args` no longer
         // holds it: `formatArgs` strips it so the open card does not print the row's
         // own headline twice. Without this line the export would be the one place the
         // agent's reason for a call is missing — and "why did it do that" is most of
         // what a pasted turn is pasted to answer.
         const why = t.narration ? `# ${t.narration}\n` : "";
-        parts.push(`${why}${t.name}(${t.args}) -> ${outcome}`);
+        // A script is kept out of `args` for the card's sake, and its calls live on
+        // its card rather than the rail — both would otherwise go missing here.
+        const script = t.script ? `\n${t.script}` : "";
+        const calls = (t.children ?? [])
+          .map((c) => `\n  ${c.name}(${c.args}) -> ${callOutcome(c)}`)
+          .join("");
+        parts.push(
+          `${why}${t.name}(${t.args})${script} -> ${callOutcome(t)}${calls}`,
+        );
         break;
       }
       case "context":

@@ -105,6 +105,15 @@ class Settings(BaseSettings):
     agent_request_limit: int = 25
     agent_tool_calls_limit: int | None = None
 
+    # `run_code` — the in-process Monty sandbox a model-written script calls tools from
+    # (`agent/code_mode.py`). The duration and memory caps are per snippet. The call cap is
+    # how many tools one script may call; those calls also count toward
+    # `agent_tool_calls_limit`, so where that is set the script's cap is clamped under it
+    # rather than handed a budget the turn could never let it spend.
+    code_mode_max_duration_s: float = 30.0
+    code_mode_max_memory_mb: int = 256
+    code_mode_max_tool_calls: int = 25
+
     # How long a research thread the *agent* opened may run before the substrate ends it.
     # The one place a wall clock is on by default, because it is the one turn nobody is
     # sitting in front of: the inactivity watchdog cannot end it (a model streaming tokens

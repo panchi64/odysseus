@@ -39,7 +39,7 @@ import {
   commandReason,
   toTerminalOutcome,
 } from "../data/hostCommands";
-import { formatArgs, stringifyResult, toolImages } from "../data/messages";
+import { startedTool, stringifyResult, toolImages } from "../data/messages";
 import { toStats } from "../data/summaries";
 import { toVersionChipBlock, toViewSnapshotRef } from "../data/viewSnapshots";
 import { refreshSessions } from "../data/sessions";
@@ -53,11 +53,8 @@ import type {
   ViewSnapshotRef,
 } from "../model";
 import { isTerminalTool } from "../toolPresentation";
-import {
-  describeToolArgs,
-  describeToolResult,
-  toolNarration,
-} from "../toolSummary";
+import { describeToolResult } from "../toolSummary";
+import { placeToolCall } from "../toolTree";
 import {
   appendDelta,
   clearPark,
@@ -176,8 +173,9 @@ export function createFolder(
         // A command the operator watches run is a terminal, not a generic tool card.
         // Which tools those are is the table's answer, not a name test here — see
         // `ToolEntry.terminal`. (tool.started fires before approval.required, so this
-        // seeds the pending terminal.)
-        if (isTerminalTool(ev.name)) {
+        // seeds the pending terminal.) A call a script made is never one: it nests on
+        // the script's card as a compact row, whatever tool it is.
+        if (!ev.parent_tool_call_id && isTerminalTool(ev.name)) {
           patchById(assistantId, (m) =>
             upsertHost(m, ev.tool_call_id, ev.name, {
               command:
@@ -187,20 +185,14 @@ export function createFolder(
           );
           break;
         }
-        patchById(assistantId, (m) => {
-          (m.blocks ?? (m.blocks = [])).push({
-            kind: "tool",
-            id: `tool-${ev.tool_call_id}`,
-            tool: {
-              id: ev.tool_call_id,
-              name: ev.name,
-              args: formatArgs(ev.args),
-              detail: describeToolArgs(ev.name, ev.args),
-              narration: toolNarration(ev.args),
-              status: "running",
-            },
-          });
-        });
+        patchById(assistantId, (m) =>
+          placeToolCall(
+            m.blocks ?? (m.blocks = []),
+            (id) => `tool-${id}`,
+            startedTool(ev.tool_call_id, ev.name, ev.args),
+            ev.parent_tool_call_id,
+          ),
+        );
         break;
       case "tool.progress":
         // One frame, two readings, and **the block that already exists is what says
@@ -226,11 +218,11 @@ export function createFolder(
               host.command.elapsedMs = Math.round(ev.elapsed_s * 1000);
             return;
           }
-          const b = findTool(m, ev.tool_call_id);
-          if (b) {
-            b.tool.progress = ev.partial ?? undefined;
+          const t = findTool(m, ev.tool_call_id);
+          if (t) {
+            t.progress = ev.partial ?? undefined;
             if (ev.elapsed_s != null)
-              b.tool.elapsedMs = Math.round(ev.elapsed_s * 1000);
+              t.elapsedMs = Math.round(ev.elapsed_s * 1000);
           }
         });
         break;
@@ -238,7 +230,7 @@ export function createFolder(
         // A call with a result is waiting on nobody — retire the prompt it parked on,
         // so a replay doesn't re-ask what was already answered.
         patchById(assistantId, (m) => clearPark(m, ev.tool_call_id));
-        if (isTerminalTool(ev.name)) {
+        if (!ev.parent_tool_call_id && isTerminalTool(ev.name)) {
           // The result is the record: it has the streams apart, where the ticks that
           // streamed in had them concatenated. So the accumulated text is dropped on
           // the same patch that replaces it — leaving it would be two copies of one
@@ -264,16 +256,16 @@ export function createFolder(
           break;
         }
         patchById(assistantId, (m) => {
-          const b = findTool(m, ev.tool_call_id);
-          if (b) {
-            b.tool.status = "ok";
-            b.tool.result = stringifyResult(ev.result);
-            b.tool.outcome = describeToolResult(ev.name, ev.result);
-            b.tool.progress = undefined; // the run is over — drop the spin-up note
-            b.tool.images = toolImages(ev.images);
+          const t = findTool(m, ev.tool_call_id);
+          if (t) {
+            t.status = "ok";
+            t.result = stringifyResult(ev.result);
+            t.outcome = describeToolResult(ev.name, ev.result);
+            t.progress = undefined; // the run is over — drop the spin-up note
+            t.images = toolImages(ev.images);
             // The same read the cold mapper does, so a backgrounded command's
             // declaration and fence survive a reload identically.
-            b.tool.boundary = commandBoundary(ev.result);
+            t.boundary = commandBoundary(ev.result);
           }
         });
         break;
@@ -281,7 +273,7 @@ export function createFolder(
       case "tool.failed":
         // A failure settles the call too — same retirement as the completed case.
         patchById(assistantId, (m) => clearPark(m, ev.tool_call_id));
-        if (isTerminalTool(ev.name)) {
+        if (!ev.parent_tool_call_id && isTerminalTool(ev.name)) {
           patchById(assistantId, (m) =>
             upsertHost(m, ev.tool_call_id, ev.name, {
               phase: "error",
@@ -291,11 +283,11 @@ export function createFolder(
           break;
         }
         patchById(assistantId, (m) => {
-          const b = findTool(m, ev.tool_call_id);
-          if (b) {
-            b.tool.status = "error";
-            b.tool.error = ev.error;
-            b.tool.progress = undefined; // the run is over — drop the spin-up note
+          const t = findTool(m, ev.tool_call_id);
+          if (t) {
+            t.status = "error";
+            t.error = ev.error;
+            t.progress = undefined; // the run is over — drop the spin-up note
           }
         });
         break;

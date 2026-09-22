@@ -145,6 +145,13 @@ async def drive_turn(
         request_limit=resolved_limit,
         tool_calls_limit=settings.agent_tool_calls_limit,
     )
+    # ONE review budget for the whole turn: at the Auto level every hop's deferred calls
+    # are reviewed, and a model that keeps reaching past the level's ceiling would
+    # otherwise spend a utility-model round trip per call for as long as the turn runs.
+    # Past the cap the calls park — the operator is asked the question the review was
+    # answering for them, which is what every other degrade here does. It rides on the
+    # deps as well, so a call a `run_code` script makes spends from the same counter.
+    review_budget = ReviewBudget(limit=settings.review_max_per_turn)
     deps = RunDeps(
         run=run,
         owner_id=run.owner_id,
@@ -168,6 +175,10 @@ async def drive_turn(
         # works in the workspace of the thread that launched it, or in a delegated child of
         # it, and neither is named by its own conversation (`services/workspace.py`).
         workspace_key=workspace_key,
+        # What a ruling made inside a tool call needs of the turn — the boundary the
+        # review's transcript opens on, and the budget above (`agent/code_mode.py`).
+        turn_start=turn_start,
+        review_budget=review_budget,
     )
     # A turn may run as several segments: the initial model pass, then a continuation
     # for each batch of deferred calls a conversation grant auto-approves. They share
@@ -176,12 +187,6 @@ async def drive_turn(
     # (or grow the call stack) by deferring on each hop; it trips the loop/usage stop.
     loop_breaker = LoopBreaker(repeat_threshold=settings.loop_repeat_threshold)
     usage = RunUsage()
-    # And ONE review budget, for the same reason: at the Auto level every hop's deferred
-    # calls are reviewed, and a model that keeps reaching past the level's ceiling would
-    # otherwise spend a utility-model round trip per call for as long as the turn runs.
-    # Past the cap the calls park — the operator is asked the question the review was
-    # answering for them, which is what every other degrade here does.
-    review_budget = ReviewBudget(limit=settings.review_max_per_turn)
 
     def report_progress(history: list[ModelMessage]) -> None:
         # A live context/usage frame as each model response lands, so the operator's context

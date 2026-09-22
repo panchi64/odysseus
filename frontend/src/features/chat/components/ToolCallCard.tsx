@@ -1,11 +1,13 @@
 import { For, Show, createMemo, type JSX } from "solid-js";
 import {
+  CodeBlock,
   Collapse,
   Icon,
   REVEAL_BASE,
   StatusFlag,
   Text,
   copyToClipboard,
+  cx,
 } from "~/ui";
 import { num } from "~/lib/format";
 import type { ToolInvocation } from "../model";
@@ -56,11 +58,20 @@ const ELAPSED_WIDTH = "min-w-[6ch]";
  *  the alert-toned glyph.
  *
  *  `open` makes expand/collapse controlled (expand-all/collapse-all); when
- *  undefined the card keeps its default behavior (auto-open on error). */
+ *  undefined the card keeps its default behavior (auto-open on error).
+ *
+ *  **A script's calls are this same row, nested.** A `run_code` card lists the calls
+ *  its script made under its own row, each with the anatomy every call has — only the
+ *  chrome differs, which is what `variant="nested"` drops: no panel of its own (it
+ *  sits on the script's), and an indent that says whose call it is. They list outside
+ *  the disclosure, like a screenshot, because what the script did is the point of the
+ *  card; the script itself is behind it, where the argument dump is for other tools. */
 export function ToolCallCard(props: {
   tool: ToolInvocation;
   open?: boolean;
+  variant?: "card" | "nested";
 }): JSX.Element {
+  const nested = (): boolean => props.variant === "nested";
   // Auto-expand error cards so the reason is immediately visible.
   const { open, toggle } = createAdoptedOpen(
     props,
@@ -86,12 +97,24 @@ export function ToolCallCard(props: {
   const copyTool = (e: MouseEvent): void => {
     e.stopPropagation();
     copyToClipboard(
-      props.tool.result ?? props.tool.error ?? props.tool.args,
+      props.tool.result ??
+        props.tool.error ??
+        props.tool.script ??
+        props.tool.args,
       "Tool result",
     );
   };
   return (
-    <div class="group/tool overflow-hidden rounded-panel bg-surface shadow-1">
+    <div
+      /* Two group names, because a nested row sits inside its script's card: under
+         one name, hovering anywhere on the script would reveal every nested row's
+         copy button at once. */
+      class={
+        nested()
+          ? "group/nested pl-3"
+          : "group/tool overflow-hidden rounded-panel bg-surface shadow-1"
+      }
+    >
       <ProcessRow
         open={open()}
         onToggle={toggle}
@@ -132,7 +155,13 @@ export function ToolCallCard(props: {
               type="button"
               aria-label="Copy tool result"
               onClick={copyTool}
-              class={`${REVEAL_BASE} text-dim hover:text-bright group-hover/tool:opacity-100`}
+              class={cx(
+                REVEAL_BASE,
+                "text-dim hover:text-bright",
+                nested()
+                  ? "group-hover/nested:opacity-100"
+                  : "group-hover/tool:opacity-100",
+              )}
             >
               <Icon name="copy" size={12} />
             </button>
@@ -200,6 +229,15 @@ export function ToolCallCard(props: {
           </For>
         </div>
       </Show>
+      <Show when={props.tool.children?.length}>
+        <div class="flex flex-col border-t border-line py-0.5">
+          <For each={props.tool.children}>
+            {(child) => (
+              <ToolCallCard tool={child} open={props.open} variant="nested" />
+            )}
+          </For>
+        </div>
+      </Show>
       <Collapse open={open()}>
         <div class="flex flex-col gap-1 px-2 py-1.5">
           {/* The registry name and every argument — what the collapsed row trades
@@ -217,6 +255,18 @@ export function ToolCallCard(props: {
             <span class="text-text">{props.tool.name}</span>
             {props.tool.args ? ` ${props.tool.args}` : ""}
           </Text>
+          {/* A script is a program, so it reads as one — lines and a gutter, capped
+              like the dump above so the result stays within reach. */}
+          <Show when={props.tool.script}>
+            {(script) => (
+              <CodeBlock
+                code={script()}
+                lang="python"
+                fontStep={-1}
+                class="max-h-60 rounded-ctl border border-line"
+              />
+            )}
+          </Show>
           {/* A call that ran a command without being a terminal — a backgrounded
               process, which is a handle the agent checks on later rather than output
               the operator watches arrive. It still ran something on their machine

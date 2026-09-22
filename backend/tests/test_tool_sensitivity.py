@@ -55,6 +55,16 @@ class TestEveryToolIsClassified:
         # withheld from a Plan turn that should have had it.
         assert _catalog_names() <= _classified()
 
+    def test_the_chassis_tools_are_classified_outside_the_catalog(self):
+        # `run_code` is offered on every agent by the chassis, not by a category, so it is
+        # classified without being pinned to a catalog row — and it is a read: the script
+        # touches nothing, and each tool it calls is gated on its own.
+        from services.tool_sensitivity import CHASSIS_TOOLS, classified
+
+        assert CHASSIS_TOOLS == {"run_code": Sensitivity.READ}
+        assert classified("run_code") and sensitivity_of("run_code") is Sensitivity.READ
+        assert not set(CHASSIS_TOOLS) & _catalog_names()
+
     def test_no_tool_is_in_two_classes(self):
         total = sum(len(names) for names in SENSITIVITY_CLASSES.values())
         assert total == len(_classified())

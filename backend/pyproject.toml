@@ -74,6 +74,7 @@ dependencies = [
     # brittle on ordinary bashisms.
     "tree-sitter>=0.23",
     "tree-sitter-bash>=0.23",
+    "pydantic-monty>=0.0.23",
 ]
 
 # Whole-DB SQLCipher was ruled out (no portable 3.14 wheels); at-rest

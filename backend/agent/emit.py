@@ -26,9 +26,11 @@ dependency points this way — the agent layer knows about both — and not back
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from pydantic import BaseModel
 from pydantic_ai import CapabilityEvent
+from pydantic_ai.messages import ToolCallPart
 
 from runs import PrefixVerdict, TurnOverhead
 
@@ -79,3 +81,33 @@ class PrefixWatched(CapabilityEvent, namespace=NAMESPACE):
     """
 
     verdict: PrefixVerdict
+
+
+@dataclass(kw_only=True)
+class NestedToolStarted(CapabilityEvent, namespace=NAMESPACE):
+    """A call a ``run_code`` script made has begun (``agent/code_mode.py``).
+
+    The library streams a ``FunctionToolCallEvent`` for every call the *model* makes and
+    nothing at all for the calls a script makes from inside one, so the code-mode
+    capability says so itself, and ``translate.py`` turns it into the same ``tool.started``
+    frame a direct call gets — carrying the script's ``parent_tool_call_id``. Raw library
+    objects rather than a finished frame, so the one translator stays the only place a
+    tool call becomes wire.
+    """
+
+    parent_tool_call_id: str
+    part: ToolCallPart
+
+
+@dataclass(kw_only=True)
+class NestedToolFinished(CapabilityEvent, namespace=NAMESPACE):
+    """A call a ``run_code`` script made has ended — with ``content`` when it returned, or
+    ``error`` when it failed or was refused. ``tool_call_id`` and ``tool_name`` (the
+    library's own fields) name the nested call; ``user_content`` is what a
+    ``ToolReturn`` handed back *for the model* beside its result, the pixels a direct
+    call's ``FunctionToolResultEvent`` carries as ``content``."""
+
+    parent_tool_call_id: str
+    content: Any = None
+    user_content: Any = None
+    error: str | None = None

@@ -291,7 +291,15 @@ def code_toolset() -> FunctionToolset[RunDeps]:
         """Describe this tool in terms of the tools the run actually has."""
         return replace(tool_def, description=described[ctx.deps.delegated_approved])
 
-    @toolset.tool(description=described[False], prepare=_worded_for_who_is_running)
+    # `code_arg_name` marks a tool whose argument *is* a program. It is what renders that
+    # argument as code, and it is what keeps the tool out of `run_code`
+    # (`agent/code_mode.py`): a script passing a second script as a string literal is
+    # two code surfaces nested, where the model should see them side by side.
+    @toolset.tool(
+        description=described[False],
+        prepare=_worded_for_who_is_running,
+        metadata={"code_arg_name": "code", "code_arg_language": "python"},
+    )
     async def execute(
         ctx: RunContext[RunDeps],
         code: str,
@@ -402,7 +410,11 @@ def code_toolset() -> FunctionToolset[RunDeps]:
             return {"ok": False, "error": str(exc)}
         return {"allowed": sorted(allowed)}
 
-    @toolset.tool(requires_approval=True, prepare=_only_where_there_is_someone_to_ask)
+    @toolset.tool(
+        requires_approval=True,
+        prepare=_only_where_there_is_someone_to_ask,
+        metadata={"code_arg_name": "command", "code_arg_language": "shell"},
+    )
     async def run_host_command(
         ctx: RunContext[RunDeps],
         command: str,

@@ -120,6 +120,25 @@ async def test_the_tool_array_order_is_the_same_on_every_build():
     assert _tool_names(await _head()) == _tool_names(await _head())
 
 
+def _run_code(info: AgentInfo):
+    return next(tool for tool in info.function_tools if tool.name == "run_code")
+
+
+@pytest.mark.parametrize("level", ["manual", "edit", "auto", "yolo"])
+async def test_run_code_is_the_same_bytes_on_every_turn_at_one_level(level):
+    """`run_code`'s description lists the tools the thread's level clears unasked, so it is
+    the one tool definition that moves when the level does — a price paid once, at the
+    change. Within one level it must be byte-identical turn to turn: rendered from a set,
+    or stamped with anything, it would re-read the conversation on every request."""
+    one, two = _run_code(await _head(permission=level)), _run_code(await _head(permission=level))
+    assert (one.description, one.parameters_json_schema) == (
+        two.description,
+        two.parameters_json_schema,
+    )
+    # And last, so a level change moves the tail of the tool array rather than its middle.
+    assert _tool_names(await _head(permission=level))[-1] == "run_code"
+
+
 async def test_the_same_withheld_set_spelled_two_ways_gives_one_array():
     """`disabled_tools` arrives as a set, and a set's iteration order must not reach the
     array. Cheap to pin and expensive to discover: the symptom is an operator's threads

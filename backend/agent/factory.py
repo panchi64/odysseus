@@ -50,6 +50,7 @@ from tools import (
 )
 from tools.describe import category_names
 
+from .code_mode import CodeModeLimits, code_mode_capability
 from .injections import AnnounceInjections, contributor_id
 from .overhead import MeasureOverhead
 from .prefix_watch import WatchPrefix, watch_prefix_enabled
@@ -66,6 +67,7 @@ def build_agent(
     categories: Any = None,
     instruction_providers: Sequence[InstructionProvider] = (),
     dormant: Mapping[str, str] = NO_DORMANT,
+    code_mode: CodeModeLimits | None = None,
 ) -> Agent:
     # Two prompt seams by durability: SYSTEM_PROMPT (identity/voice) is anchored in
     # history; INSTRUCTIONS (autonomy, tool posture, the treat-external-content-as-
@@ -121,6 +123,13 @@ def build_agent(
             MeasureOverhead(),
             AnnounceInjections(),
             tool_search_capability(names_by_category, dormant),
+            # `run_code`: the tools this thread's level clears unasked, callable as
+            # functions from one model-written script, so a fan-out of calls costs one
+            # round trip and only the script's result reaches the context. The library
+            # orders it outermost and around `ToolSearch`, so `search_tools` stays a direct
+            # call and every nested call still passes through the whole stack beneath it —
+            # the gates, the describing stage and the narration strip (`agent/code_mode.py`).
+            code_mode_capability(code_mode),
             # Registered for one narrow reason: to be the owner the library can attribute a
             # lifted harness toolset's own `CapabilityEvent`s to. It contributes no tools, no
             # instructions and no hooks — every category still arrives through the namespaced,

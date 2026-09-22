@@ -84,6 +84,7 @@ from tools import (
 )
 
 from .attribution import attribute_answer, last_answer_id, tool_results
+from .code_mode import code_mode_limits
 from .factory import NO_DORMANT, build_agent
 from .finalize import finalize, flush_recorder, parked_context, persist_parked_cancel
 from .flush import PersistContext, TurnFlush
@@ -235,6 +236,7 @@ def build_chat_orchestrator(
             categories=categories,
             instruction_providers=instruction_providers,
             dormant=dormant,
+            code_mode=code_mode_limits(settings),
         )
         announced: set[str] = set()
 

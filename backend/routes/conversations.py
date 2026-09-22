@@ -149,6 +149,9 @@ class ToolCallOut(BaseModel):
     error: str | None = None
     images: list[ToolCallImageOut] = Field(default_factory=list)
     answers: list[ToolCallAnswerOut] = Field(default_factory=list)
+    # The `run_code` call this one was made from, when a script made it — the same field
+    # the live `tool.*` frames carry, so a reload nests the row where the stream did.
+    parent_tool_call_id: str | None = None
 
 
 class ViewVersionRefOut(BaseModel):
@@ -397,6 +400,7 @@ def _message(view: MessageView, by_id: dict[str, SnapshotView]) -> MessageOut:
                     )
                     for a in t.answers
                 ],
+                parent_tool_call_id=t.parent_tool_call_id,
             )
             for t in view.tools
         ],

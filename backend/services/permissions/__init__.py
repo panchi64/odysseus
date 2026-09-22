@@ -48,6 +48,7 @@ from services.permissions.reviewer import (
     ReviewRequest,
     ReviewVerdict,
     TranscriptEntry,
+    TurnBoundary,
     make_utility_reviewer,
     review_transcript,
 )
@@ -82,6 +83,7 @@ __all__ = [
     "ShellCommand",
     "Tier",
     "TranscriptEntry",
+    "TurnBoundary",
     "beyond_scope",
     "blocked_message",
     "capability_of",

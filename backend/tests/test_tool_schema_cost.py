@@ -34,6 +34,7 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
 from agent import stream_agent_run
+from agent.code_mode import code_mode_capability
 from agent.factory import NO_DORMANT, build_agent
 from agent.overhead import measure_overhead
 from core.db import init_db, make_engine
@@ -74,13 +75,21 @@ from ._helpers import full_tool_categories
 #: It took a fresh request to 35.6k characters and the corpus to 68.4k. The frontend could
 #: have derived a phrase ("Reading agent.py") for free; that was declined because it restates
 #: the arguments rather than giving the model's reason, which is the thing being paid for.
-CATALOG_CEILING_CHARS = 38_000
+#:
+#: **Raised a fourth time, from 38k, for `run_code`** (`agent/code_mode.py`): one more tool
+#: whose description carries the Python signature of every tool the thread's level clears
+#: unasked, since those stay direct calls *and* become callable from a script. It took a
+#: fresh request from 36.6k to 46.0k characters at Auto. The library's own rendering — a
+#: full docstring per function — would have cost 23.6k on its own; bare signatures, with the
+#: prose left on the direct definition it repeats, is what brought it to 9.3k.
+CATALOG_CEILING_CHARS = 48_000
 
 #: The same for the whole corpus — every dormant group revealed. Deferral moves a group's
 #: cost from every turn to the turns that want it; it does not make the group free, and a
 #: ceiling that only watched the fresh request would let the dormant half grow unwatched.
-#: Raised from 50k, then from 60k, alongside the ceiling above and for the same reasons.
-CORPUS_CEILING_CHARS = 72_000
+#: Raised from 50k, then from 60k, then from 72k, alongside the ceiling above and for the
+#: same reasons.
+CORPUS_CEILING_CHARS = 82_000
 
 
 class _AllOnline:
@@ -98,7 +107,9 @@ def _dormant_categories() -> tuple[str, ...]:
     return tuple(entry.category for manifest in discover_manifests() for entry in manifest.dormant)
 
 
-async def _catalog(mode: str, permission: str) -> tuple[tuple[int, int], tuple[int, int]]:
+async def _catalog(
+    mode: str, permission: str, *, scripts: bool = True
+) -> tuple[tuple[int, int], tuple[int, int]]:
     """``((tools, chars) on a fresh request, (tools, chars) with every group revealed)`` for
     a real run in this mode and at this level — resolved through the composed toolset stack
     the engine hands the Agent, and through the same ``effective_disabled_tools`` every run
@@ -126,8 +137,14 @@ async def _catalog(mode: str, permission: str) -> tuple[tuple[int, int], tuple[i
     )
     ctx = RunContext(deps=deps, model=TestModel(), usage=RunUsage())
     stack = build_agent_toolsets(full_tool_categories(), dormant=_dormant_categories())[0]
-    tools = await stack.get_tools(ctx)
-    corpus = [tool.tool_def for tool in tools.values()]
+    # Measured through the `run_code` wrapper every agent carries, since its description —
+    # the signature of every tool the level clears — ships on every request too. Its catalog
+    # is the fresh request's: a dormant group joins it only once revealed, so the corpus
+    # figure below counts a revealed group's signatures once, as schemas, not twice.
+    tools = await code_mode_capability().get_wrapper_toolset(stack).get_tools(ctx)
+    corpus = [
+        tool.tool_def for name, tool in tools.items() if scripts or name != "run_code"
+    ]
     fresh = [tool_def for tool_def in corpus if not tool_def.defer_loading]
     return (
         (len(fresh), measure_overhead(None, [], fresh).tools),
@@ -188,12 +205,22 @@ async def test_only_plan_narrows_the_catalog():
     # would tell the model the capability does not exist rather than that it needs
     # permission, so their cost is identical by design — before and after deferral, which
     # is decided per category and knows nothing about the level.
+    #
+    # `run_code` is the one definition that does move with the level, and on purpose: its
+    # description lists the tools the level clears unasked (`agent/code_mode.py`). So the
+    # catalog is identical with it set aside, and the tool count is identical with it in.
     acting = {
-        level: await _catalog("normal", level)
+        level: await _catalog("normal", level, scripts=False)
         for level in PERMISSION_LEVELS
         if level != "plan"
     }
     assert len(set(acting.values())) == 1, acting
+    counts = {}
+    for level in PERMISSION_LEVELS:
+        if level != "plan":
+            fresh, corpus = await _catalog("normal", level)
+            counts[level] = (fresh[0], corpus[0])
+    assert len(set(counts.values())) == 1, counts
 
 
 # --- and that a real request performs the subtraction these figures assume -------------

@@ -824,8 +824,8 @@ async def test_a_turn_that_parks_for_approval_records_its_overhead_before_resumi
     assert overhead is not None, "a parked turn has measured its request already"
     assert overhead.system > 0
     # The one tool it was given, itemised under its own category — the row the operator
-    # would act on.
-    assert [(g.category, g.tools) for g in overhead.groups] == [("danger", 1)]
+    # would act on — beside the chassis's own `run_code`, which is a row of its own too.
+    assert [(g.category, g.tools) for g in overhead.groups] == [("danger", 1), ("run_code", 1)]
 
 
 def test_a_negative_figure_reads_as_absent():

@@ -25,7 +25,12 @@ from pydantic_ai import RunContext
 from core.container import ServiceContainer
 from runs import Run
 from services.modes import DEFAULT_MODE, ModeId
-from services.permissions import DEFAULT_PERMISSION, PermissionLevel
+from services.permissions import (
+    DEFAULT_PERMISSION,
+    PermissionLevel,
+    ReviewBudget,
+    TurnBoundary,
+)
 from services.search import DedupeSets
 from services.workspace import RunWorkspace
 
@@ -96,6 +101,15 @@ class RunDeps:
     # a run — the conversation belongs to the parent — so it is withheld from one rather
     # than offered and left to strand the child on a question no one will see.
     delegated_approved: bool = False
+    # The two things the Auto review needs that belong to the *turn* rather than to one
+    # batch of deferred calls: where this turn's own messages begin, so the reviewer reads
+    # the request that opened it, and the ceiling on model reviews the turn may spend.
+    # `agent/turn.py` rules on a top-level batch with its own copies; these are here for
+    # the one ruling that happens *inside* a tool call, where the turn's locals cannot
+    # reach — a call a `run_code` script made (`agent/code_mode.py`). The same objects,
+    # so a script cannot spend a review budget of its own. None on a run no turn built.
+    turn_start: TurnBoundary | None = field(default=None, repr=False, compare=False)
+    review_budget: ReviewBudget | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not self.workspace_key:

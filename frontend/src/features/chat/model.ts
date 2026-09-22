@@ -135,6 +135,14 @@ export interface ToolInvocation {
    *  process, whose result is a handle rather than output. Absent for everything else,
    *  which is nearly every tool: nothing else declares a reach. */
   boundary?: CommandBoundaryFacts;
+  /** The script a call ran, for a tool whose argument *is* a program (`run_code`).
+   *  Kept apart from `args` so the open card can show it as code rather than as one
+   *  `code=…` line in the argument dump. */
+  script?: string;
+  /** The calls a script made, in the order they started. Only a `run_code` call has
+   *  them; each is a call of its own with its own lifecycle, nested here rather than
+   *  sitting on the turn's rail beside the call that made it. */
+  children?: ToolInvocation[];
 }
 
 /** One image a tool returned: base64 payload plus its media type. The scheme is the

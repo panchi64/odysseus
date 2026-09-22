@@ -188,7 +188,13 @@ export interface AnswerDelta extends Base {
 }
 
 // --- Tools -----------------------------------------------------------------
-export interface ToolStarted extends Base {
+/** The field every lifecycle frame of a tool call carries when the call was made from
+ *  inside a script — a `run_code` call's own tool calls. It names that `run_code`
+ *  call's `tool_call_id`; absent or null for a call the model made directly. */
+interface Nestable {
+  parent_tool_call_id?: string | null;
+}
+export interface ToolStarted extends Base, Nestable {
   type: "tool.started";
   tool_call_id: string;
   name: string;
@@ -200,7 +206,7 @@ export interface ToolProgress extends Base {
   elapsed_s: number | null;
   partial: string | null;
 }
-export interface ToolCompleted extends Base {
+export interface ToolCompleted extends Base, Nestable {
   type: "tool.completed";
   tool_call_id: string;
   name: string;
@@ -213,7 +219,7 @@ export interface ToolImage {
   media_type: string;
   data: string;
 }
-export interface ToolFailed extends Base {
+export interface ToolFailed extends Base, Nestable {
   type: "tool.failed";
   tool_call_id: string;
   name: string;

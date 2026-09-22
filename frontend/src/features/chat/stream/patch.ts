@@ -18,8 +18,9 @@ import type {
   HostCommand,
   HostCommandBlock,
   ReviewBlock,
-  ToolBlock,
+  ToolInvocation,
 } from "../model";
+import { findToolCall } from "../toolTree";
 
 let counter = 0;
 
@@ -76,13 +77,13 @@ export function appendDelta(
   else blocks.push({ kind, id: nextId(kind), text });
 }
 
+/** The generic tool call for one id — a rail block's, or one nested on a script's card,
+ *  since a script's calls report progress and settle by id like any other. */
 export function findTool(
   m: ChatMessage,
   toolCallId: string,
-): ToolBlock | undefined {
-  return m.blocks?.find(
-    (b): b is ToolBlock => b.kind === "tool" && b.tool.id === toolCallId,
-  );
+): ToolInvocation | undefined {
+  return findToolCall(m.blocks, toolCallId);
 }
 
 /** The terminal block for one call, keyed by tool_call_id.

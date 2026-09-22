@@ -87,6 +87,8 @@ export interface ToolCallDTO {
   images?: ToolImageDTO[];
   /** Non-empty only on a settled `ask_user` call. */
   answers?: ToolCallAnswerDTO[];
+  /** The `run_code` call this one was made from, when a script made it. */
+  parent_tool_call_id?: string | null;
 }
 
 /** An inline View chip re-attached to the message that minted it — references the

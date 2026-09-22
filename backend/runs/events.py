@@ -487,10 +487,16 @@ class AnswerDelta(_Body):
 
 # --- Tools (full args + results inline, not summaries) -----------------------
 class ToolStarted(_Body):
+    """A tool call began. ``parent_tool_call_id`` is set when a script made the call — the
+    ``tool_call_id`` of the ``run_code`` call it was made from — and absent for a call the
+    model made directly; the same field rides ``tool.completed`` and ``tool.failed``, so a
+    client nests the whole lifecycle under the script that ran it. Additive to v1."""
+
     type: Literal["tool.started"] = "tool.started"
     tool_call_id: str
     name: str
     args: dict[str, Any] = Field(default_factory=dict)
+    parent_tool_call_id: str | None = None
 
 
 class ToolProgress(_Body):
@@ -519,6 +525,7 @@ class ToolCompleted(_Body):
     name: str
     result: Any = None
     images: list[ToolImage] = Field(default_factory=list)
+    parent_tool_call_id: str | None = None
 
 
 class ToolFailed(_Body):
@@ -526,6 +533,7 @@ class ToolFailed(_Body):
     tool_call_id: str
     name: str
     error: str
+    parent_tool_call_id: str | None = None
 
 
 # --- View (the conversation's one versioned output surface) ------------------

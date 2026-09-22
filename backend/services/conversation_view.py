@@ -113,6 +113,58 @@ class ToolView:
     # rendered, so the card a reload draws is the card the operator watched arrive. Empty
     # for every other tool, and for an asking call the operator never answered.
     answers: list[AnsweredQuestion] = field(default_factory=list)
+    # The `run_code` call this one was made from, when a script made it; None for a call
+    # the model made directly. Rebuilt from that call's result (`_script_calls`).
+    parent_tool_call_id: str | None = None
+
+
+def _field(item: Any, name: str) -> Any:
+    """One field of a part a script's result recorded — the library object while the
+    thread is still in memory, the plain dict it serialized to once it has been stored."""
+    return item.get(name) if isinstance(item, dict) else getattr(item, name, None)
+
+
+def _script_calls(part: ToolReturnPart) -> list[ToolView]:
+    """The calls a ``run_code`` script made, rebuilt as rows of their own.
+
+    A script's calls never appear as ``ToolCallPart``s in the history — the model made one
+    call, and that call made the rest — so the only record of them is what the code-mode
+    capability wrote on the script's own result: ``tool_calls`` in the order they started
+    and ``tool_returns`` for those that returned or were refused
+    (``pydantic_ai_harness.code_mode``). A call with no return raised; the record keeps no
+    account of why, so the row says only that it did not complete. The live stream showed
+    the reason (``tool.failed``), and a reload is the one place that is not kept.
+    """
+    metadata = part.metadata
+    if not isinstance(metadata, dict) or not metadata.get("code_mode"):
+        return []
+    calls = metadata.get("tool_calls") or {}
+    returns = metadata.get("tool_returns") or {}
+    if not isinstance(calls, dict) or not isinstance(returns, dict):
+        return []
+    views: list[ToolView] = []
+    for call_id, call in calls.items():
+        args = _field(call, "args")
+        if isinstance(args, str):
+            args = ToolCallPart(tool_name="", args=args).args_as_dict()
+        view = ToolView(
+            id=str(call_id),
+            name=str(_field(call, "tool_name") or ""),
+            args=args if isinstance(args, dict) else {},
+            parent_tool_call_id=part.tool_call_id,
+        )
+        returned = returns.get(call_id)
+        if returned is None:
+            view.status = "error"
+            view.error = "The call raised before it returned."
+        elif _field(returned, "outcome") == "denied":
+            view.status = "error"
+            view.error = flatten_content(_field(returned, "content"))
+        else:
+            view.status = "ok"
+            view.result = jsonable(_field(returned, "content"))
+        views.append(view)
+    return views
 
 
 @dataclass
@@ -646,6 +698,9 @@ def project_tree(
     """
     views: list[MessageView] = []
     by_call: dict[str, ToolView] = {}
+    # The turn each call was issued on, so the rows a script's result rebuilds land on the
+    # same turn as the script, whatever else has happened since.
+    owner: dict[str, MessageView] = {}
     assistant: MessageView | None = None  # the open assistant turn, if any
     # The messages a checkpoint would fold: everything since the previous one (which is
     # itself part of the set — a second fold summarizes the first summary plus what
@@ -725,6 +780,9 @@ def project_tree(
                         tool.status = "ok"
                         tool.result = jsonable(part.content)
                         _attach_answers(tool)
+                        # A script's own calls follow it on the turn, each naming it as
+                        # its parent — the order a client nests them in.
+                        owner[part.tool_call_id].tools.extend(_script_calls(part))
                 elif isinstance(part, RetryPromptPart):
                     tool = by_call.get(part.tool_call_id)
                     if tool is not None:
@@ -752,4 +810,5 @@ def project_tree(
                     )
                     assistant.tools.append(tool)
                     by_call[part.tool_call_id] = tool
+                    owner[part.tool_call_id] = assistant
     return views
