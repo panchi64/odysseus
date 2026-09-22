@@ -1,14 +1,18 @@
 """When a *turn* folds the thread, how the fold is announced, and what it does to the
 turn's persistence boundary.
 
-``summarize.py`` is the fold itself — what gets read, what gets written, and the one path
-all three triggers run through. This is the turn's side of it: the projected check that
-fires one between turns, the mid-turn recovery that fires one after a provider refused the
-request, the ``compaction.started``/``conversation.compacted`` pair each announces itself
-with, and — the part only a turn can know — the rebuild of the history the retried request
-is sent against, with the ``TurnStart`` boundary moved to match. A fold that happens inside
-a turn moves the line between what the thread already had and what this turn is about to
-persist; nowhere else has to think about that, which is why it is here and not there.
+``summarize.py`` is the fold itself — what gets read and what gets written. :func:`fold`
+here is the layer above it that **every** trigger goes through: it announces the fold with
+the ``compaction.started``/``conversation.compacted`` pair and hands back what happened.
+The operator's own "compact now" reaches it from ``routes/conversations.py``; the two
+turn-shaped triggers reach it through the wrappers below.
+
+The rest of this module is the part only a *turn* can know: the projected check that fires
+a fold between turns, the mid-turn recovery that fires one after a provider refused the
+request, and the rebuild of the history the retried request is sent against with the
+``TurnStart`` boundary moved to match. A fold inside a turn moves the line between what the
+thread already had and what this turn is about to persist; nowhere else has to think about
+that, which is why it is here and not there.
 
 Nothing here reads settings for itself: the value rides on the ``CompactionContext`` the
 turn built once, so every reading of the thread's size in one turn is against one object.
@@ -27,6 +31,7 @@ from pydantic_ai import (
 )
 
 from runs import (
+    CompactionDelta,
     CompactionReason,
     CompactionStarted,
     ConversationCompacted,
@@ -42,7 +47,13 @@ from .history import (
     merge_consecutive_requests,
 )
 from .metrics import turn_metrics
-from .summarize import compact_conversation, should_compact
+from .summarize import (
+    CompactionOutcome,
+    FoldFailed,
+    FoldResult,
+    compact_conversation,
+    should_compact,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,17 +75,25 @@ def incoming_request(
     return ModelRequest(parts=[UserPromptPart(content=parts)]) if parts else None
 
 
-async def _fold(
-    run: Run, ctx: CompactionContext, *, reason: CompactionReason
-) -> list[ModelMessage] | None:
-    """Run one compaction and announce it, returning the replay it leaves behind — or
-    ``None`` when nothing folded.
+async def fold(run: Run, ctx: CompactionContext, *, reason: CompactionReason) -> FoldResult:
+    """Run one compaction and announce it on ``run``, answering with what happened.
 
-    The one path every fold takes, whichever of the two triggers fired, so the pair cannot
-    drift on what is emitted or in what order. Nothing here may raise: both callers are on
-    the critical path of a turn, and compaction is an efficiency measure rather than a
-    guard — when it fails, or frees nothing, the turn carries on and meets the model's real
-    ceiling, which is the honest outcome.
+    **The one path every fold takes**, whichever trigger fired — the prelude's projected
+    threshold, the mid-turn overflow recovery, or the operator's own button — so no trigger
+    can drift on what is emitted, in what order, or under what policy. A trigger decides
+    only *whether* to fold and what ``reason`` to stamp; everything past that point is
+    here.
+
+    That was not true until recently, and the one trigger sitting outside this function
+    paid for it in every way a duplicated path does: it emitted neither event, so a
+    hand-started fold was invisible, and it assembled its own arguments, so it ran the
+    summarizer against a different input budget than an automatic fold would.
+
+    **This never raises**, and that is a property of the function rather than a favour to
+    one caller: a fold is an efficiency measure, and a turn that dies for one is worse off
+    than a turn that meets the model's real ceiling. What a failure *means*, though, is the
+    caller's — an automatic trigger carries on, while the operator's own button has to say
+    so — which is why the outcome comes back as a value instead of being swallowed here.
 
     ``compaction.started`` goes out from inside the plan callback rather than before it, so
     it is emitted only once there is genuinely something to fold and can state what. It
@@ -82,7 +101,7 @@ async def _fold(
     looks: the summarizer is a whole model call with its own timeout, and it emits nothing
     while it runs."""
     try:
-        outcome = await compact_conversation(
+        result = await compact_conversation(
             ctx.store,
             ctx.conversation_id,
             model=ctx.model,
@@ -99,24 +118,51 @@ async def _fold(
                     tokens_estimate=estimate_tokens(plan.messages),
                 )
             ),
+            # The summary as it is written. Every delta also touches the activity clock,
+            # which makes the watchdog margin comfortable rather than merely sufficient:
+            # `compaction.started` alone left one frame at the beginning of a pass whose
+            # own timeout sits just under the inactivity bound.
+            on_delta=lambda delta: run.emit(
+                CompactionDelta(
+                    conversation_id=ctx.conversation_id,
+                    text=delta.text,
+                    part=delta.part,
+                    parts=delta.parts,
+                )
+            ),
         )
-    except Exception:  # noqa: BLE001 — an optimization must never take the turn down with it
+    except Exception:  # noqa: BLE001 — a fold must never take its caller down with it
         logger.warning("compaction failed for %s", ctx.conversation_id, exc_info=True)
-        return None
-    if outcome is None:
-        return None
-    run.emit(
-        ConversationCompacted(
-            conversation_id=ctx.conversation_id,
-            reason=reason,
-            message_id=outcome.message_id,
-            summary=outcome.summary,
-            messages_compacted=outcome.messages_compacted,
-            tokens_before=outcome.tokens_before,
-            tokens_after=outcome.tokens_after,
-            after_message_id=outcome.after_message_id,
+        return FoldFailed("error")
+    if isinstance(result, CompactionOutcome):
+        run.emit(
+            ConversationCompacted(
+                conversation_id=ctx.conversation_id,
+                reason=reason,
+                message_id=result.message_id,
+                summary=result.summary,
+                messages_compacted=result.messages_compacted,
+                tokens_before=result.tokens_before,
+                tokens_after=result.tokens_after,
+                after_message_id=result.after_message_id,
+            )
         )
-    )
+    return result
+
+
+async def _fold_replay(
+    run: Run, ctx: CompactionContext, *, reason: CompactionReason
+) -> list[ModelMessage] | None:
+    """A turn's reading of :func:`fold`: the replay it leaves behind, or ``None`` when
+    nothing folded.
+
+    Re-reading ``model_history`` is the turn-shaped half — the route has no replay to
+    rebuild — so it lives here rather than inside the shared path, and all three of the
+    non-outcome cases collapse to the same ``None`` because a turn does the same thing for
+    each of them: carry on against the history it already had."""
+    result = await fold(run, ctx, reason=reason)
+    if not isinstance(result, CompactionOutcome):
+        return None
     return await ctx.store.model_history(ctx.conversation_id)
 
 
@@ -152,7 +198,7 @@ async def maybe_compact(
         settings=ctx.settings,
     ):
         return history, False
-    folded = await _fold(run, ctx, reason="threshold")
+    folded = await _fold_replay(run, ctx, reason="threshold")
     return (history, False) if folded is None else (folded, True)
 
 
@@ -206,7 +252,7 @@ async def compact_and_retry(
     """
     if not ctx.policy.enabled:
         return None
-    folded = await _fold(run, ctx, reason="overflow")
+    folded = await _fold_replay(run, ctx, reason="overflow")
     if folded is None:
         return None
     # Merged per side first, so the only merge the concatenation can still perform is the

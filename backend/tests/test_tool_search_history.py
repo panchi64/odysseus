@@ -334,10 +334,16 @@ async def test_the_summarizer_reads_the_search_as_one_line():
         await _turn(app, cid, model=_searcher([]))
 
         text = render_transcript(await store.history(cid))
-        assert 'ASSISTANT called search_tools({"queries": ["browse"]})' in text
-        line = next(line for line in text.splitlines() if "search_tools loaded" in line)
-        assert "browse_open_page" in line and "browse_delete_page" in line
+        assert '<tool-call tool="search_tools">' in text
+        assert '{"queries": ["browse"]}' in text
+        line = next(
+            line for line in text.splitlines() if "browse_open_page" in line
+        )
+        assert "browse_delete_page" in line
         assert "UNTRUSTED CONTENT" not in line
+        # The names ride in their own element rather than a fenced payload: they are the
+        # workspace's own, and fencing would label them as somebody else's words.
+        assert '<tools-loaded tool="search_tools">' in text
 
 
 # --- 3. streaming ---------------------------------------------------------------------

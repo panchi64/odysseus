@@ -6,8 +6,8 @@ import {
   type RunEvent,
 } from "~/lib/stream";
 import { toast } from "~/ui";
-import type { ChatMessage, CompactionProgressBlock } from "../model";
-import { createFolder, type FoldState } from "./fold";
+import type { ChatMessage, CompactionProgress } from "../model";
+import { FOLD_RUN_KIND, createFolder, type FoldState } from "./fold";
 import { createPatchById } from "./patch";
 
 /**
@@ -29,6 +29,7 @@ function harness(seed: ChatMessage[] = []) {
     tasksRevision: 0,
     planRevision: 0,
     activeRunId: "run-1",
+    runKind: null,
   };
   const fold = createFolder({
     state,
@@ -85,59 +86,90 @@ const compacted = (
   reason,
 });
 
-/** Every compaction row on the assistant turn, in order. */
-function rows(
-  messages: ChatMessage[],
-): CompactionProgressBlock["compaction"][] {
-  return (messages.find((m) => m.id === "a1")?.blocks ?? [])
-    .filter(
-      (b): b is CompactionProgressBlock => b.kind === "compaction_progress",
-    )
-    .map((b) => b.compaction);
+/** Every fold still in flight, in order — a compaction turn that has live state on it. */
+function live(messages: ChatMessage[]): CompactionProgress[] {
+  return messages
+    .filter((m) => m.role === "compaction" && m.compaction)
+    .map((m) => m.compaction!);
 }
 
-describe("a fold in flight is visible on the turn it interrupted", () => {
-  test("the row opens unfinished, carrying what is going into the fold", () => {
+const delta = (text: string, part = 1, parts = 1): RunEvent =>
+  ({
+    type: "compaction.delta",
+    seq: ++seq,
+    ts: "",
+    conversation_id: "c1",
+    text,
+    part,
+    parts,
+  }) as RunEvent;
+
+describe("a fold in flight is a turn in the transcript", () => {
+  test("the turn opens unfinished, carrying what is going into the fold", () => {
     const h = harness(turn());
     h.fold(started("threshold"));
-    expect(rows(h.messages)).toEqual([
+    expect(live(h.messages)).toEqual([
       { reason: "threshold", messages: 12, tokensEstimate: 40_000 },
     ]);
   });
 
-  test("the summary landing settles the row rather than adding a second", () => {
-    // The row is the account of the *wait*; once the fold is done the divider states
-    // what it cost. A second row here would report the same fold twice in one turn.
-    const h = harness(turn());
-    h.fold(started("threshold"));
-    h.fold(compacted("chk-1", "threshold"));
-    expect(rows(h.messages)).toHaveLength(1);
-    expect(rows(h.messages)[0].done).toBe(true);
+  test("it opens even with no assistant turn to hang off", () => {
+    // The whole reason this is a turn rather than a row on the assistant's rail. A fold
+    // the operator starts by hand runs between turns, so there is no assistant message
+    // in flight — and the rail version drew nothing at all on that path, which is the
+    // defect that started this.
+    const h = harness([]);
+    h.fold(started("manual"));
+    expect(live(h.messages).map((c) => c.reason)).toEqual(["manual"]);
   });
 
-  test("two folds in one turn are two rows", () => {
+  test("the summary streams into the live turn as it is written", () => {
+    const h = harness(turn());
+    h.fold(started("threshold"));
+    h.fold(delta("what "));
+    h.fold(delta("happened"));
+    expect(live(h.messages)[0].summary).toBe("what happened");
+  });
+
+  test("a chunked fold says which pass is writing", () => {
+    const h = harness(turn());
+    h.fold(started("threshold"));
+    h.fold(delta("part one", 1, 3));
+    expect(live(h.messages)[0]).toMatchObject({ part: 1, parts: 3 });
+  });
+
+  test("the summary landing replaces the live turn with the settled one", () => {
+    // The live text is the model's raw working — unstripped, unfenced. Once the real
+    // summary lands, keeping both would show the operator two versions of one fold and
+    // leave the unsafe one on screen.
+    const h = harness(turn());
+    h.fold(started("threshold"));
+    h.fold(delta("draft"));
+    h.fold(compacted("chk-1", "threshold"));
+    expect(live(h.messages)).toHaveLength(0);
+    expect(h.messages.find((m) => m.id === "chk-1")?.role).toBe("compaction");
+  });
+
+  test("two folds in one turn are two pauses, one at a time", () => {
     // Real after the overflow retry landed: the prelude can fold at the threshold and
     // the same turn can fold again when the provider still refuses the request. Those
-    // are two pauses the operator lived through, not one that repeated.
+    // are two pauses the operator lived through — and only ever one of them is live.
     const h = harness(turn());
     h.fold(started("threshold"));
     h.fold(compacted("chk-1", "threshold"));
     h.fold(started("overflow", 4));
-    expect(rows(h.messages).map((c) => c.reason)).toEqual([
-      "threshold",
-      "overflow",
-    ]);
-    expect(rows(h.messages).map((c) => c.done)).toEqual([true, undefined]);
+    expect(live(h.messages).map((c) => c.reason)).toEqual(["overflow"]);
+    expect(h.messages.filter((m) => m.role === "compaction")).toHaveLength(2);
   });
 
-  test("a replayed frame does not open a second row", () => {
+  test("a replayed frame does not open a second turn", () => {
     // A reattach replays the run's buffer from seq 0 over a transcript that already
     // folded it. The seq high-water mark is what drops the overlap.
     const h = harness(turn());
     const ev = started("threshold");
     h.fold(ev);
     h.fold(ev);
-    expect(rows(h.messages)).toHaveLength(1);
+    expect(live(h.messages)).toHaveLength(1);
   });
 });
 
@@ -465,5 +497,62 @@ describe("whose queued message it is", () => {
     expect(landed?.queuedPending).toBe(false);
     // Still not theirs — what a reload will show, from the envelope it was delivered in.
     expect(landed?.role).toBe("subagent");
+  });
+});
+
+describe("a fold that declines still says why", () => {
+  // The whole point of the button is that a fold is no longer silent, and the most
+  // likely way for it to do nothing is the case where it never starts: the thread is
+  // not longer than the retained tail, so there is nothing above it to summarize. No
+  // `compaction.started` is emitted then, so there is no live turn to clean up — and
+  // keying the report on that cleanup made this exact case go quiet again.
+  const ended = (detail: string): RunEvent =>
+    ({
+      type: "run.ended",
+      seq: ++seq,
+      ts: "",
+      outcome: "blocked",
+      detail,
+    }) as RunEvent;
+
+  const startedRun = (kind: string): RunEvent =>
+    ({
+      type: "run.started",
+      seq: ++seq,
+      ts: "",
+      run_id: "r1",
+      kind,
+    }) as RunEvent;
+
+  test("a blocked fold reports the backend's sentence", () => {
+    const spy = spyOn(toast, "info");
+    const h = harness(turn());
+    h.fold(startedRun("compaction"));
+    h.fold(ended("Nothing to fold yet."));
+    expect(spy).toHaveBeenCalledWith("Nothing to fold yet.");
+    spy.mockRestore();
+  });
+
+  test("a blocked chat turn does not — it already marks the turn it stopped", () => {
+    // A turn carries a persistent "Stopped:" marker with the same detail on it, so a
+    // toast here would state the same sentence twice for one event.
+    const spy = spyOn(toast, "info");
+    const h = harness(turn());
+    h.fold(startedRun("chat"));
+    h.fold(ended("The context window is full."));
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  test("the kind is spent at the terminal, so the next run does not inherit it", () => {
+    // A drive attached past its run's `run.started` (a transport resume) never sees one,
+    // and a kind left over from the fold before would report a chat turn's stop twice.
+    const spy = spyOn(toast, "info");
+    const h = harness(turn());
+    h.fold(startedRun(FOLD_RUN_KIND));
+    h.fold(ended("Nothing to fold yet."));
+    h.fold(ended("The context window is full."));
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
   });
 });

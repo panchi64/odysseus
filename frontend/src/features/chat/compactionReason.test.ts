@@ -1,45 +1,35 @@
 import { describe, expect, test } from "bun:test";
-import {
-  asCompactionReason,
-  compactionReasonCause,
-  compactionReasonSegment,
-} from "./compactionReason";
+import { asCompactionReason, compactionReasonCause } from "./compactionReason";
 import type { CompactionReason } from "./model";
 
 const ALL: CompactionReason[] = ["threshold", "overflow", "manual"];
 
 describe("every reason the wire can send has words", () => {
-  // A missing entry renders `undefined` into the divider's label, which is worse than
-  // saying nothing: the segment separator stays and the operator reads a fold with a
-  // blank cause. Both maps are keyed by the union, so this is really a guard against
-  // a *value* being added to the union with no wording behind it.
-  test("both forms answer for all three", () => {
-    for (const reason of ALL) {
-      expect(compactionReasonSegment(reason)).toBeTruthy();
+  // A missing entry renders `undefined` into the panel's row, which is worse than saying
+  // nothing: the separator stays and the operator reads a fold with a blank cause. The map
+  // is keyed by the union, so this is really a guard against a *value* being added to the
+  // union with no wording behind it.
+  test("all three are worded", () => {
+    for (const reason of ALL)
       expect(compactionReasonCause(reason)).toBeTruthy();
-    }
   });
 
   test("no two reasons read the same", () => {
-    // The whole point of carrying the reason is that a fold you asked for, a fold at
-    // your threshold and a fold the provider forced are different events. Two of them
+    // The whole point of carrying the reason is that a fold the operator asked for, a fold
+    // at their threshold and a fold the provider forced are different events. Two of them
     // sharing a phrase would put that distinction back where it was.
-    const segments = ALL.map(compactionReasonSegment);
-    const causes = ALL.map(compactionReasonCause);
-    expect(new Set(segments).size).toBe(ALL.length);
-    expect(new Set(causes).size).toBe(ALL.length);
+    expect(new Set(ALL.map(compactionReasonCause)).size).toBe(ALL.length);
   });
 
-  test("the clause completes 'Compacting because …' and the segment does not", () => {
-    // The two forms are not interchangeable — the rail row splices its cause into a
-    // sentence and the divider drops its segment into a `·`-joined label. A cause that
-    // opened with a capital, or a segment that ended in a period, would read as broken
-    // in the surface it lands in.
+  test("each is a stated fact, not a sentence addressed to the operator", () => {
+    // The panel is a console readout in the machine register, where a line that turns
+    // round and speaks to the reader is the one thing that breaks it. Lower case because
+    // the value sits after a `·` in a row, and no period because it is a label.
     for (const reason of ALL) {
       const cause = compactionReasonCause(reason);
       expect(cause[0]).toBe(cause[0].toLowerCase());
       expect(cause.endsWith(".")).toBe(false);
-      expect(compactionReasonSegment(reason).endsWith(".")).toBe(false);
+      expect(cause).not.toMatch(/\byou\b/i);
     }
   });
 });
@@ -55,8 +45,7 @@ describe("narrowing the cold read's plain string", () => {
   test("a reason this build cannot word is dropped, not passed through", () => {
     // A checkpoint folded before the backend recorded reasons sends null; a newer backend
     // could name a trigger this build has never heard of. Both have the same right answer
-    // — omit the segment — because the divider reads correctly without it, where a raw
-    // enum id on screen would not.
+    // — fall back to the ordinary trigger — where a raw enum id on screen would not.
     expect(asCompactionReason(null)).toBeUndefined();
     expect(asCompactionReason(undefined)).toBeUndefined();
     expect(asCompactionReason("")).toBeUndefined();

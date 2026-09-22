@@ -158,6 +158,7 @@ export interface MessageDTO {
 
 export interface ActiveRunDTO {
   id: string;
+  kind: string;
   status: string;
   last_seq: number;
 }

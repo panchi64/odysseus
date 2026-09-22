@@ -6,6 +6,7 @@ export type TextVariant =
   | "micro"
   | "plate"
   | "meta"
+  | "code"
   | "label"
   | "body"
   | "reading"
@@ -50,6 +51,11 @@ const variantClass: Record<TextVariant, string> = {
   plate:
     "text-plate font-mono font-medium uppercase tracking-plate transition-none",
   meta: "text-meta font-mono font-medium uppercase tracking-label transition-none",
+  // The one readable, un-uppercased mono step. §4 has specified it since the scale was
+  // written and the token has been in `tokens.css` just as long; only the variant was
+  // missing, so every surface wanting mono body text had to choose between 10px `micro`
+  // and the sans `body` that gives up the machine voice entirely.
+  code: "text-code font-mono transition-none",
   // ---- interface voice ----
   label: "text-label font-sans font-medium",
   body: "text-body font-sans",

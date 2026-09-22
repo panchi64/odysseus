@@ -271,8 +271,19 @@ export function createBranchingOps(ctx: BranchingContext) {
 
   /** Fold this thread's older turns into a summary now, rather than waiting for it to
    *  reach the automatic threshold — for a thread the operator knows is about to need the
-   *  room. Reseats from the returned active path like the other transcript-mutating
-   *  actions, so the new divider renders from exactly the shape a cold read gives. */
+   *  room.
+   *
+   *  **It drives a run, like a turn does**, because that is what the backend starts. The
+   *  fold used to be a blocking POST that answered with the finished transcript, and the
+   *  whole of what the operator saw for the half-minute it held was a flag in the header:
+   *  the events a fold emits had no stream to arrive on. Now the same frames an automatic
+   *  fold produces come back here — the turn that opens, the summary as it is written, the
+   *  checkpoint it settles into — and `fold.ts` renders them without knowing which trigger
+   *  fired.
+   *
+   *  Nothing is reseated afterwards. `conversation.compacted` carries the checkpoint and
+   *  where it goes, so the transcript is already right; refetching it would replace a
+   *  store the operator just watched fill with an identical one. */
   async function compactNow(): Promise<void> {
     const conversationId = ctx.conversationId();
     if (conversationId === null) return;
@@ -285,13 +296,23 @@ export function createBranchingOps(ctx: BranchingContext) {
     await compacting.run(conversationId, async () => {
       try {
         if (ctx.sending()) await ctx.cancel();
-        const detail = await api.post<ConversationDetailDTO>(
+        // Guarded like any other run the room drives: a send during the fold goes down
+        // the steering path — which the backend refuses for a fold, and says so —
+        // rather than the new-turn path, whose 409 would reattach onto this very run
+        // and take its drive away from it.
+        ctx.setSending(true);
+        const started = await api.post<ChatCreatedDTO>(
           `/conversations/${conversationId}/compact`,
           {},
         );
-        reseatIfCurrent(conversationId, detail);
-        toast.success("Earlier turns folded into a summary");
+        // No anchor message: a fold emits no answer and no thinking, so nothing it
+        // sends is addressed to a turn. The compaction frames seat their own turn in
+        // the transcript, which is exactly what lets this path have no assistant
+        // bubble to hang off.
+        await ctx.driveRun(started.run_id, "");
       } catch (err) {
+        ctx.setSending(false);
+        if (handleBusy(err)) return;
         toastError(err, "Unable to compact this conversation.");
       }
     });

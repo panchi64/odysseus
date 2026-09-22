@@ -96,6 +96,7 @@ export function createThreadBinding(deps: BindingDeps): void {
     // bookkeeping so its seqs don't suppress the next run's events.
     deps.state.maxFoldedSeq = 0;
     deps.state.activeRunId = null;
+    deps.state.runKind = null;
     deps.state.foldTarget = null;
     deps.onBind(k);
     seed(k, source);

@@ -113,6 +113,9 @@ async def test_detail_reports_an_in_flight_run(monkeypatch):
 
         detail = (await client.get(f"/conversations/{conversation_id}")).json()
         assert detail["active_run"]["id"] == run.id
+        # The kind rides along so a reattaching client knows whether to seed an
+        # assistant turn — a fold is a run that writes none.
+        assert detail["active_run"]["kind"] == "chat"
         assert detail["active_run"]["status"] == "running"
         assert isinstance(detail["active_run"]["last_seq"], int)
 

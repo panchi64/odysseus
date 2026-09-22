@@ -64,13 +64,23 @@ LANE_BY_KIND: Mapping[str, Lane] = {
     # not interactive, because nobody is sitting in front of it and a burst of sub-agents
     # finishing at once must not put the operator's own message in a queue.
     "wake": "linked",
+    # The operator folding a thread by hand. Interactive because that is literally true —
+    # they pressed a button and are watching the summary arrive — and it is not a chat
+    # turn: no model drives it, it composes nothing, and it must not drain the
+    # queued-message inbox.
+    "compaction": "interactive",
 }
 
 #: The kinds that are a chat turn — the ones composed by ``compose_turn``, and therefore
 #: the ones whose orchestrator drains the queued-message inbox a mid-run send lands in.
-#: Kept beside the lane map because both answer the same question about a kind, and two
-#: lists of run kinds would drift the first time a fourth one is added.
-CHAT_TURN_KINDS: frozenset[str] = frozenset(LANE_BY_KIND)
+#:
+#: **Named rather than derived from the lane map**, which is what it used to be. That
+#: derivation read as the tidier of the two and was only ever right by coincidence: every
+#: kind happened to be a chat turn, so "has a lane" and "is a chat turn" could not be told
+#: apart. The first kind that needed a lane *without* being a turn — a hand-started fold —
+#: would have been enrolled as one silently, and the symptom is a fold quietly swallowing
+#: a message the operator sent while it ran.
+CHAT_TURN_KINDS: frozenset[str] = frozenset({"chat", "task", "linked", "wake"})
 
 
 def lane_for(kind: str) -> Lane:

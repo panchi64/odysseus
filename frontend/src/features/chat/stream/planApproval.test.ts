@@ -26,6 +26,7 @@ function foldState(): FoldState {
     tasksRevision: 0,
     planRevision: 0,
     activeRunId: "run-1",
+    runKind: null,
   };
 }
 

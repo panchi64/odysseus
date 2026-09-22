@@ -36,6 +36,7 @@ from pydantic_ai.usage import RequestUsage
 from agent import build_chat_orchestrator
 from agent.history import merge_consecutive_requests
 from agent.summarize import (
+    CompactionOutcome,
     build_auto_compact_policy,
     compact_conversation,
     should_compact,
@@ -44,7 +45,7 @@ from agent.summarize import (
 from core.config import Settings, get_settings
 from prompts.utility import COMPACT_PREAMBLE
 from routes.deps import OPERATOR_ID
-from runs import RunStatus, TurnOverhead
+from runs import Run, RunStatus, RunStream, TurnOverhead
 from services.conversation_view import estimate_tokens, project_tree
 
 from ._helpers import client_app, patch_model_resolution
@@ -476,7 +477,7 @@ async def test_compact_conversation_end_to_end():
             model=TestModel(custom_output_text="the story so far"),
             keep_turns=2,
         )
-        assert outcome is not None
+        assert isinstance(outcome, CompactionOutcome)
         # The stored summary is labelled, so the model can't read it as the operator's own
         # words once the provider merges it with the first retained prompt — and the event
         # carries the same string the divider renders on a reload.
@@ -501,7 +502,7 @@ async def test_the_outcome_reports_what_the_fold_cost():
             model=TestModel(custom_output_text="short"),
             keep_turns=0,
         )
-        assert outcome is not None
+        assert isinstance(outcome, CompactionOutcome)
         assert outcome.messages_compacted == 8
         # The fold has to have actually bought room, and the numbers must be real.
         assert outcome.tokens_before > outcome.tokens_after > 0
@@ -527,7 +528,7 @@ async def test_the_cold_read_divider_reports_the_same_figures_as_the_event():
             model=TestModel(custom_output_text="short"),
             keep_turns=0,
         )
-        assert outcome is not None
+        assert isinstance(outcome, CompactionOutcome)
 
         divider = next(v for v in await store.messages_view(cid) if v.role == "compaction")
         assert divider.id == outcome.message_id
@@ -557,7 +558,7 @@ async def test_the_fold_reason_survives_a_cold_read():
             model=TestModel(custom_output_text="short"),
             keep_turns=0,
         )
-        assert outcome is not None
+        assert isinstance(outcome, CompactionOutcome)
         assert outcome.reason == "overflow"
 
         warm = next(v for v in await store.messages_view(cid) if v.role == "compaction")
@@ -1002,7 +1003,41 @@ async def test_the_override_is_scoped_to_one_thread():
         }
 
 
-async def test_manual_compact_folds_and_returns_the_refreshed_detail(monkeypatch):
+async def _fold_now(client, app, cid: str):
+    """Press "compact now" and wait for the run it starts to settle, answering with it.
+
+    A hand-started fold is a run, so the route answers ``202`` with an id and *everything*
+    worth asserting on — the events, and why it declined — is on the run rather than on
+    that response. The wait is the run's own task, which is the real thing rather than a
+    poll: a settled status that was reached by sleeping long enough would pass on a fold
+    that never started."""
+    resp = await client.post(f"/conversations/{cid}/compact")
+    assert resp.status_code == 202, resp.text
+    run = app.state.runs.get(resp.json()["run_id"])
+    assert run is not None
+    if run.task is not None:
+        await run.task
+    return run
+
+
+def _emitted(run) -> list[str]:
+    """The event type of every frame this run put on its stream, in order."""
+    return [event.body.type for event in run.stream.replay(0)]
+
+
+def _fold_frames(run) -> list[str]:
+    """Just the frames the *fold* emitted, in order — not the run lifecycle around them.
+
+    A submitted run brackets its orchestrator with `run.started`/`run.ended`, which is a
+    fact about runs and not about folding. Comparing those too would make the two triggers
+    differ for a reason that has nothing to do with what is being compared."""
+    return [t for t in _emitted(run) if t.startswith(("compaction.", "conversation.compacted"))]
+
+
+async def test_manual_compact_folds_and_announces_itself(monkeypatch):
+    """The fold the operator asked for emits exactly what an automatic one does, because
+    it is now the same code path — and it says *they* asked for it, not the threshold,
+    which this trigger ignores entirely."""
     async with client_app() as (client, app):
         patch_model_resolution(monkeypatch, output_text="a hand-made summary")
         store = app.state.conversations
@@ -1010,21 +1045,30 @@ async def test_manual_compact_folds_and_returns_the_refreshed_detail(monkeypatch
         for i in range(4):
             store.record(cid, _turn(f"q{i}", f"a{i}"))
 
-        resp = await client.post(f"/conversations/{cid}/compact")
-        assert resp.status_code == 200
-        divider = next(m for m in resp.json()["messages"] if m["role"] == "compaction")
-        # The operator pressed the button, so that is what the divider says — not the
-        # threshold, which this path ignores entirely.
+        run = await _fold_now(client, app, cid)
+        assert run.status is RunStatus.done, run.detail
+        assert "compaction.started" in _emitted(run)
+        assert "conversation.compacted" in _emitted(run)
+        landed = next(
+            e.body for e in run.stream.replay(0) if e.body.type == "conversation.compacted"
+        )
+        assert landed.reason == "manual"
+
+        # And the checkpoint a reload reads names the same cause the live event did.
+        detail = (await client.get(f"/conversations/{cid}")).json()
+        divider = next(m for m in detail["messages"] if m["role"] == "compaction")
         assert divider["compaction_reason"] == "manual"
 
 
-async def test_manual_compact_409s_when_there_is_nothing_to_fold(monkeypatch):
+async def test_manual_compact_blocks_when_there_is_nothing_to_fold(monkeypatch):
     # With nothing retained after the boundary, "nothing to fold" means an empty thread —
     # a single exchange is foldable, where a retained tail would have swallowed it.
     async with client_app() as (client, app):
         patch_model_resolution(monkeypatch)
         cid = await app.state.conversations.create_conversation(OPERATOR_ID)
-        assert (await client.post(f"/conversations/{cid}/compact")).status_code == 409
+        run = await _fold_now(client, app, cid)
+        assert run.status is RunStatus.blocked
+        assert "compaction.started" not in _emitted(run)
 
 
 @pytest.mark.parametrize(
@@ -1037,10 +1081,14 @@ async def test_a_refusal_names_the_retained_tail(monkeypatch, keep, expected):
     The detail has to name what is actually stopping it — the retained count — so the
     operator can change it instead of pressing again.
 
-    The count is *set* rather than read off the config default, because the route builds
-    the message from the operator's stored setting: a test that asserted on the default
-    would be asserting on a number it does not control. Both counts because the sentence
-    inflects, and a stray "1 exchanges" is exactly the kind of thing nothing else catches."""
+    The count is *set* rather than read off the config default, because the sentence is
+    built from the operator's stored setting: a test that asserted on the default would be
+    asserting on a number it does not control. Both counts because the sentence inflects,
+    and a stray "1 exchanges" is exactly the kind of thing nothing else catches.
+
+    It also pins that the manual trigger reads the **resolved** policy rather than a
+    partial reading of its own — the retained tail is the operator's answer whichever
+    trigger fired, and this is the number that proves it arrived."""
     async with client_app() as (client, app):
         patch_model_resolution(monkeypatch)
         await client.put("/chat/settings", json={"auto_compact_keep_turns": keep})
@@ -1050,32 +1098,37 @@ async def test_a_refusal_names_the_retained_tail(monkeypatch, keep, expected):
         for i in range(keep):
             store.record(cid, _turn(f"q{i}", f"a{i}"))
 
-        resp = await client.post(f"/conversations/{cid}/compact")
-        assert resp.status_code == 409
-        detail = resp.json()["detail"]
-        assert expected in detail
-        assert "Settings" in detail
+        run = await _fold_now(client, app, cid)
+        assert run.status is RunStatus.blocked
+        assert expected in run.detail
+        assert "Settings" in run.detail
 
 
-async def test_a_fold_that_had_something_to_fold_and_failed_is_a_503(monkeypatch):
+async def test_a_fold_that_had_something_to_fold_and_failed_says_so(monkeypatch):
     """The summarizer writing nothing is not the same answer as the thread having nothing
-    to fold, and reporting both as 409 is what makes a genuine failure look like a no-op.
-    A thread that plainly *has* foldable turns must report the failure as one."""
+    to fold, and reporting both the same way is what makes a genuine failure look like a
+    no-op. A thread that plainly *has* foldable turns must report the failure as one — and
+    it must have announced the fold first, since it got far enough to try."""
     async with client_app() as (client, app):
-        # An empty summary is exactly what `compact_conversation` swallows into `None`.
         patch_model_resolution(monkeypatch, output_text="")
         store = app.state.conversations
         cid = await store.create_conversation(OPERATOR_ID)
         for i in range(get_settings().auto_compact_keep_turns + 3):
             store.record(cid, _turn(f"q{i}", f"a{i}"))
 
-        resp = await client.post(f"/conversations/{cid}/compact")
-        assert resp.status_code == 503
-        assert "did not land" in resp.json()["detail"]
+        run = await _fold_now(client, app, cid)
+        assert run.status is RunStatus.blocked
+        assert "did not land" in run.detail
+        # The distinguishing half: this one got past the plan, so it announced itself and
+        # then failed — where "nothing to fold" never announces at all.
+        assert "compaction.started" in _emitted(run)
+        assert "conversation.compacted" not in _emitted(run)
 
 
 async def test_manual_compact_409s_on_a_busy_conversation(monkeypatch):
-    """It appends to the tree, so unlike retitle it must not run beside a live turn."""
+    """It appends to the tree, so unlike retitle it must not run beside a live turn — or
+    beside a request that has repositioned the leaf but not finished acting on it, which
+    is what the claim (and not the live-run check) is what covers."""
     async with client_app() as (client, app):
         patch_model_resolution(monkeypatch)
         cid = await app.state.conversations.create_conversation(OPERATOR_ID)
@@ -1090,3 +1143,110 @@ async def test_manual_compact_404s_for_an_unknown_conversation(monkeypatch):
     async with client_app() as (client, _app):
         patch_model_resolution(monkeypatch)
         assert (await client.post("/conversations/nope/compact")).status_code == 404
+
+
+# --- one fold, three triggers ------------------------------------------------
+
+
+async def test_a_manual_fold_and_an_automatic_one_are_the_same_fold(monkeypatch):
+    """**The guarantee the shared path exists for.** Two threads of identical shape, folded
+    by the two different triggers, must come out indistinguishable apart from the reason.
+
+    This is a regression test with a real history behind it. The operator's fold used to
+    reach past ``agent.folding.fold`` and call the summarizer directly, assembling its own
+    arguments as it went — so it emitted neither event, resolved a partial policy, and ran
+    the summarizer against a different input budget. Every one of those is invisible until
+    something compares the two, which is what this does.
+
+    Compared deliberately: the event sequence, what the fold measured, and what the
+    checkpoint a reload reads says. Not the summary text — the same stub writes both, so
+    asserting on it would pass whatever the two paths did."""
+    async with client_app() as (client, app):
+        patch_model_resolution(monkeypatch, output_text="what happened so far")
+        store = app.state.conversations
+
+        async def _thread() -> str:
+            cid = await store.create_conversation(OPERATOR_ID)
+            for i in range(get_settings().auto_compact_keep_turns + 3):
+                store.record(cid, _turn(f"q{i}", f"a{i}"))
+            return cid
+
+        by_hand, by_threshold = await _thread(), await _thread()
+
+        manual_run = await _fold_now(client, app, by_hand)
+        assert manual_run.status is RunStatus.done, manual_run.detail
+
+        # The same fold, reached through the turn-side trigger instead. `fold` is the one
+        # entry point, so this is the automatic path's whole announcement layer.
+        from agent.compaction_context import build_compaction_context
+        from agent.folding import fold
+
+        # A bare Run rather than a submitted one: `fold` only needs something to emit
+        # onto, and a submitted run closes its stream the moment its orchestrator returns.
+        run = Run(id="fold-auto", kind="compaction", owner_id=OPERATOR_ID, stream=RunStream())
+        utility = await app.state.models.resolve_background(owner_id=OPERATOR_ID)
+        ctx = build_compaction_context(
+            store=store,
+            conversation_id=by_threshold,
+            policy=build_auto_compact_policy(get_settings()),
+            model=utility.model,
+            reasoning_off=utility.reasoning_off,
+            settings=get_settings(),
+            utility_context_window=utility.context_window,
+        )
+        assert ctx is not None
+        auto = await fold(run, ctx, reason="threshold")
+        assert isinstance(auto, CompactionOutcome)
+
+        manual = next(
+            e.body
+            for e in manual_run.stream.replay(0)
+            if e.body.type == "conversation.compacted"
+        )
+        assert _fold_frames(manual_run) == _fold_frames(run)
+        assert (manual.messages_compacted, manual.tokens_before, manual.tokens_after) == (
+            auto.messages_compacted,
+            auto.tokens_before,
+            auto.tokens_after,
+        )
+        # The reason is the one thing that differs, and it differs everywhere it is
+        # recorded — on the live event and on the checkpoint a reload reads back.
+        assert (manual.reason, auto.reason) == ("manual", "threshold")
+        reasons = []
+        for cid in (by_hand, by_threshold):
+            detail = (await client.get(f"/conversations/{cid}")).json()
+            row = next(m for m in detail["messages"] if m["role"] == "compaction")
+            reasons.append(row["compaction_reason"])
+        assert reasons == ["manual", "threshold"]
+
+
+async def test_the_fold_streams_the_summary_as_it_is_written(monkeypatch):
+    """The pause is the whole problem this solves. `compaction.started` says a fold began
+    and `conversation.compacted` says it finished; between them is a model call that runs
+    for tens of seconds on a local endpoint, and until these frames existed there was
+    nothing in it.
+
+    What is asserted is the shape rather than the wording: deltas arrive *between* the two
+    bracketing frames, and the text they carry adds up to what the model wrote. Not that it
+    equals the stored summary — it deliberately does not, since the checkpoint is the
+    stripped, anchored, fenced version and a delta is the raw working."""
+    async with client_app() as (client, app):
+        patch_model_resolution(monkeypatch, output_text="the story so far")
+        store = app.state.conversations
+        cid = await store.create_conversation(OPERATOR_ID)
+        for i in range(get_settings().auto_compact_keep_turns + 3):
+            store.record(cid, _turn(f"q{i}", f"a{i}"))
+
+        run = await _fold_now(client, app, cid)
+        assert run.status is RunStatus.done, run.detail
+
+        frames = _fold_frames(run)
+        assert frames[0] == "compaction.started"
+        assert frames[-1] == "conversation.compacted"
+        assert "compaction.delta" in frames
+
+        deltas = [e.body for e in run.stream.replay(0) if e.body.type == "compaction.delta"]
+        assert "".join(d.text for d in deltas) == "the story so far"
+        # A single-pass fold — the common one — says so rather than counting a merge it
+        # never ran.
+        assert {(d.part, d.parts) for d in deltas} == {(1, 1)}

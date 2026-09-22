@@ -31,7 +31,7 @@ import { produce, type SetStoreFunction } from "solid-js/store";
 import { StreamDetachedError, streamRun, type RunEvent } from "~/lib/stream";
 import { toast } from "~/ui";
 import type { ChatMessage } from "../model";
-import type { FoldState } from "./fold";
+import { FOLD_RUN_KIND, type FoldState } from "./fold";
 import { nextId, type PatchById } from "./patch";
 
 /** What the drive is allowed to touch. Passed in rather than closed over, so the run
@@ -63,6 +63,13 @@ export interface RunDriveDeps {
   onTurnComplete?: () => void;
 }
 
+/** Where a reattach replays from, and — when the caller knows it — what kind of run it
+ *  is. Without a kind the reattach falls back to the kind the stream last saw. */
+export interface ReattachOptions {
+  fromSeq: number;
+  kind?: string;
+}
+
 export interface RunDrive {
   /** True while the live run's transport is detached (reconnect budget exhausted) —
    *  the run may still be alive server-side, awaiting a re-attach rather than over. */
@@ -77,7 +84,7 @@ export interface RunDrive {
     fromSeq?: number,
     onConnected?: () => void,
   ) => Promise<void>;
-  reattachRun: (runId: string, opts: { fromSeq: number }) => Promise<void>;
+  reattachRun: (runId: string, opts: ReattachOptions) => Promise<void>;
   /** Take ownership away from whatever drive is running: abort its reader and
    *  orphan its teardown, because the caller is about to own this state. */
   supersede: () => void;
@@ -210,20 +217,28 @@ export function createRunDrive(deps: RunDriveDeps): RunDrive {
    *  - a cold read mid-stream (page reload): no assistant turn exists yet, so seed
    *    an empty one bound to the run and replay the whole buffer (`fromSeq` 0).
    *  Reuses `driveRun`, so the shared finally clears streaming/sending and
-   *  reconciles the persisted turn once the run ends. */
+   *  reconciles the persisted turn once the run ends.
+   *
+   *  **A fold seeds nothing.** It writes no answer, so there is no assistant turn to
+   *  find or to seed — its frames seat their own compaction turn — and a seeded one
+   *  would sit in the transcript as an empty, streaming bubble for the whole fold. */
   async function reattachRun(
     runId: string,
-    opts: { fromSeq: number },
+    opts: ReattachOptions,
   ): Promise<void> {
     // Abort a stalled/old reader first so it can't keep folding beside the new one
     // (its drive is superseded by the generation bump inside the next driveRun).
     controller?.abort();
     controller = null;
     // The *last* matching turn: a steered run splits into several assistant
-    // segments sharing one runId, and only the newest is the live one.
-    let assistantId = deps.messages.findLast(
-      (m) => m.runId === runId && m.role === "assistant",
-    )?.id;
+    // segments sharing one runId, and only the newest is the live one. A fold
+    // anchors to no turn at all (`""`), so neither arm below touches one.
+    let assistantId =
+      (opts.kind ?? deps.state.runKind) === FOLD_RUN_KIND
+        ? ""
+        : deps.messages.findLast(
+            (m) => m.runId === runId && m.role === "assistant",
+          )?.id;
     const seeded = assistantId === undefined;
     if (assistantId === undefined) {
       assistantId = nextId("a");
@@ -237,7 +252,7 @@ export function createRunDrive(deps: RunDriveDeps): RunDrive {
         createdAt: new Date().toISOString(),
       };
       deps.setMessages(produce((m) => m.push(assistantMsg)));
-    } else {
+    } else if (assistantId) {
       deps.patchById(assistantId, (m) => {
         m.streaming = true;
         m.detached = false; // re-attaching supersedes the "connection lost" banner

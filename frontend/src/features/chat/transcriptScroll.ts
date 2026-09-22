@@ -170,6 +170,15 @@ export interface TranscriptFollow {
   showJump: () => boolean;
   /** Re-attach the follow and scroll to the newest turn. */
   jumpToLatest: () => void;
+  /** Bring one turn into view and **detach the follow**, answering with its element —
+   *  or `null` when this transcript does not hold it.
+   *
+   *  The detach is the substance, not a side effect. Scrolling somewhere up-thread while
+   *  the follow is still pinned does nothing the operator can see: the next message
+   *  change writes `scrollTop = scrollHeight` and puts them straight back at the bottom.
+   *  And it is the honest state anyway — looking at a turn above the tail is exactly what
+   *  being un-pinned means, which is why the jump control appears afterwards. */
+  scrollToMessage: (messageId: string) => HTMLElement | null;
   /** The container itself, for the keymap's focus targets. */
   element: () => HTMLDivElement | undefined;
 }
@@ -216,6 +225,18 @@ export function createTranscriptFollow(source: {
     setPinned(true);
     setShowJump(false);
     followBottom();
+  };
+  const scrollToMessage = (messageId: string): HTMLElement | null => {
+    const el = scrollEl?.querySelector<HTMLElement>(
+      `[data-message-id="${CSS.escape(messageId)}"]`,
+    );
+    if (!el) return null;
+    // Detach *before* scrolling: `followBottom` coalesces to a frame, so a pinned follow
+    // scheduled by the same message change would otherwise land after this and win.
+    setPinned(false);
+    setShowJump(true);
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    return el;
   };
   const onScroll = () => {
     if (!scrollEl) return;
@@ -268,6 +289,7 @@ export function createTranscriptFollow(source: {
     onScroll,
     showJump,
     jumpToLatest,
+    scrollToMessage,
     element: () => scrollEl,
   };
 }

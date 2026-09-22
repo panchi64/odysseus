@@ -43,7 +43,7 @@ from services.workspace import resolve_workspace
 from tools import PromptContextProvider, PromptContextRequest, default_workspace_key
 
 from .attachments import resolve_attachments
-from .compaction_context import CompactionContext, resolve_max_input_tokens
+from .compaction_context import CompactionContext, build_compaction_context
 from .file_refs import resolve_file_refs
 from .folding import incoming_request, maybe_compact
 from .history import (
@@ -150,18 +150,14 @@ async def prepare_turn(
     # utility model to summarize with. The policy is resolved either way, because the
     # verifier's size guard measures against the same threshold on every turn.
     policy = auto_compact or build_auto_compact_policy(settings)
-    compaction = (
-        CompactionContext(
-            store=store,
-            conversation_id=conversation_id,
-            policy=policy,
-            model=utility_model,
-            reasoning_off=utility_settings,
-            settings=settings,
-            max_input_tokens=resolve_max_input_tokens(settings, utility_context_window),
-        )
-        if store is not None and conversation_id is not None and utility_model is not None
-        else None
+    compaction = build_compaction_context(
+        store=store,
+        conversation_id=conversation_id,
+        policy=policy,
+        model=utility_model,
+        reasoning_off=utility_settings,
+        settings=settings,
+        utility_context_window=utility_context_window,
     )
     setup.policy = policy
     setup.compaction = compaction

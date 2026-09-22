@@ -48,6 +48,43 @@ class CompactionContext:
     max_input_tokens: int | None = None
 
 
+def build_compaction_context(
+    *,
+    store: ConversationStore | None,
+    conversation_id: str | None,
+    policy: AutoCompactPolicy,
+    model: Model | None,
+    reasoning_off: ModelSettings | None,
+    settings: Settings,
+    utility_context_window: int | None,
+) -> CompactionContext | None:
+    """The context a fold runs under, or ``None`` when this thread cannot fold at all — no
+    conversation to fold (a stateless run) or no utility model to write the summary with.
+
+    **Every trigger builds its context here**, which is the point: the fields are not
+    independent, and a caller assembling them by hand picks the ones it happens to know
+    about. That is not hypothetical — the operator's own "compact now" used to construct
+    its own arguments and omitted ``settings`` and ``max_input_tokens`` entirely, so a
+    hand-started fold ran against the raw configured cap while an automatic one ran against
+    :func:`resolve_max_input_tokens`'s clamp. On an endpoint declaring a small window that
+    is not a cosmetic difference: the manual fold handed the summarizer twice the
+    transcript and could fail where the automatic one succeeded.
+
+    So the clamp is applied *in here* rather than at each call site, and the window it
+    needs is an argument rather than something a caller may forget to pass."""
+    if store is None or conversation_id is None or model is None:
+        return None
+    return CompactionContext(
+        store=store,
+        conversation_id=conversation_id,
+        policy=policy,
+        model=model,
+        reasoning_off=reasoning_off,
+        settings=settings,
+        max_input_tokens=resolve_max_input_tokens(settings, utility_context_window),
+    )
+
+
 def resolve_max_input_tokens(settings: Settings, utility_window: int | None) -> int:
     """The summarizer's input budget: the configured cap, or half the utility model's
     window when that is smaller.

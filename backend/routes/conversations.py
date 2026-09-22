@@ -20,14 +20,21 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from agent.attribution import attribute_answer
-from agent.summarize import compact_conversation
+from agent.compaction_context import build_compaction_context
+from agent.folding import fold
+from agent.summarize import (
+    FoldFailed,
+    FoldFailure,
+    NothingToFold,
+    resolve_auto_compact_policy,
+)
 from agent.title import title_from_history
 from core.compaction_sections import SummarySection
 from core.config import get_settings
 from core.exceptions import DegradedCapabilityError, NotFoundError
 from routes import deps
 from routes.deps import OPERATOR_ID
-from runs import ContextWindow, FoldPoint, Run, RunMetrics
+from runs import ContextWindow, ConversationBusyError, FoldPoint, Run, RunMetrics
 from services.approval_grants import COMMAND_SCOPED_TOOLS
 from services.attributions import MessageClaims
 from services.context_budget import compose
@@ -221,9 +228,13 @@ class ActiveRun(BaseModel):
     """The in-flight run driving this conversation, when one exists. A streaming
     turn isn't persisted until it finishes, so on a cold read (e.g. a page reload
     mid-stream) the messages alone show no answer — this points the client at the
-    run whose events it can replay and resume from ``last_seq``."""
+    run whose events it can replay and resume from ``last_seq``.
+
+    ``kind`` because not every run is an answer being written: a hand-started fold is a
+    run too, and a client reattaching to one must not seed an assistant turn for it."""
 
     id: str
+    kind: str
     status: str
     last_seq: int
 
@@ -484,7 +495,9 @@ async def _detail(
         )
     run = deps.registry(request).active_run_for(conversation_id, OPERATOR_ID)
     active_run = (
-        ActiveRun(id=run.id, status=run.status.value, last_seq=run.stream.last_seq)
+        ActiveRun(
+            id=run.id, kind=run.kind, status=run.status.value, last_seq=run.stream.last_seq
+        )
         if run is not None
         else None
     )
@@ -1260,6 +1273,15 @@ class CompactionOverrideOut(BaseModel):
     effective: bool
 
 
+class FoldStarted(BaseModel):
+    """A hand-started fold, accepted. Deliberately the same two fields ``POST /chat``
+    answers with, because the client does the same thing with them: attach to
+    ``/runs/{id}/events`` and render what arrives."""
+
+    run_id: str
+    conversation_id: str
+
+
 async def _compaction_state(request: Request, conversation_id: str) -> CompactionOverrideOut:
     """This thread's auto-compaction state: the stored override plus the effective on/off
     after resolving it against the operator's global default."""
@@ -1310,80 +1332,138 @@ def _nothing_to_fold(keep_turns: int) -> str:
     )
 
 
-@router.post("/{conversation_id}/compact", response_model=ConversationDetail)
+#: What a fold that *had* work to do and did not land tells the operator. One sentence per
+#: cause rather than one for all three, because what they would do next differs: a
+#: summarizer that wrote nothing is worth retrying, and a leaf that moved means the fold
+#: described a path they have navigated away from.
+_FOLD_FAILED: Mapping[FoldFailure, str] = {
+    "summarizer_empty": (
+        "The fold did not land — the background model returned nothing, or ran out of "
+        "time reading the thread. Try again."
+    ),
+    "leaf_moved": (
+        "The fold did not land — the conversation moved while it ran, so the summary "
+        "described a path you are no longer on. Try again."
+    ),
+    "error": "The fold did not land. Try again, or check the logs for what failed.",
+}
+
+_NO_SUMMARIZER = (
+    "No model is available to write the summary — bind a background model, or pick an "
+    "endpoint for this thread that still exists."
+)
+
+
+async def _run_manual_fold(run: Run, request: Request, pick: RetitleRequest) -> None:
+    """The operator's own fold, as a run.
+
+    It is a run for one reason and it is not tidiness: :func:`agent.folding.fold` is where
+    a fold announces itself, and announcing means emitting onto a run's stream. Without one
+    this path had nowhere to emit, so it reached past ``fold`` to the summarizer directly —
+    and an operator who pressed the button watched a spinner with nothing behind it for as
+    long as the summary took to write.
+
+    The threshold and the on/off switch are deliberately ignored, and that is the **only**
+    thing this trigger does differently from the automatic one: the operator asked for it
+    explicitly, so there is nothing left for a trigger to decide. Everything downstream —
+    the retained tail, the input budget, the never-reach-past-an-earlier-checkpoint rule,
+    the events, the checkpoint that gets written — is the shared path's.
+
+    Failure is reported rather than swallowed, which is the other half of that split. An
+    automatic fold that fails lets the turn carry on, because nobody asked for it; this one
+    was asked for, and a button whose failure looks like success is worse than one that
+    does not work."""
+    conversation_id = run.conversation_id
+    assert conversation_id is not None  # noqa: S101 — set by the submit below
+    try:
+        utility = await deps.models(request).resolve_background(
+            owner_id=OPERATOR_ID,
+            override_endpoint_id=pick.endpoint_id,
+            override_model=pick.model,
+        )
+    except NotFoundError:
+        # Both halves of the resolve can raise it: no utility binding *and* a chat
+        # fallback that points at nothing — the thread's picked endpoint, when it has
+        # one. Naming only the first would send the operator to the wrong setting.
+        run.block(_NO_SUMMARIZER)
+        return
+    except DegradedCapabilityError as exc:
+        run.block(str(exc))
+        return
+    ctx = build_compaction_context(
+        store=deps.store(request),
+        conversation_id=conversation_id,
+        # The operator's stored preferences with this thread's override folded in — the
+        # same resolution every other fold runs under. Only `keep_turns` is read below,
+        # but resolving the policy whole is what keeps this from being a second, partial
+        # reading of settings that the shared one can drift away from.
+        policy=await resolve_auto_compact_policy(
+            deps.settings_store(request),
+            OPERATOR_ID,
+            override=await deps.store(request).get_compaction_override(conversation_id),
+        ),
+        model=utility.model,
+        reasoning_off=utility.reasoning_off,
+        settings=get_settings(),
+        utility_context_window=utility.context_window,
+    )
+    if ctx is None:  # pragma: no cover — a resolved utility model is non-None
+        run.block(_NO_SUMMARIZER)
+        return
+    result = await fold(run, ctx, reason="manual")
+    if isinstance(result, NothingToFold):
+        run.block(_nothing_to_fold(result.keep_turns))
+    elif isinstance(result, FoldFailed):
+        run.block(_FOLD_FAILED[result.cause])
+
+
+@router.post("/{conversation_id}/compact", response_model=FoldStarted, status_code=202)
 async def compact_conversation_now(
     conversation_id: str, request: Request, body: RetitleRequest | None = None
-) -> ConversationDetail:
+) -> FoldStarted:
     """Fold this thread's older turns into a summary now, without waiting for it to reach
     the automatic threshold — for a thread the operator knows is about to need the room.
 
-    Unlike the automatic path this ignores the threshold and the on/off switches entirely:
-    the operator asked for it explicitly. It still respects everything that makes a
-    compaction *safe* — the retained tail, the never-reach-past-an-earlier-checkpoint rule,
-    and the refusal to graft onto a branch point.
+    **A fold is a run, and answering ``202`` with its id is the whole point**: the
+    summarizer is a model call of its own, tens of seconds on a local endpoint, and a
+    request that blocks for its duration has nowhere to put what is happening meanwhile.
+    Attached to the run's stream the client gets exactly what an automatic fold has always
+    produced — ``compaction.started``, the summary as it is written, then
+    ``conversation.compacted`` — because it is now literally the same code path.
 
-    Claims the conversation for the duration, which ``retitle`` (whose shape this otherwise
-    follows) does not need to: this one appends to the tree, so it must not run beside a
-    live turn recording its own messages. Returns the refreshed detail so the client renders
-    the new divider from the same shape a cold read gives it.
+    Shaped like ``POST /chat`` for that reason, rather than like ``retitle`` (whose shape
+    it used to follow).
 
-    ``409`` when the thread had nothing foldable — it is no longer than the retained tail
-    — and the detail says so in those terms rather than as a bare refusal. ``503`` when
-    there *was* something to fold and the fold still did not land: the summarizer wrote
-    nothing, or the leaf moved while it ran."""
+    **It still takes the claim**, and the claim is not the same guarantee ``submit``
+    gives: ``submit`` refuses a conversation with a live *run*, while a claim also covers a
+    request that is between its check and its act — a regenerate or a rewind repositioning
+    the leaf with awaits still ahead of it. A fold appends to the tree, so it is exactly
+    the thing that must not interleave with one. The claim is released as soon as the run
+    exists, which is the point at which ``submit``'s own guard takes over.
+
+    Why the fold declined is on the run's terminal ``detail``, not on this response — it is
+    not known yet when this returns. ``404`` here means only that there is no such thread."""
     store = deps.store(request)
-    summary = await store.get_summary(conversation_id, OPERATOR_ID)
-    if summary is None:
+    if await store.get_summary(conversation_id, OPERATOR_ID) is None:
         raise HTTPException(status_code=404, detail="conversation not found")
     pick = body or RetitleRequest()
+
+    async def orchestrator(run: Run) -> None:
+        await _run_manual_fold(run, request, pick)
+
     deps.claim_conversation(request, conversation_id)
     try:
-        try:
-            utility = await deps.models(request).resolve_background(
-                owner_id=OPERATOR_ID,
-                override_endpoint_id=pick.endpoint_id,
-                override_model=pick.model,
-            )
-        except NotFoundError:
-            raise HTTPException(status_code=404, detail="model endpoint not found") from None
-        except DegradedCapabilityError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-        # The threshold and the on/off switch are deliberately ignored here, but the
-        # retained tail is not: it is how much of the work in flight survives the fold, and
-        # the operator's answer to that is the same whether the fold was asked for or fired
-        # on its own.
-        auto = await get_auto_compact(deps.settings_store(request), OPERATOR_ID)
-        outcome = await compact_conversation(
-            store,
-            conversation_id,
-            model=utility.model,
-            reason="manual",
-            reasoning_off=utility.reasoning_off,
-            keep_turns=auto.keep_turns,
+        run = deps.registry(request).submit(
+            kind="compaction",
+            owner_id=OPERATOR_ID,
+            orchestrator=orchestrator,
+            conversation_id=conversation_id,
         )
-        if outcome is None:
-            # ``compact_conversation`` answers ``None`` to three different questions — the
-            # thread had nothing foldable, the summarizer wrote nothing, or the leaf moved
-            # underneath it — and reporting all three as "nothing to compact" is what makes
-            # a fold that genuinely failed look like a button that does not work. Re-asking
-            # for the plan separates the first from the other two. It is a fresh
-            # measurement, not a cached one, and deliberately so: in the moved-leaf case
-            # the tree *has* changed, and what the operator needs to be told is whether
-            # the thread as it stands now has anything to fold. Only the failure path
-            # pays for it.
-            plan = await store.compaction_plan(conversation_id, keep_turns=auto.keep_turns)
-            if plan is None:
-                raise HTTPException(status_code=409, detail=_nothing_to_fold(auto.keep_turns))
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "The fold did not land — the summarizer returned nothing, or the "
-                    "conversation moved while it ran. Try again."
-                ),
-            )
+    except ConversationBusyError as exc:  # pragma: no cover — the claim above catches it
+        raise HTTPException(
+            status_code=409,
+            detail="A response is already in progress in this conversation.",
+        ) from exc
     finally:
         deps.release_conversation(request, conversation_id)
-    refreshed = await store.get_summary(conversation_id, OPERATOR_ID)
-    if refreshed is None:  # pragma: no cover — just confirmed it exists
-        raise HTTPException(status_code=404, detail="conversation not found")
-    return await _detail(request, conversation_id, refreshed)
+    return FoldStarted(run_id=run.id, conversation_id=conversation_id)

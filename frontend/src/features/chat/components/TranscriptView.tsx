@@ -1,5 +1,6 @@
-import { For, Show, createMemo, type JSX } from "solid-js";
+import { For, Show, createEffect, createMemo, type JSX } from "solid-js";
 import { Button, EmptyState, ErrorBoundary } from "~/ui";
+import { consumeFoldAnchor, pendingFoldAnchor } from "../foldAnchor";
 import type { ConversationActions } from "../conversationActions";
 import type { createChatStream } from "../stream/chatStream";
 import type { TranscriptFollow } from "../transcriptScroll";
@@ -25,16 +26,44 @@ export interface TranscriptViewProps {
  * conversation. The room around it owns none of that; it owns where this sits.
  */
 export function TranscriptView(props: TranscriptViewProps): JSX.Element {
-  // Everything before the newest compaction divider is still in the transcript but
+  // Everything before the newest compaction turn is still in the transcript but
   // out of what the model replays. The transcript is the only place that knows a
   // turn's position relative to the fold, so the dim pass is derived here —
   // presentation only; the backend decided what it folded.
+  //
+  // A fold still *in flight* is skipped, and the guard is load-bearing: the live turn
+  // sits at the tail, so counting it would dim the entire thread the moment a fold
+  // starts — including the recent turns the fold is about to keep verbatim — and then
+  // un-dim them when it lands. It has folded nothing yet.
   const foldedThrough = createMemo(() => {
     let last = -1;
     props.stream.messages.forEach((m, i) => {
-      if (m.role === "compaction") last = i;
+      if (m.role === "compaction" && !m.compaction) last = i;
     });
     return last;
+  });
+
+  // Take the operator to a fold that just settled. It is seated at the fold boundary
+  // rather than where they were watching it happen, so on a long thread it arrives off
+  // screen above — see `foldAnchor.ts`.
+  //
+  // The scroll goes through the follow (`scrollToMessage`) rather than straight to the
+  // DOM, because the follow is pinned to the bottom and would otherwise put the operator
+  // right back there on the next message change. The flash is the same "found it" marker
+  // the design system already carries: scrolling alone puts the turn on screen without
+  // saying which of them was the point.
+  createEffect(() => {
+    const id = pendingFoldAnchor();
+    if (id === null) return;
+    consumeFoldAnchor();
+    // One frame later: the splice that seated the turn has to have rendered before
+    // there is an element to find.
+    requestAnimationFrame(() => {
+      const el = props.scroll.scrollToMessage(id);
+      if (!el) return;
+      el.classList.add("ody-flash");
+      setTimeout(() => el.classList.remove("ody-flash"), 3000);
+    });
   });
 
   return (

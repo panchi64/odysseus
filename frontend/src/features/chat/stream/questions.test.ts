@@ -247,6 +247,7 @@ describe("folding question.asked", () => {
         tasksRevision: 0,
         planRevision: 0,
         activeRunId: null,
+        runKind: null,
       },
       patchById: (_id, mutate) => mutate(message),
       setMessages: (() => {}) as never,

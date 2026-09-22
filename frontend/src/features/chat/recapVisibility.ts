@@ -3,7 +3,7 @@
  *  Four conditions, and each one removes a case where the band would be noise rather
  *  than orientation. That is enough rules to be worth testing, and none of them is
  *  about markup — so it lives here rather than in the component, the same split
- *  `compactionLabel.ts` keeps for the divider's own sentence.
+ *  `compactionReason.ts` keeps for a fold's trigger wording.
  *
  *  Pure: no Solid, no DOM, and the clock is an argument. */
 

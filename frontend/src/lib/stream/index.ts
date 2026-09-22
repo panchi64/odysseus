@@ -4,6 +4,7 @@ export {
   CONTEXT_OVERFLOW_DETAIL,
   PROTOCOL_VERSION,
   type CompactionReason,
+  type CompactionDelta,
   type CompactionStarted,
   type ContextComposition,
   type ContextInjected,

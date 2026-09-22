@@ -17,7 +17,9 @@ import type {
 export function toActiveRun(
   dto: ActiveRunDTO | null | undefined,
 ): ActiveRun | null {
-  return dto ? { id: dto.id, status: dto.status, lastSeq: dto.last_seq } : null;
+  return dto
+    ? { id: dto.id, kind: dto.kind, status: dto.status, lastSeq: dto.last_seq }
+    : null;
 }
 
 /** The composer's readout, from the backend's metrics payload.

@@ -358,7 +358,6 @@ export type AssistantBlock =
   | TextBlock
   | ToolBlock
   | ContextBlock
-  | CompactionProgressBlock
   | ReviewBlock
   | HostCommandBlock
   | ApprovalBlock
@@ -410,30 +409,33 @@ export interface ContextInjection {
   truncated: boolean;
 }
 
-/** The pause where the chassis folded this thread's earlier turns into a summary
- *  (`compaction.started`, settled by `conversation.compacted`).
+/** One fold in flight: what triggered it, roughly what is going into it, the summary as
+ *  it is written, and whether it has landed.
  *
- *  Same rail, same reason as an injection: the model did not do this, we did it to the
- *  model — and a summarizer call on a long thread is tens of seconds of a turn that
- *  would otherwise sit blank. The divider above records what the fold *cost*; this
- *  records that the turn stopped to do it, in the place in the sequence where it
- *  happened. */
-export interface CompactionProgressBlock {
-  kind: "compaction_progress";
-  id: string;
-  compaction: CompactionProgress;
-}
-
-/** One fold in flight: what triggered it, roughly what is going into it, and whether
- *  it has landed. `done` flips when `conversation.compacted` arrives — the settled
- *  figures are the divider's to state, so this keeps the pre-fold estimates it opened
- *  with rather than restating them. */
+ *  It rides on a **compaction turn** (`ChatMessage.compaction`), not on a block of the
+ *  assistant's turn. It used to be a row on the assistant's rail, which was wrong in two
+ *  ways at once: a fold the operator started by hand has no assistant turn to sit on, so
+ *  that whole path rendered nothing at all; and a fold that *did* render put the same
+ *  event on screen twice, once as a rail row and again as the divider it settled into.
+ *  One event, one turn — which is also what makes the live fold and the settled fold the
+ *  same shape, and lets the operator read what is happening rather than watch a count. */
 export interface CompactionProgress {
   reason: CompactionReason;
   /** Messages about to be folded. */
   messages: number;
   /** Coarse char-based estimate of what they cost, in the same proxy the gauge uses. */
   tokensEstimate: number;
+  /** The summary as the model writes it, accumulated from `compaction.delta`.
+   *
+   *  **The model's working, not the checkpoint** — unstripped, unanchored, unfenced. It
+   *  exists so the pause has something in it, and it is discarded when the fold settles:
+   *  what the operator keeps is the parsed summary on the compaction turn, which has been
+   *  through all the handling this text has not. */
+  summary?: string;
+  /** Which pass of a chunked fold is writing, and how many there are. A single-pass fold
+   *  — the common one — is `1 of 1` and says nothing. */
+  part?: number;
+  parts?: number;
   done?: boolean;
 }
 
@@ -663,6 +665,17 @@ export interface ChatMessage {
    *  cannot drift. Empty for a checkpoint whose text parses into nothing, and on an older
    *  backend: the divider falls back to `content` then. */
   summarySections?: SummarySection[];
+  /** Compaction turns only, and only while one is **in flight**: what the fold is doing
+   *  right now, and the summary as the model writes it.
+   *
+   *  A fold takes tens of seconds on a local endpoint, so it is a turn in the transcript
+   *  from the moment it starts rather than one that appears once it is over — the same
+   *  reason an assistant turn opens on its first delta. When `conversation.compacted`
+   *  lands, this live turn is dropped and the settled one is seated at the fold boundary,
+   *  which is a different place in the list: see `foldAnchor.ts`.
+   *
+   *  Absent on every settled compaction turn, warm and cold alike. */
+  compaction?: CompactionProgress;
 }
 
 /** The in-flight run driving a conversation, when one exists. Present on a cold
@@ -670,6 +683,8 @@ export interface ChatMessage {
  *  live run and replay what it missed instead of rendering a reply-less thread. */
 export interface ActiveRun {
   id: string;
+  /** What the run is — a chat turn, or a fold, which has no assistant turn to seed. */
+  kind: string;
   status: string;
   lastSeq: number;
 }

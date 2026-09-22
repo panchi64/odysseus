@@ -15,7 +15,7 @@ import type { ApprovalDecision, ChatMessage, Citation } from "../model";
 import { hasLayers as turnHasLayers } from "../blocks";
 import { createQueuedEdit } from "../queuedEdit";
 import type { ViewItem } from "../viewport/viewItems";
-import { CompactionDivider } from "./CompactionDivider";
+import { CompactionTurn } from "./CompactionTurn";
 import { SubagentReport } from "./SubagentReport";
 import { MessageActions, TURN_REVEAL_CLASS } from "./MessageActions";
 import { MessageAttachments } from "./MessageAttachments";
@@ -93,7 +93,13 @@ export function MessageItem(props: MessageItemProps): JSX.Element {
     // both`, and an animated opacity outranks a utility class in the cascade —
     // on one element the entry animation would silently cancel `dimmed`. The
     // outer node owns the dim state, the inner one owns the movement.
-    <div class={cx(props.dimmed && "opacity-50")}>
+    // `data-message-id` is how the transcript finds a turn to scroll to. A DOM lookup
+    // rather than a ref because the turns are rendered through a `For`, and the one
+    // thing that wants to address a specific turn does so rarely and from outside it.
+    <div
+      data-message-id={props.message.id}
+      class={cx(props.dimmed && "opacity-50")}
+    >
       {/* Fires once per mounted turn, so a message glides up as it arrives and a
           streaming turn never re-animates mid-delta (its root element is not
           recreated). Opening a thread mounts its turns together, so the
@@ -121,7 +127,7 @@ export function MessageItem(props: MessageItemProps): JSX.Element {
           }
         >
           <Match when={props.message.role === "compaction"}>
-            <CompactionDivider message={props.message} />
+            <CompactionTurn message={props.message} />
           </Match>
           <Match when={props.message.role === "subagent"}>
             <SubagentReport message={props.message} />

@@ -90,6 +90,35 @@ describe("staying on the thread lets the answer through", () => {
   });
 });
 
+test("a re-attach says what kind of run it is attaching to", async () => {
+  // A fold has no assistant turn, and only the kind lets the drive know not to seed
+  // one — a reload mid-fold otherwise draws an empty streaming bubble above it.
+  const kinds: (string | undefined)[] = [];
+  const ops = createResumeOps({
+    conversationId: () => "A",
+    fetchDetail: async () =>
+      ({
+        id: "A",
+        messages: [],
+        active_run: {
+          id: "r1",
+          kind: "compaction",
+          status: "running",
+          last_seq: 3,
+        },
+      }) as unknown as ConversationDetailDTO,
+    messages: [],
+    setMessages: (() => {}) as ResumeDeps["setMessages"],
+    reseat: () => {},
+    reattachRun: async (_runId, opts) => {
+      kinds.push(opts.kind);
+    },
+    wasCancelled: () => false,
+  });
+  await ops.reattachToLiveRun("A");
+  expect(kinds).toEqual(["compaction"]);
+});
+
 test("an unsaved thread has nothing to read", async () => {
   let fetched = false;
   const ops = createResumeOps({

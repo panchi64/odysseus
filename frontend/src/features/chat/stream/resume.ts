@@ -19,6 +19,7 @@ import { produce, type SetStoreFunction } from "solid-js/store";
 import { toActiveRun } from "../data/summaries";
 import type { ConversationDetailDTO } from "../data/wire";
 import type { ChatMessage } from "../model";
+import type { ReattachOptions } from "./drive";
 
 export interface ResumeDeps {
   /** The thread the stream is bound to *right now* — read again after every await. */
@@ -32,7 +33,7 @@ export interface ResumeDeps {
   setMessages: SetStoreFunction<ChatMessage[]>;
   /** Replace the transcript wholesale from a persisted detail. */
   reseat: (detail: ConversationDetailDTO) => void;
-  reattachRun: (runId: string, opts: { fromSeq: number }) => Promise<void>;
+  reattachRun: (runId: string, opts: ReattachOptions) => Promise<void>;
   /** Whether the operator cancelled the turn that just ended. */
   wasCancelled: () => boolean;
 }
@@ -117,7 +118,7 @@ export function createResumeOps(deps: ResumeDeps): ResumeOps {
   async function reattachToLiveRun(conversationId: string): Promise<void> {
     await withFreshDetail(conversationId, async (detail) => {
       const ar = toActiveRun(detail.active_run);
-      if (ar) await deps.reattachRun(ar.id, { fromSeq: 0 });
+      if (ar) await deps.reattachRun(ar.id, { fromSeq: 0, kind: ar.kind });
     });
   }
 
@@ -132,7 +133,7 @@ export function createResumeOps(deps: ResumeDeps): ResumeOps {
     await withFreshDetail(deps.conversationId(), async (detail) => {
       deps.reseat(detail);
       const ar = toActiveRun(detail.active_run);
-      if (ar) await deps.reattachRun(ar.id, { fromSeq: 0 });
+      if (ar) await deps.reattachRun(ar.id, { fromSeq: 0, kind: ar.kind });
     });
   }
 

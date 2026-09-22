@@ -43,6 +43,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Literal
 
 from pydantic_ai import ModelMessage, ModelRequest, UserPromptPart
 from pydantic_ai.models import Model
@@ -61,6 +62,7 @@ from services.settings_store import (
 )
 
 from .compaction_summary import (
+    DeltaSink,
     carried_anchors,
     fence_tool_facts,
     merge_anchors,
@@ -92,6 +94,33 @@ class AutoCompactPolicy:
 
 
 @dataclass(frozen=True)
+class NothingToFold:
+    """The thread had nothing above the retained tail, so no fold was attempted.
+
+    Not a failure, and the distinction is the whole reason this is its own type: a fold
+    that found nothing to do and a fold that tried and could not are the same ``None`` to
+    a caller, and reporting the second as the first is what makes a broken button look
+    like an empty conversation. ``keep_turns`` is what the tail was measured at, so the
+    sentence a caller writes can name the setting rather than the symptom."""
+
+    keep_turns: int
+
+
+#: Why a fold that had work to do did not land. ``summarizer_empty`` is a model that
+#: returned nothing (or timed out inside its own deadline); ``leaf_moved`` is the active
+#: leaf shifting under a summary that now describes a path the operator is not on;
+#: ``error`` is anything raised on the way.
+type FoldFailure = Literal["summarizer_empty", "leaf_moved", "error"]
+
+
+@dataclass(frozen=True)
+class FoldFailed:
+    """A fold that had something to do and did not land."""
+
+    cause: FoldFailure
+
+
+@dataclass(frozen=True)
 class CompactionOutcome:
     """What a compaction actually folded, for the event the run emits."""
 
@@ -110,6 +139,14 @@ class CompactionOutcome:
     # checkpoint — one value, so the divider a reload draws names the same cause the live
     # one did.
     reason: CompactionReason = "threshold"
+
+
+#: What one fold answers with. Three outcomes rather than one nullable value, because a
+#: caller has to tell them apart: an automatic trigger treats all three alike (the turn
+#: carries on), while the operator's own button has to say which happened — and telling
+#: them apart used to mean asking the store for the plan a second time, purely to work out
+#: what the ``None`` it had just been handed meant.
+type FoldResult = CompactionOutcome | NothingToFold | FoldFailed
 
 
 def build_auto_compact_policy(
@@ -197,17 +234,24 @@ async def compact_conversation(
     settings: Settings | None = None,
     max_input_tokens: int | None = None,
     on_plan: Callable[[CompactionPlan], None] | None = None,
-) -> CompactionOutcome | None:
-    """Fold this conversation's older turns into a summary checkpoint, or ``None`` when
-    there was nothing to fold, the summarizer failed, or the plan went stale.
+    on_delta: DeltaSink | None = None,
+) -> FoldResult:
+    """Fold this conversation's older turns into a summary checkpoint, answering with what
+    happened: the outcome, :class:`NothingToFold`, or :class:`FoldFailed`.
 
-    The one path both callers share — the engine's automatic trigger and the operator's
-    manual "compact now" — so the two can't drift on what gets folded or how it's recorded.
+    The one path every trigger shares — the engine's projected threshold, the mid-turn
+    overflow recovery, and the operator's own button — so they cannot drift on what gets
+    folded or how it is recorded.
 
-    A **summarizer** failure is swallowed here (it degrades to "no compaction"), but a store
+    **The three results are distinct types rather than one ``None``**, because they are
+    three different things to have happened and only the caller knows which of them is
+    worth reporting. A caller that cannot tell them apart has to re-derive the difference,
+    which is a second measurement of a tree that may have moved in between.
+
+    A **summarizer** failure is contained here (it becomes ``FoldFailed``), but a store
     failure is not: the operator pressing "compact now" should be told the write failed, not
-    that there was nothing to fold. The automatic caller wraps this so a turn never dies for
-    a compaction it only wanted as an optimization.
+    that there was nothing to fold. :func:`agent.folding.fold` wraps this so a turn never
+    dies for a compaction it only wanted as an optimization.
 
     ``on_plan`` is called once the fold is known and *before* the summarizer runs — the one
     moment at which what is about to be folded can be announced, since the summarizer call
@@ -222,17 +266,16 @@ async def compact_conversation(
     mid-turn overflow recovery, the operator's own button — and a default here would let a
     new one silently record the most common answer instead of its own."""
     cfg = settings or get_settings()
-    plan = await store.compaction_plan(
-        conversation_id,
-        keep_turns=cfg.auto_compact_keep_turns if keep_turns is None else keep_turns,
-    )
+    tail = cfg.auto_compact_keep_turns if keep_turns is None else keep_turns
+    plan = await store.compaction_plan(conversation_id, keep_turns=tail)
     if plan is None:
-        return None
+        return NothingToFold(keep_turns=tail)
     if on_plan is not None:
         on_plan(plan)
     summary = await summarize_history(
         model,
         plan.messages,
+        on_delta=on_delta,
         reasoning_off=reasoning_off,
         timeout_s=cfg.auto_compact_timeout_s,
         max_tokens=cfg.auto_compact_max_tokens,
@@ -241,7 +284,7 @@ async def compact_conversation(
         ),
     )
     if not summary:
-        return None
+        return FoldFailed("summarizer_empty")
     # Labelled on the way in, not on the way out: the stored text is what both the model
     # replays and the operator reads, and it needs to announce itself as a summary in both
     # places. The same framed text rides the event, so the divider a live client draws and
@@ -267,7 +310,7 @@ async def compact_conversation(
         # rewind — the conversation claim blocks runs, not navigation). The summary now
         # describes a path the operator isn't on, so drop it rather than graft it.
         logger.info("compaction for %s discarded: the active leaf moved", conversation_id)
-        return None
+        return FoldFailed("leaf_moved")
     return CompactionOutcome(
         message_id=message_id,
         summary=labelled,
@@ -290,6 +333,7 @@ async def summarize_history(
     timeout_s: float | None = None,
     max_tokens: int | None = None,
     max_input_tokens: int | None = None,
+    on_delta: DeltaSink | None = None,
 ) -> str | None:
     """Summarize a stretch of conversation into the briefing that will stand in for it, or
     ``None`` on any failure.
@@ -317,7 +361,9 @@ async def summarize_history(
     settings: ModelSettings = {**_BASE_SETTINGS, **(reasoning_off or {})}
     if max_tokens is not None:
         settings["max_tokens"] = max_tokens
-    summary = await summarize_chunks(model, chunks, settings=settings, timeout_s=timeout_s)
+    summary = await summarize_chunks(
+        model, chunks, settings=settings, timeout_s=timeout_s, on_delta=on_delta
+    )
     if not summary:
         return None
     # Anchors are what a re-summarized summary loses first, so a second fold carries the

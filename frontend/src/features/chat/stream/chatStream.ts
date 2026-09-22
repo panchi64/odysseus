@@ -146,6 +146,7 @@ export function createChatStream(
     tasksRevision: 0,
     planRevision: 0,
     activeRunId: null,
+    runKind: null,
   };
   // The last run a cold-read reattach was kicked off for, so the load effect fires
   // at most once per run even if the session resource re-emits the same value.
@@ -563,7 +564,7 @@ export function createChatStream(
     if (!ar || ar.id === reattachedRunId || ar.id === foldState.activeRunId)
       return;
     reattachedRunId = ar.id;
-    void drive.reattachRun(ar.id, { fromSeq: 0 });
+    void drive.reattachRun(ar.id, { fromSeq: 0, kind: ar.kind });
   });
 
   return {

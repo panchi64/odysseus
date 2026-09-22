@@ -33,10 +33,21 @@ async def test_an_unknown_kind_waits_in_the_unattended_lane():
 
 
 def test_every_composed_kind_has_a_lane():
-    # `compose_turn` submits under these three; a fourth added without a lane would
-    # silently inherit the unattended fallback.
-    assert CHAT_TURN_KINDS == frozenset(LANE_BY_KIND)
+    # A chat turn without a lane would silently inherit the unattended fallback, so every
+    # composed kind must be in the map. The converse is *not* asserted: the map also
+    # carries kinds that are not turns (a hand-started fold), and equating the two is what
+    # would enrol the next one as a chat turn without anyone choosing that.
+    assert CHAT_TURN_KINDS <= frozenset(LANE_BY_KIND)
     assert set(LANE_BY_KIND.values()) == {"interactive", "background", "linked"}
+
+
+def test_a_fold_has_a_lane_and_is_not_a_chat_turn():
+    """The operator's own fold waits in the interactive lane — they pressed a button and
+    are watching — but it is not a turn: nothing composes it, and a chat kind is what
+    decides whether an orchestrator drains the queued-message inbox. A fold that drained
+    one would swallow a message the operator sent while it ran."""
+    assert lane_for("compaction") == "interactive"
+    assert "compaction" not in CHAT_TURN_KINDS
 
 
 async def test_a_saturated_background_lane_does_not_queue_the_operators_turn():

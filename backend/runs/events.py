@@ -622,6 +622,33 @@ class CompactionStarted(_Body):
     tokens_estimate: int
 
 
+class CompactionDelta(_Body):
+    """A piece of the summary as the summarizer writes it.
+
+    ``compaction.started`` says a fold has begun and ``conversation.compacted`` says it is
+    done; between them sits the part that actually takes the time, and until this event
+    there was nothing in it. On a local endpoint that is tens of seconds of a throbber with
+    a count beside it, which tells the operator that something is happening and never what.
+
+    **This is the model's working, not the checkpoint.** The text arrives raw: not stripped
+    of a leaked ``<think>`` block, not merged with the anchors a previous fold carried
+    forward, and not fenced. Those are done to the settled summary, and two of them cannot
+    be done to a fragment at all. So a client renders these as a live view that is replaced
+    when ``conversation.compacted`` lands with the real thing — never stores one, and never
+    treats one as the summary the model will actually read.
+
+    ``part``/``parts`` locate the delta in a chunked fold, where the transcript is
+    summarized in pieces and then merged: without them a client shows the summary restart
+    from the top two or three times with nothing saying why. ``parts`` counts the merge as
+    one of them, and an ordinary single-pass fold is ``1 of 1``. Additive to v1; no bump."""
+
+    type: Literal["compaction.delta"] = "compaction.delta"
+    conversation_id: str
+    text: str
+    part: int = 1
+    parts: int = 1
+
+
 class ConversationCompacted(_Body):
     """The thread's earlier turns were folded into a summary before this turn ran,
     because its context footprint had reached the operator's threshold. Nothing was
@@ -1094,6 +1121,7 @@ EventBody = Annotated[
     | ViewSnapshot
     | ConversationTitled
     | CompactionStarted
+    | CompactionDelta
     | ConversationCompacted
     | ConversationLinked
     | ContextInjected
