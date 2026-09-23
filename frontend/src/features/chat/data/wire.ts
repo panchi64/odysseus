@@ -97,6 +97,8 @@ export interface MessageVersionRefDTO {
   snapshot_id: string;
   title: string | null;
   preview_kind: "html" | "image" | "text" | "other" | null;
+  /** The `show` call that minted it — where a reload places the chip. */
+  tool_call_id?: string | null;
 }
 
 export interface ViewSnapshotDTO {
@@ -120,7 +122,6 @@ export interface MessageDTO {
    *  the operator speaking. */
   role: "user" | "assistant" | "compaction" | "subagent";
   content: string;
-  reasoning?: string | null;
   tools: ToolCallDTO[];
   versions?: MessageVersionRefDTO[];
   created_at?: string | null;
@@ -156,7 +157,15 @@ export interface MessageDTO {
    *  divider the operator watched arrive. Empty on every other row, and on a checkpoint
    *  whose text parses into nothing (the divider falls back to `content`). */
   sections?: SummarySection[] | null;
+  /** Assistant turns: reasoning, calls and answer in the order the model emitted
+   *  them — the order `tools`/`content` flatten away, and the only place a turn's
+   *  reasoning arrives. A `tool` segment names its entry in `tools`. Empty elsewhere. */
+  segments?: MessageSegmentDTO[] | null;
 }
+
+export type MessageSegmentDTO =
+  | { kind: "thinking" | "text"; text: string; tool_call_id?: null }
+  | { kind: "tool"; text?: string; tool_call_id: string };
 
 export interface ActiveRunDTO {
   id: string;

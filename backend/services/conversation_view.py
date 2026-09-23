@@ -2,8 +2,9 @@
 
 The durable record stores full-fidelity Pydantic AI ``ModelMessage`` blobs so a
 cold session rehydrates exactly. The frontend needs a flat shape instead: an
-ordered list of user/assistant turns, each assistant turn carrying its reasoning
-split out from its answer and its tool calls stitched to their results.
+ordered list of user/assistant turns, each assistant turn carrying its reasoning,
+answer and tool calls in the order they were emitted, the calls stitched to their
+results.
 
 This is the static-history counterpart to the live translator in
 ``agent/translate.py`` — the same part→domain mapping, applied to a settled
@@ -16,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic_ai import (
     BinaryContent,
@@ -179,7 +180,6 @@ class MessageView:
     # something they have not even read.
     role: str  # "user" | "assistant" | "compaction" | "subagent"
     content: str = ""
-    reasoning: str = ""
     tools: list[ToolView] = field(default_factory=list)
     timestamp: datetime | None = None
     # The model that produced this assistant turn (the last response's model_name —
@@ -229,6 +229,41 @@ class MessageView:
     # so a fetched page's own heading cannot open one and carry what follows it out of the
     # untrusted fence. Empty on every other role.
     sections: list[SummarySection] = field(default_factory=list)
+    # `role="assistant"` only — the turn's parts in the order the model emitted them,
+    # which `content`/`tools` flatten away. A reload replays this so the
+    # transcript keeps the think → call → text → … sequence the live stream drew,
+    # instead of regrouping it into one lane per kind. Adjacent passages of one kind
+    # merge, the same rule the live fold applies to deltas. Empty on every other role.
+    segments: list[Segment] = field(default_factory=list)
+
+
+SegmentKind = Literal["thinking", "text", "tool"]
+
+
+@dataclass
+class Segment:
+    """One step of an assistant turn in emission order: a reasoning or answer passage
+    carrying its text, or a tool call naming the ``ToolView`` it refers to (by id,
+    so the call's data is not carried twice)."""
+
+    kind: SegmentKind
+    text: str = ""
+    tool_call_id: str | None = None
+
+
+def _append_passage(view: MessageView, kind: SegmentKind, text: str) -> None:
+    """Add a passage to the turn's ordered segments, extending the trailing one when it
+    is the same kind — each kind change starts a new segment, as live deltas do.
+
+    An empty passage records nothing, because the live translator emits no delta for
+    one: kept, it would split two passages of one kind that the stream drew as one."""
+    if not text:
+        return
+    last = view.segments[-1] if view.segments else None
+    if last is not None and last.kind == kind:
+        last.text += text
+    else:
+        view.segments.append(Segment(kind=kind, text=text))
 
 
 #: The class of message content measured for the readout but not counted in the footprint
@@ -485,9 +520,7 @@ def _content_text(content: Any) -> str:
     if isinstance(content, dict):
         # Keys as well as values: they are serialized alongside the data and are a real
         # share of a wide row's tokens.
-        return " ".join(
-            f"{key} {_content_text(value)}" for key, value in content.items()
-        )
+        return " ".join(f"{key} {_content_text(value)}" for key, value in content.items())
     if isinstance(content, list | tuple):
         return " ".join(_content_text(item) for item in content)
     return ""
@@ -682,8 +715,9 @@ def project_tree(
     One turn = one view. A user turn is a request carrying a ``UserPromptPart``.
     An assistant turn is the run of everything after it until the next user turn —
     one or more ``ModelResponse`` messages plus the interleaved tool-return
-    requests — **merged into a single assistant view** (reasoning, then tool calls
-    stitched to their results, then the answer). This matches the live stream,
+    requests — **merged into a single assistant view** whose ``segments`` keep the
+    order its reasoning, calls and answer were emitted in, with each call stitched to
+    its result. This matches the live stream,
     which renders one assistant bubble per turn, so a cold read and a warm one look
     identical.
 
@@ -802,12 +836,14 @@ def project_tree(
             for part in message.parts:
                 if isinstance(part, TextPart):
                     assistant.content += part.content
+                    _append_passage(assistant, "text", part.content)
                 elif isinstance(part, ThinkingPart):
-                    assistant.reasoning += part.content
+                    _append_passage(assistant, "thinking", part.content)
                 elif isinstance(part, ToolCallPart):
                     tool = ToolView(
                         id=part.tool_call_id, name=part.tool_name, args=part.args_as_dict()
                     )
+                    assistant.segments.append(Segment(kind="tool", tool_call_id=tool.id))
                     assistant.tools.append(tool)
                     by_call[part.tool_call_id] = tool
                     owner[part.tool_call_id] = assistant

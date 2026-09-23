@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { toMessage } from "./messages";
-import type { MessageDTO } from "./wire";
+import type { MessageDTO, ToolCallDTO } from "./wire";
 
 function divider(overrides: Partial<MessageDTO> = {}): MessageDTO {
   return {
@@ -108,5 +108,142 @@ describe("toMessage decodes a compaction divider", () => {
     // The backend sends 0 rather than omitting these, which is why every consumer guards
     // on `> 0` — the mapper passes the zeros through rather than inventing absence.
     expect(m.foldedMessages).toBe(0);
+  });
+});
+
+describe("toMessage replays an assistant turn in emission order", () => {
+  const call = (id: string, over: Partial<ToolCallDTO> = {}): ToolCallDTO => ({
+    id,
+    name: "builtin_now",
+    args: {},
+    status: "ok",
+    ...over,
+  });
+  const turn = (over: Partial<MessageDTO>): MessageDTO => ({
+    id: "a1",
+    role: "assistant",
+    content: "",
+    tools: [],
+    ...over,
+  });
+  const shape = (dto: MessageDTO) =>
+    (toMessage(dto).blocks ?? []).map((b) => {
+      switch (b.kind) {
+        case "thinking":
+        case "text":
+          return `${b.kind}:${b.text}`;
+        case "tool":
+          return `tool:${b.tool.id}[${(b.tool.children ?? []).map((c) => c.id).join(",")}]`;
+        case "view_version":
+          return `chip:${b.snapshotId}`;
+        case "question":
+          return `question:${b.question.toolCallId}`;
+        default:
+          return b.kind;
+      }
+    });
+
+  test("passages and calls interleave as the segments say", () => {
+    expect(
+      shape(
+        turn({
+          tools: [call("c1"), call("c2")],
+          segments: [
+            { kind: "thinking", text: "plan" },
+            { kind: "text", text: "Checking." },
+            { kind: "tool", tool_call_id: "c1" },
+            { kind: "thinking", text: "again" },
+            { kind: "tool", tool_call_id: "c2" },
+            { kind: "text", text: "Done." },
+          ],
+        }),
+      ),
+    ).toEqual([
+      "thinking:plan",
+      "text:Checking.",
+      "tool:c1[]",
+      "thinking:again",
+      "tool:c2[]",
+      "text:Done.",
+    ]);
+  });
+
+  test("a chip follows the call that minted it, and an answered question its call", () => {
+    expect(
+      shape(
+        turn({
+          tools: [
+            call("show", { name: "view_show" }),
+            call("ask", {
+              name: "builtin_ask_user",
+              answers: [{ question: "Which?", selections: ["A"] }],
+            }),
+          ],
+          versions: [
+            {
+              snapshot_id: "v1",
+              title: null,
+              preview_kind: "html",
+              tool_call_id: "show",
+            },
+          ],
+          segments: [
+            { kind: "tool", tool_call_id: "show" },
+            { kind: "tool", tool_call_id: "ask" },
+            { kind: "text", text: "Done." },
+          ],
+        }),
+      ),
+    ).toEqual([
+      "tool:show[]",
+      "chip:v1",
+      "tool:ask[]",
+      "question:ask",
+      "text:Done.",
+    ]);
+  });
+
+  test("a script's calls nest on it, and a chip one of them minted follows the script", () => {
+    expect(
+      shape(
+        turn({
+          tools: [
+            call("script", { name: "run_code" }),
+            call("inner", { name: "view_show", parent_tool_call_id: "script" }),
+          ],
+          versions: [
+            {
+              snapshot_id: "v1",
+              title: null,
+              preview_kind: "html",
+              tool_call_id: "inner",
+            },
+          ],
+          segments: [
+            { kind: "tool", tool_call_id: "script" },
+            { kind: "text", text: "Done." },
+          ],
+        }),
+      ),
+    ).toEqual(["tool:script[inner]", "chip:v1", "text:Done."]);
+  });
+
+  test("a chip whose call is unknown still renders, at the end", () => {
+    expect(
+      shape(
+        turn({
+          versions: [
+            {
+              snapshot_id: "lost",
+              title: null,
+              preview_kind: "html",
+              tool_call_id: "gone",
+            },
+            { snapshot_id: "bare", title: null, preview_kind: null },
+          ],
+          segments: [{ kind: "text", text: "Done." }],
+        }),
+      ),
+    ).toEqual(["text:Done.", "chip:lost", "chip:bare"]);
   });
 });

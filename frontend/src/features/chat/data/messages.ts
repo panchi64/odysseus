@@ -1,11 +1,11 @@
 /**
  * A persisted turn, read as the transcript's own vocabulary.
  *
- * The cold conversation load's half of the pair — `toMessage` reconstructs an assistant
- * turn's blocks from flat history, where the live stream is handed them in true emission
- * order. Everything it reaches for (a host command, a version chip, a citation) comes
- * from the module that owns that shape, so the two readers of a payload cannot disagree
- * about what it means.
+ * The cold conversation load's half of the pair — `toMessage` rebuilds an assistant
+ * turn's blocks from the order the backend recorded them in (`segments`), the same order
+ * the live stream handed them over in. Everything it reaches for (a host command, a
+ * version chip, a citation) comes from the module that owns that shape, so the two
+ * readers of a payload cannot disagree about what it means.
  *
  * Pure: nothing here touches a store, a resource or the network. Ordering, deduping and
  * placement beyond a single turn belong to whoever is folding.
@@ -108,6 +108,18 @@ export function toTool(dto: ToolCallDTO): ToolInvocation {
   };
 }
 
+/** Items bucketed by key, each bucket in input order. */
+function groupBy<T, K>(items: T[], key: (item: T) => K): Map<K, T[]> {
+  const groups = new Map<K, T[]>();
+  for (const item of items) {
+    const k = key(item);
+    const bucket = groups.get(k);
+    if (bucket) bucket.push(item);
+    else groups.set(k, [item]);
+  }
+  return groups;
+}
+
 export function toMessage(dto: MessageDTO): ChatMessage {
   const base: ChatMessage = {
     id: dto.id,
@@ -129,20 +141,37 @@ export function toMessage(dto: MessageDTO): ChatMessage {
     summarySections: dto.sections?.length ? dto.sections : undefined,
   };
   if (dto.role !== "assistant") return base;
-  // Cold history is still flat (no recorded emission order), so reconstruct the
-  // turn's blocks in the legacy lane order — reasoning, the tool/host calls, the
-  // version chips, then the answer. (Once the backend persists ordered blocks, map
-  // them straight through here; the live stream already carries true order.)
   const blocks: AssistantBlock[] = [];
   const citations: Citation[] = [];
-  if (dto.reasoning)
-    blocks.push({
-      kind: "thinking",
-      id: `${dto.id}-reasoning`,
-      text: dto.reasoning,
-    });
   const toolBlockId = (callId: string) => `${dto.id}-${callId}`;
-  for (const t of dto.tools) {
+  // Each version chip keyed by the `show` that minted it, so it can follow that call as
+  // it did live. Placing a chip removes it, which is what lets the sweep at the end
+  // place every chip whose call is unknown rather than dropping it.
+  const versionsByCall = groupBy(
+    dto.versions ?? [],
+    (v) => v.tool_call_id ?? "",
+  );
+  const placeVersions = (callId: string) => {
+    for (const v of versionsByCall.get(callId) ?? [])
+      blocks.push(
+        toVersionChipBlock(dto.id, {
+          snapshotId: v.snapshot_id,
+          title: v.title ?? undefined,
+          previewKind: v.preview_kind,
+        }),
+      );
+    versionsByCall.delete(callId);
+  };
+  // A script's own calls are not segments of the turn — they nest on its card, and are
+  // placed with it so that anything they left behind (a chip) lands where it did live.
+  const childrenOf = groupBy(
+    dto.tools.filter((t) => t.parent_tool_call_id),
+    (t) => t.parent_tool_call_id!,
+  );
+  const placed = new Set<string>();
+  const placeCall = (t: ToolCallDTO): void => {
+    if (placed.has(t.id)) return;
+    placed.add(t.id);
     // A call a script made nests on the script's card, by the same rule the live fold
     // places it with — including a terminal command, which reads as a compact row there.
     if (t.parent_tool_call_id)
@@ -178,17 +207,28 @@ export function toMessage(dto: MessageDTO): ChatMessage {
     for (const c of citationsFromToolResult(t.name, t.result))
       if (!citations.some((existing) => existing.url === c.url))
         citations.push(c);
-  }
-  for (const v of dto.versions ?? [])
-    blocks.push(
-      toVersionChipBlock(dto.id, {
-        snapshotId: v.snapshot_id,
-        title: v.title ?? undefined,
-        previewKind: v.preview_kind,
-      }),
-    );
-  if (dto.content)
-    blocks.push({ kind: "text", id: `${dto.id}-text`, text: dto.content });
+    placeVersions(t.id);
+    for (const child of childrenOf.get(t.id) ?? []) placeCall(child);
+  };
+  // The backend's record of emission order, replayed as is, so a reload draws the
+  // think → call → text → … sequence the operator watched stream rather than one lane
+  // per kind. `streamParity.test.ts` holds this against the live fold.
+  const byId = new Map(dto.tools.map((t) => [t.id, t] as const));
+  (dto.segments ?? []).forEach((s, i) => {
+    if (s.kind === "tool") {
+      const t = byId.get(s.tool_call_id);
+      if (t) placeCall(t);
+    } else if (s.text)
+      blocks.push({
+        kind: s.kind,
+        id: `${dto.id}-${s.kind}-${i}`,
+        text: s.text,
+      });
+  });
+  // Whatever no segment reached — a call whose script is not on this turn, a chip whose
+  // call is unknown — still renders, at the end, rather than vanishing.
+  for (const t of dto.tools) placeCall(t);
+  for (const callId of [...versionsByCall.keys()]) placeVersions(callId);
   // The answer lives in the text block(s); keep `content` empty for assistant
   // turns so it isn't a second, divergent copy of the same text.
   return {

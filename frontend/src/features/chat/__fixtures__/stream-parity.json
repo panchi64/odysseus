@@ -1,0 +1,119 @@
+{
+  "events": [
+    {
+      "type": "thinking.delta",
+      "text": "Let me ",
+      "seq": 1
+    },
+    {
+      "type": "thinking.delta",
+      "text": "plan.",
+      "seq": 2
+    },
+    {
+      "type": "answer.delta",
+      "text": "Checking the clock.",
+      "seq": 3
+    },
+    {
+      "type": "tool.started",
+      "tool_call_id": "c1",
+      "name": "builtin_now",
+      "args": {},
+      "seq": 4
+    },
+    {
+      "type": "tool.completed",
+      "tool_call_id": "c1",
+      "name": "builtin_now",
+      "result": "<result>",
+      "seq": 5
+    },
+    {
+      "type": "thinking.delta",
+      "text": "Once more.",
+      "seq": 6
+    },
+    {
+      "type": "tool.started",
+      "tool_call_id": "c2",
+      "name": "builtin_now",
+      "args": {},
+      "seq": 7
+    },
+    {
+      "type": "tool.completed",
+      "tool_call_id": "c2",
+      "name": "builtin_now",
+      "result": "<result>",
+      "seq": 8
+    },
+    {
+      "type": "answer.delta",
+      "text": "Done.",
+      "seq": 9
+    }
+  ],
+  "message": {
+    "id": "a1",
+    "role": "assistant",
+    "content": "Checking the clock.Done.",
+    "tools": [
+      {
+        "id": "c1",
+        "name": "builtin_now",
+        "args": {},
+        "status": "ok",
+        "result": "<result>",
+        "error": null,
+        "images": [],
+        "answers": [],
+        "parent_tool_call_id": null
+      },
+      {
+        "id": "c2",
+        "name": "builtin_now",
+        "args": {},
+        "status": "ok",
+        "result": "<result>",
+        "error": null,
+        "images": [],
+        "answers": [],
+        "parent_tool_call_id": null
+      }
+    ],
+    "versions": [],
+    "segments": [
+      {
+        "kind": "thinking",
+        "text": "Let me plan.",
+        "tool_call_id": null
+      },
+      {
+        "kind": "text",
+        "text": "Checking the clock.",
+        "tool_call_id": null
+      },
+      {
+        "kind": "tool",
+        "text": "",
+        "tool_call_id": "c1"
+      },
+      {
+        "kind": "thinking",
+        "text": "Once more.",
+        "tool_call_id": null
+      },
+      {
+        "kind": "tool",
+        "text": "",
+        "tool_call_id": "c2"
+      },
+      {
+        "kind": "text",
+        "text": "Done.",
+        "tool_call_id": null
+      }
+    ]
+  }
+}

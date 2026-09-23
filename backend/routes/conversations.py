@@ -38,7 +38,7 @@ from runs import ContextWindow, ConversationBusyError, FoldPoint, Run, RunMetric
 from services.approval_grants import COMMAND_SCOPED_TOOLS
 from services.attributions import MessageClaims
 from services.context_budget import compose
-from services.conversation_view import MessageView
+from services.conversation_view import MessageView, SegmentKind
 from services.conversations import (
     ConversationSummaryView,
     conversation_totals,
@@ -163,6 +163,9 @@ class ViewVersionRefOut(BaseModel):
     snapshot_id: str
     title: str | None
     preview_kind: str | None  # "html" | "image" | "text" | "other" | None — the chip icon
+    # The ``show`` call that minted it, so a reload can place the chip right after that
+    # call rather than at the end of the turn.
+    tool_call_id: str | None = None
 
 
 class ViewSnapshotRefOut(BaseModel):
@@ -181,11 +184,19 @@ class ViewSnapshotRefOut(BaseModel):
     keeper: bool = False  # the operator's durable bookmark on this version
 
 
+class SegmentOut(BaseModel):
+    """One step of an assistant turn: a passage (``thinking``/``text``) with its text,
+    or a ``tool`` call naming the ``tools`` entry it refers to."""
+
+    kind: SegmentKind
+    text: str = ""
+    tool_call_id: str | None = None
+
+
 class MessageOut(BaseModel):
     id: str
     role: str
     content: str
-    reasoning: str | None = None
     tools: list[ToolCallOut] = []
     versions: list[ViewVersionRefOut] = []
     created_at: datetime | None = None
@@ -225,6 +236,10 @@ class MessageOut(BaseModel):
     # Empty on every other role, and on a checkpoint whose text parses into nothing —
     # the client falls back to `content` then.
     sections: list[SummarySection] = Field(default_factory=list)
+    # Assistant turns only — the order the model emitted its reasoning, calls and answer
+    # in, which `tools`/`content` flatten into lanes. A reload walks this so the
+    # transcript reads in the order the operator watched it stream. Empty elsewhere.
+    segments: list[SegmentOut] = Field(default_factory=list)
 
 
 class ActiveRun(BaseModel):
@@ -374,6 +389,7 @@ def _message_versions(view: MessageView, by_id: dict[str, SnapshotView]) -> list
                     snapshot_id=snapshot.id,
                     title=snapshot.title,
                     preview_kind=snapshot.preview_kind,
+                    tool_call_id=tool.id,
                 )
             )
     return refs
@@ -384,7 +400,6 @@ def _message(view: MessageView, by_id: dict[str, SnapshotView]) -> MessageOut:
         id=view.id,
         role=view.role,
         content=view.content,
-        reasoning=view.reasoning or None,
         tools=[
             ToolCallOut(
                 id=t.id,
@@ -395,9 +410,7 @@ def _message(view: MessageView, by_id: dict[str, SnapshotView]) -> MessageOut:
                 error=t.error,
                 images=[ToolCallImageOut(media_type=i.media_type, data=i.data) for i in t.images],
                 answers=[
-                    ToolCallAnswerOut(
-                        question=a.question, selections=a.selections, text=a.text
-                    )
+                    ToolCallAnswerOut(question=a.question, selections=a.selections, text=a.text)
                     for a in t.answers
                 ],
                 parent_tool_call_id=t.parent_tool_call_id,
@@ -418,6 +431,9 @@ def _message(view: MessageView, by_id: dict[str, SnapshotView]) -> MessageOut:
         tokens_after=view.tokens_after,
         compaction_reason=view.compaction_reason,
         sections=view.sections,
+        segments=[
+            SegmentOut(kind=s.kind, text=s.text, tool_call_id=s.tool_call_id) for s in view.segments
+        ],
     )
 
 
@@ -499,9 +515,7 @@ async def _detail(
         )
     run = deps.registry(request).active_run_for(conversation_id, OPERATOR_ID)
     active_run = (
-        ActiveRun(
-            id=run.id, kind=run.kind, status=run.status.value, last_seq=run.stream.last_seq
-        )
+        ActiveRun(id=run.id, kind=run.kind, status=run.status.value, last_seq=run.stream.last_seq)
         if run is not None
         else None
     )
@@ -1215,7 +1229,7 @@ async def extract_attributions(
         raise HTTPException(status_code=404, detail="no such assistant turn")
     try:
         background = await deps.models(request).resolve_background(owner_id=OPERATOR_ID)
-    except (NotFoundError, DegradedCapabilityError):
+    except NotFoundError, DegradedCapabilityError:
         # No utility model reachable. The same degrade the live pass takes — the operator
         # gets what is already stored rather than an error about a reading nothing
         # promised them.

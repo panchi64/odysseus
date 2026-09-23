@@ -15,6 +15,7 @@ from pydantic_ai import (
     ModelRequest,
     ModelResponse,
     TextPart,
+    ThinkingPart,
     ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
@@ -119,3 +120,81 @@ def test_an_operator_image_turn_is_still_an_operator_turn():
     )
     assert [v.role for v in views] == ["user"]
     assert views[0].content == "[attachment]"
+
+
+def test_the_turn_keeps_the_order_it_was_emitted_in():
+    """``content``/``reasoning``/``tools`` flatten a turn into one lane per kind; the
+    segments keep the think → call → text → call → text sequence the stream drew, so a
+    reload does not regroup a turn the operator watched interleave."""
+    views = project_tree(
+        [
+            ("n0", ModelRequest(parts=[UserPromptPart(content="go")])),
+            (
+                "n1",
+                ModelResponse(
+                    parts=[
+                        ThinkingPart(content="plan "),
+                        ThinkingPart(content="more"),
+                        TextPart(content="Checking."),
+                        ToolCallPart(tool_name="read", args={}, tool_call_id="c1"),
+                    ]
+                ),
+            ),
+            (
+                "n2",
+                ModelRequest(
+                    parts=[ToolReturnPart(tool_name="read", content="x", tool_call_id="c1")]
+                ),
+            ),
+            (
+                "n3",
+                ModelResponse(
+                    parts=[
+                        ThinkingPart(content="again"),
+                        ToolCallPart(tool_name="read", args={}, tool_call_id="c2"),
+                    ]
+                ),
+            ),
+            (
+                "n4",
+                ModelRequest(
+                    parts=[ToolReturnPart(tool_name="read", content="y", tool_call_id="c2")]
+                ),
+            ),
+            ("n5", ModelResponse(parts=[TextPart(content="Done.")])),
+        ]
+    )
+    segments = views[1].segments
+    assert [(s.kind, s.text, s.tool_call_id) for s in segments] == [
+        ("thinking", "plan more", None),
+        ("text", "Checking.", None),
+        ("tool", "", "c1"),
+        ("thinking", "again", None),
+        ("tool", "", "c2"),
+        ("text", "Done.", None),
+    ]
+    # The flat answer lane is unchanged for search, which still reads it.
+    assert views[1].content == "Checking.Done."
+    assert views[0].segments == []
+
+
+def test_an_empty_passage_does_not_split_its_neighbours():
+    """The live translator emits no delta for an empty part, so the stream draws the two
+    reasoning passages either side of one as a single block — the segments must too."""
+    views = project_tree(
+        [
+            ("n0", ModelRequest(parts=[UserPromptPart(content="go")])),
+            (
+                "n1",
+                ModelResponse(
+                    parts=[
+                        ThinkingPart(content="a"),
+                        TextPart(content=""),
+                        ThinkingPart(content=""),
+                        ThinkingPart(content="b"),
+                    ]
+                ),
+            ),
+        ]
+    )
+    assert [(s.kind, s.text) for s in views[1].segments] == [("thinking", "ab")]
