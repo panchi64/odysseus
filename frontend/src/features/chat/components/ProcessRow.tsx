@@ -1,8 +1,10 @@
 import {
   Show,
   children,
+  createContext,
   createEffect,
   createSignal,
+  useContext,
   type Accessor,
   type JSX,
   type Setter,
@@ -44,6 +46,20 @@ export function createAdoptedOpen(
   return { open, setOpen, toggle: () => setOpen((v) => !v) };
 }
 
+/** Whether rows are drawn as a schematic — the work log's voice (§8, §9).
+ *
+ *  Provided by the work log around its rows, so every kind of row it holds (a
+ *  tool call, reasoning, a review, injected context) speaks it without each
+ *  card threading a prop through. In it the glyph sits in a hard-cornered
+ *  socket that a `Branch` elbow lands on, the label is the machine's `meta` at
+ *  the dim tone, and the chevron moves to the row's far end. Everywhere else —
+ *  the log's own header, the panel surfaces — rows keep the ordinary voice. */
+export const SchematicContext = createContext(false);
+
+/** The socket a schematic glyph sits in: 12px glyph + 2px padding + a hairline,
+ *  18px square, hard-cornered because a registration mark's corners are hard. */
+const SOCKET = "box-content border border-line p-0.5";
+
 /** The `·` between segments of one row. Quiet enough to read as punctuation
  *  rather than as another value. */
 export function Sep(): JSX.Element {
@@ -55,14 +71,15 @@ export function Sep(): JSX.Element {
 }
 
 /** One row of the agent's process: `chevron · glyph · Label · …` with an optional
- *  cluster pinned right.
+ *  cluster pinned right — or, inside a work log (`SchematicContext`),
+ *  `[glyph] LABEL · … chevron`, with the chevron moved to make room for the elbow.
  *
  *  Every kind of work in a turn renders through this — a tool call, a settled
  *  reasoning trace, the work log's own header — because they sit in one column on
- *  one rail and a column only reads as a sequence if its rows share an anatomy.
+ *  one trunk and a column only reads as a sequence if its rows share an anatomy.
  *  They used to be three separate idioms: the tool row had a glyph, a detail and
  *  a right cluster; the reasoning accordion had a bare chevron and a word; the
- *  work log header had a shouted uppercase string. Three species on one rail is
+ *  work log header had a shouted uppercase string. Three species in one column is
  *  why the turn read as a log rather than as the agent narrating its work.
  *
  *  The truncation rules here are the load-bearing part and are easy to lose.
@@ -97,10 +114,6 @@ export function ProcessRow(props: {
   iconClass?: string;
   /** The row's name, in the interface's voice: "Read", "Reasoning", "Work log". */
   label: string;
-  /** The label's voice. `label` (sans) by default; `meta` is the machine's —
-   *  mono uppercase, at the dim tone — for a row that is telemetry rather than a
-   *  thing to open. */
-  labelVariant?: "label" | "meta";
   /** Everything between the label and the right cluster. Segments supply their
    *  own `Sep`, since only the caller knows which of them are present. */
   children?: JSX.Element;
@@ -112,6 +125,15 @@ export function ProcessRow(props: {
   class?: string;
 }): JSX.Element {
   const trailing = children(() => props.trailing);
+  // Read once: a row does not move between a work log and a card.
+  const schematic = useContext(SchematicContext);
+  const chevron = (): JSX.Element => (
+    <Icon
+      name={props.open ? "chevron-down" : "chevron-right"}
+      size={12}
+      class="text-dim"
+    />
+  );
   return (
     <div
       /* No hover fill here by default: a row that sits on a card wants one, and a
@@ -138,41 +160,48 @@ export function ProcessRow(props: {
                 props.onToggle();
               }
         }
-        class="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left"
+        class={cx(
+          "flex min-w-0 flex-1 items-center gap-2 py-1.5 text-left",
+          /* Flush left in a schematic, so the branch's elbow lands on the socket. */
+          schematic ? "pr-2" : "px-2",
+        )}
         title={props.title}
       >
         {/* The chevron's slot is held open even with nothing to reveal, so the
-            glyph and label of every row in the column still line up. */}
-        <Show
-          when={props.foldable !== false}
-          fallback={<span class="w-3 shrink-0" aria-hidden="true" />}
-        >
-          <Icon
-            name={props.open ? "chevron-down" : "chevron-right"}
-            size={12}
-            class="text-dim"
-          />
+            glyph and label of every row in the column still line up. A schematic
+            row has no slot: the elbow is what leads into it. */}
+        <Show when={!schematic}>
+          <Show
+            when={props.foldable !== false}
+            fallback={<span class="w-3 shrink-0" aria-hidden="true" />}
+          >
+            {chevron()}
+          </Show>
         </Show>
         <Show when={props.icon}>
           {(name) => (
             <Icon
               name={name()}
               size={12}
-              class={props.iconClass ?? "text-dim"}
+              class={cx(schematic && SOCKET, props.iconClass ?? "text-dim")}
             />
           )}
         </Show>
         <Text
-          variant={props.labelVariant ?? "label"}
-          /* A `meta` label is telemetry, so it recedes to the ambient tone: the
-             sentence above it (the work log's reason) is what should be read
-             first, and a bright uppercase word beside it would win that. */
-          tone={props.labelVariant === "meta" ? "dim" : "bright"}
+          variant={schematic ? "meta" : "label"}
+          /* A schematic label is telemetry, so it recedes to the ambient tone:
+             the sentence it serves (the work log's reason, a call's narration) is
+             what should be read first, and a bright uppercase word would win that. */
+          tone={schematic ? "dim" : "bright"}
           class="max-w-[45%] shrink-0 truncate"
         >
           {props.label}
         </Text>
         {props.children}
+        {/* The disclosure moves to the row's end: the leading edge is the elbow's. */}
+        <Show when={schematic && props.foldable !== false}>
+          <span class="ml-auto flex shrink-0">{chevron()}</span>
+        </Show>
       </Dynamic>
       {/* `children()` and not `props.trailing` read twice. Solid props are
           getters, so reading one in `Show`'s condition AND again as the span's

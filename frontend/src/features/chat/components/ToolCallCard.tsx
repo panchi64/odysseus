@@ -12,6 +12,7 @@ import {
 import { num } from "~/lib/format";
 import type { ToolInvocation } from "../model";
 import { toolPresentation } from "../toolPresentation";
+import { Branch } from "./Branch";
 import { CommandBoundary, FenceNote } from "./CommandBoundary";
 import { ProcessRow, Sep, createAdoptedOpen } from "./ProcessRow";
 
@@ -19,9 +20,9 @@ import { ProcessRow, Sep, createAdoptedOpen } from "./ProcessRow";
  *  rows reads at a glance by shape and tone before a word is parsed.
  *
  *  This is now one of only two things that report a running call — the other is
- *  the lit rail beside it. A single call used to say "running" five ways at once:
- *  the turn's tempo line, the rail's light, this glyph, a RUNNING flag at the far
- *  right, and a throbber in the middle of the row. Five dialects of one fact is
+ *  the lit trunk beside it. A single call used to say "running" five ways at once:
+ *  the turn's tempo line, the rail's light (the trunk's now), this glyph, a RUNNING
+ *  flag at the far right, and a throbber in the middle of the row. Five dialects of one fact is
  *  what made a turn read as a console dump, and it spent the accent budget (§5)
  *  on the most ambient state there is. */
 const iconTone: Record<ToolInvocation["status"], string> = {
@@ -52,7 +53,7 @@ const ELAPSED_WIDTH = "min-w-[6ch]";
  *  **Only failure gets a word.** `StatusFlag` renders for `error` and nothing
  *  else. §10.5 gives warn/alert the accent on the label precisely because those
  *  are the two states that must interrupt; OK and Running are ambient, already
- *  said by the glyph and the rail, and a row that announces its own success on
+ *  said by the glyph and the trunk, and a row that announces its own success on
  *  every line is a row that has stopped meaning anything. Colour is never the
  *  sole carrier of the failure either (§12) — the word "Failed" is there beside
  *  the alert-toned glyph.
@@ -62,8 +63,8 @@ const ELAPSED_WIDTH = "min-w-[6ch]";
  *
  *  **A script's calls are this same row, nested.** A `run_code` card lists the calls
  *  its script made under its own row, each with the anatomy every call has — only the
- *  chrome differs, which is what `variant="nested"` drops: no panel of its own (it
- *  sits on the script's), and an indent that says whose call it is. They list outside
+ *  place differs: `variant="nested"` hangs them off the script's own socket, a trunk of
+ *  their own inside the log's, so the line says whose call each is. They list outside
  *  the disclosure, like a screenshot, because what the script did is the point of the
  *  card; the script itself is behind it, where the argument dump is for other tools. */
 export function ToolCallCard(props: {
@@ -109,11 +110,7 @@ export function ToolCallCard(props: {
       /* Two group names, because a nested row sits inside its script's card: under
          one name, hovering anywhere on the script would reveal every nested row's
          copy button at once. */
-      class={
-        nested()
-          ? "group/nested pl-3"
-          : "group/tool overflow-hidden rounded-panel bg-surface shadow-1"
-      }
+      class={nested() ? "group/nested" : "group/tool"}
     >
       <ProcessRow
         open={open()}
@@ -141,7 +138,7 @@ export function ToolCallCard(props: {
             <Show when={props.tool.status === "error"}>
               <StatusFlag status="alert">Failed</StatusFlag>
             </Show>
-            {/* Running has no visible word by design — the rail's light and the
+            {/* Running has no visible word by design — the trunk's light and the
                 glyph's tone carry it, and that is the whole point of thinning the
                 chorus. But both of those are COLOUR, and §12 does not allow an
                 accent to be the sole carrier of a state. With parallel calls the
@@ -197,6 +194,25 @@ export function ToolCallCard(props: {
           </Text>
         </Show>
       </ProcessRow>
+      {/* The script's calls hang off the script's own socket, a trunk of their own
+          inside the log's — the same schematic one level down. Directly under the
+          row, before any screenshot: the first branch reaches a fixed 6px up to the
+          socket's foot, and a strip between them would cut the trunk off. */}
+      <Show when={props.tool.children}>
+        {(kids) => (
+          <For each={kids()}>
+            {(child, i) => (
+              <Branch
+                variant="nested"
+                edge={{ first: i() === 0, last: i() === kids().length - 1 }}
+                lit={child.status === "running"}
+              >
+                <ToolCallCard tool={child} open={props.open} variant="nested" />
+              </Branch>
+            )}
+          </For>
+        )}
+      </Show>
       {/* What the call saw, on the card rather than behind it: a screenshot is the
           whole point of the call that took it, and a picture the operator has to
           expand a row to find is a picture they will not look at. It sits *outside*
@@ -225,15 +241,6 @@ export function ToolCallCard(props: {
                   (props.tool.images?.length ?? 0) > 1 ? `, ${index() + 1}` : ""
                 }`}
               />
-            )}
-          </For>
-        </div>
-      </Show>
-      <Show when={props.tool.children?.length}>
-        <div class="flex flex-col border-t border-line py-0.5">
-          <For each={props.tool.children}>
-            {(child) => (
-              <ToolCallCard tool={child} open={props.open} variant="nested" />
             )}
           </For>
         </div>

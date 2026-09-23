@@ -1,5 +1,5 @@
 import { For, Show, createMemo, type JSX } from "solid-js";
-import { Collapse } from "~/ui";
+import { Collapse, cx } from "~/ui";
 import type { WorkLogEntry } from "../blocks";
 import { latestReason, workShape } from "../workShape";
 import {
@@ -8,6 +8,8 @@ import {
   type RowHandlers,
   type TopSpacing,
 } from "./BlockRow";
+import { type BranchEdge } from "./Branch";
+import { SchematicContext } from "./ProcessRow";
 import { WorkLogHeader } from "./WorkLogHeader";
 import { WorkLogLatest } from "./WorkLogLatest";
 
@@ -40,7 +42,7 @@ export function WorkLog(
     onToggle: () => void;
     forceOpen?: boolean;
     top?: TopSpacing;
-    /** Groups with a call in flight, for the rail's LED. Read here because a live
+    /** Groups with a call in flight, for the trunk's light. Read here because a live
      *  call is now pinned *inside* the log rather than lifted out of it. */
     activeIds?: ReadonlySet<string>;
     streaming?: boolean;
@@ -66,13 +68,10 @@ export function WorkLog(
 
   /* Consecutive rows of the same kind, in order.
    *
-   *  Two things fall out of segmenting once instead of deciding per row. A stretch of
-   *  foldable rows shares **one** `Collapse` — the shape the log had before a pinned row
-   *  was allowed to sit inside it, and the reason matters: a `Collapse` per row is a
-   *  height measurement and a transition per row, so a forty-call turn folded in forty
-   *  independent animations where one would do. And each row's rail spacing becomes a
-   *  running fact rather than a rescan of everything above it, which is what that
-   *  spacing cost when every row sliced its own prefix. */
+   *  A stretch of foldable rows shares **one** `Collapse` — the shape the log had
+   *  before a pinned row was allowed to sit inside it, and the reason matters: a
+   *  `Collapse` per row is a height measurement and a transition per row, so a
+   *  forty-call turn folded in forty independent animations where one would do. */
   const segments = createMemo(() => {
     const out: { pinned: boolean; rows: WorkLogEntry[] }[] = [];
     for (const entry of props.entries) {
@@ -83,8 +82,34 @@ export function WorkLog(
     return out;
   });
 
+  /* What hangs off the trunk right now, in drawn order: the latest step (shut
+     only), then every entry the fold shows — all of them open, the pinned ones
+     shut. The last turns the trunk into its elbow, so the line runs unbroken
+     from the header to the last row and stops there. */
+  const drawn = createMemo(() => {
+    const ids: string[] = [];
+    const latestId = folded().latestId;
+    if (!open() && latestId) ids.push(latestId);
+    for (const e of props.entries) if (open() || e.pinned) ids.push(e.group.id);
+    return ids;
+  });
+  const edgeOf = (id: string): BranchEdge => {
+    const ids = drawn();
+    return { first: ids[0] === id, last: ids[ids.length - 1] === id };
+  };
+
   return (
-    <div class={fullWidthTop(props.top)}>
+    <div class={cx("relative", fullWidthTop(props.top))}>
+      {/* The trunk's first length, from the foot of the header's chevron (`py-1.5`
+          + 2px of the 16px line box + the 12px glyph = 20px) to the foot of the
+          header row (28px), where the first branch takes over. Drawn here rather
+          than by that branch because it may sit inside a `Collapse`, which clips. */}
+      <Show when={drawn().length > 0}>
+        <span
+          aria-hidden="true"
+          class="pointer-events-none absolute top-5 left-3.5 h-2 w-px bg-line"
+        />
+      </Show>
       <WorkLogHeader
         summary={summary()}
         steps={folded().steps}
@@ -100,30 +125,30 @@ export function WorkLog(
           keyed child runs untracked, and the same block can change in place — a
           folded review goes from `reviewing` to its decision under one id — so a
           value snapshotted at mount would sit stale for the rest of the turn. */}
-      <Show when={!open() && folded().latestId} keyed>
-        {(_id: string) => (
-          <Show when={folded().latest}>
-            {(step) => <WorkLogLatest step={step()} />}
-          </Show>
-        )}
-      </Show>
-      <div class="mt-2">
+      <SchematicContext.Provider value={true}>
+        <Show when={!open() && folded().latestId} keyed>
+          {(id: string) => (
+            <Show when={folded().latest}>
+              {(step) => (
+                <WorkLogLatest
+                  step={step()}
+                  edge={edgeOf(id)}
+                  live={props.streaming}
+                />
+              )}
+            </Show>
+          )}
+        </Show>
         <For each={segments()}>
-          {(segment, s) => {
-            /* Whether anything is drawn above this segment, which is what decides if
-               its first row joins the rail above or starts it. Every earlier segment
-               shows when the log is open; shut, only the pinned ones do. */
-            const anythingAbove = () =>
-              s() > 0 &&
-              (open() || segments().some((seg, j) => j < s() && seg.pinned));
+          {(segment) => {
             const rows = (
               <For each={segment.rows}>
-                {(entry, i) => (
+                {(entry) => (
                   <BlockRow
                     group={entry.group}
                     active={props.activeIds?.has(entry.group.id)}
                     streaming={props.streaming}
-                    top={i() > 0 || anythingAbove() ? "connect" : "none"}
+                    edge={edgeOf(entry.group.id)}
                     forceOpen={props.forceOpen}
                     onResolveHostCommands={props.onResolveHostCommands}
                     onOpenInView={props.onOpenInView}
@@ -144,7 +169,7 @@ export function WorkLog(
             );
           }}
         </For>
-      </div>
+      </SchematicContext.Provider>
     </div>
   );
 }

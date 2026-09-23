@@ -1,8 +1,6 @@
 import { Match, Switch, type JSX } from "solid-js";
-import { LedEdge, cx } from "~/ui";
 import type {
   ApprovalDecision,
-  BlockKind,
   ContextBlock,
   HostCommandBlock,
   QuestionBlock,
@@ -13,7 +11,7 @@ import type {
   ViewLiveBlock,
   ViewVersionBlock,
 } from "../model";
-import type { BlockGroup, LayoutItem } from "../blocks";
+import type { BlockGroup } from "../blocks";
 import {
   LIVE_KEY,
   snapshotKey,
@@ -21,6 +19,7 @@ import {
   type ViewItem,
 } from "../viewport/viewItems";
 import { AnswerText } from "./AnswerText";
+import { Branch, type BranchEdge } from "./Branch";
 import { ContextInjectionCard } from "./ContextInjectionCard";
 import { HostCommandCard } from "./HostCommandCard";
 import { QuestionAnswerCard } from "./QuestionAnswerCard";
@@ -57,57 +56,20 @@ export interface RowHandlers {
   seenIndex?: number;
 }
 
-/** How a row spaces itself from the one above:
- *  - "none"    — first row, flush to the top.
- *  - "gap"     — separated by margin (no rail ink in the gap): a run boundary.
- *  - "connect" — separated by border-covered padding so a rail block's hairline
- *    runs unbroken into the rail block above it (one continuous timeline). */
-export type TopSpacing = "none" | "gap" | "connect";
-
-/** Block kinds that render against the left timeline rail (process), as opposed
- *  to the full-width result blocks (answer text, artifacts, previews). */
-const RAIL_KINDS: ReadonlySet<BlockKind> = new Set([
-  "thinking",
-  "tool",
-  "context",
-  "review",
-  "host_command",
-]);
-
-/** The left rail that turns a stack of process blocks into a legible, ordered
- *  timeline — one of the few borders the system keeps, because an unbroken
- *  vertical line is the thing being communicated (§7).
+/** How a full-width row spaces itself from the one above: "none" for the first,
+ *  flush to the top, "gap" for everything after it.
  *
- *  At rest it is a hairline. While a block is live `LedEdge` lights it — the
- *  same rule, emitting, with the glow spilling leftward onto the page. That says
- *  "this is running" far more directly than a colour swap, and shifts nothing,
- *  since the rule keeps its width and the glow is a shadow. When `top="connect"`
- *  the gap
- *  above is *padding inside the border*, so the hairline joins the rail block
- *  above into one unbroken line; "gap" keeps the spacing outside the border so
- *  the line stops at a run boundary. Answer/artifact/preview render full-width
- *  (results lead; work recedes). */
-export function Rail(props: {
-  active?: boolean;
-  top?: TopSpacing;
-  children: JSX.Element;
-}): JSX.Element {
-  return (
-    <LedEdge
-      lit={props.active}
-      class={cx(
-        "pl-3 transition-colors",
-        props.top === "connect" && "pt-3",
-        props.top === "gap" && "mt-3",
-      )}
-    >
-      {props.children}
-    </LedEdge>
-  );
-}
+ *  Process rows take no part in this. Every one of them lives inside a work log
+ *  (`WORK_LOG_MIN_RUN` is 1), hung off its trunk by a `Branch`, and the trunk is
+ *  what joins them — there is no longer a rail between loose rows to keep
+ *  continuous across a gap. */
+export type TopSpacing = "none" | "gap";
 
-/** Margin for a full-width (non-rail) row — spacing always lives outside, since
- *  there's no rail to keep continuous. */
+/** A process row's place on its log's trunk, for a row that is not told one — no
+ *  row above it and none below. */
+const LONE: BranchEdge = { first: true, last: true };
+
+/** Margin for a full-width row, or a work log — spacing always lives outside. */
 export function fullWidthTop(top?: TopSpacing): string | undefined {
   return top && top !== "none" ? "mt-3" : undefined;
 }
@@ -134,10 +96,10 @@ function chipMeta(
  *  batched) so their cards keep one shared decision.
  *
  *  Approvals have no case here, and neither does a question still *waiting*: a parked run
- *  is answered in the dock that takes over the composer, not on the rail (`ParkDock`, and
+ *  is answered in the dock that takes over the composer, not on the trunk (`ParkDock`, and
  *  `groupBlocks`'s `DOCKED`). An **answered** question does reach here — it is a result
  *  rather than something to act on, so it renders full-width like a View chip rather than
- *  on the rail with the process. */
+ *  on the trunk with the process. */
 export function BlockRow(
   props: {
     group: BlockGroup;
@@ -146,6 +108,8 @@ export function BlockRow(
     streaming?: boolean;
     forceOpen?: boolean;
     top?: TopSpacing;
+    /** Where a process row sits on its work log's trunk. */
+    edge?: BranchEdge;
   } & RowHandlers,
 ): JSX.Element {
   const g = () => props.group;
@@ -215,65 +179,55 @@ export function BlockRow(
         </div>
       </Match>
       <Match when={g().kind === "thinking"}>
-        <Rail active={props.active} top={props.top}>
+        <Branch edge={props.edge ?? LONE} lit={props.active}>
           <ReasoningBlock
             reasoning={(g().blocks[0] as ThinkingBlock).text}
             open={props.forceOpen}
             active={props.active}
             streaming={props.streaming}
           />
-        </Rail>
+        </Branch>
       </Match>
       <Match when={g().kind === "tool"}>
-        <Rail active={props.active} top={props.top}>
+        <Branch edge={props.edge ?? LONE} lit={props.active}>
           <ToolCallCard
             tool={(g().blocks[0] as ToolBlock).tool}
             open={props.forceOpen}
           />
-        </Rail>
+        </Branch>
       </Match>
       <Match when={g().kind === "context"}>
-        {/* On the rail, because it happened in the turn's sequence — but never `active`:
-            the rail's light means "this is running now", and an injection is a settled
+        {/* On the trunk, because it happened in the turn's sequence — but never `active`:
+            the trunk's light means "this is running now", and an injection is a settled
             fact the moment it exists. Lighting it would spend the one signal the
             interface delivers in light on something with no duration. */}
-        <Rail top={props.top}>
+        <Branch edge={props.edge ?? LONE} chassis>
           <ContextInjectionCard
             injection={(g().blocks[0] as ContextBlock).injection}
             open={props.forceOpen}
           />
-        </Rail>
+        </Branch>
       </Match>
       <Match when={g().kind === "review"}>
-        {/* On the rail, because it happened in the turn's sequence, and never `active`:
-            the rail's light means "the model is doing this now", and a review is the
+        {/* On the trunk, because it happened in the turn's sequence, and never `active`:
+            the trunk's light means "the model is doing this now", and a review is the
             chassis answering for the operator — the opposite kind of event. */}
-        <Rail top={props.top}>
+        <Branch edge={props.edge ?? LONE} chassis>
           <ReviewCard
             review={(g().blocks[0] as ReviewBlock).review}
             open={props.forceOpen}
           />
-        </Rail>
+        </Branch>
       </Match>
       <Match when={g().kind === "host_command"}>
-        <Rail active={props.active} top={props.top}>
+        <Branch edge={props.edge ?? LONE} lit={props.active}>
           <HostCommandCard
             commands={(g().blocks as HostCommandBlock[]).map((b) => b.command)}
             open={props.forceOpen}
             onSubmit={props.onResolveHostCommands ?? noop}
           />
-        </Rail>
+        </Branch>
       </Match>
     </Switch>
   );
-}
-
-/** The top spacing for the item at `index`: nothing for the first, a connected
- *  rail when this and the previous row are both rail blocks, otherwise a plain
- *  gap (run boundary). */
-export function topSpacing(items: LayoutItem[], index: number): TopSpacing {
-  if (index === 0) return "none";
-  const isRail = (it: LayoutItem) =>
-    it.type === "group" && RAIL_KINDS.has(it.group.kind);
-  return isRail(items[index]) && isRail(items[index - 1]) ? "connect" : "gap";
 }

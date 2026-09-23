@@ -61,10 +61,10 @@ const AUTHORIZATION: Record<NonNullable<Review["authorization"]>, string> = {
 
 /** One action the chassis ruled on in the operator's place, at the Auto permission level.
  *
- *  **It shares the rail's anatomy and refuses its card**, exactly as the injection row
- *  does and for the same reason: every row on a raised `bg-surface` panel is something the
- *  *model* did, and this is not. The model asked; we answered for the operator. Sitting
- *  flat on the page beside the call it judged is what says that at a glance, before a word
+ *  **It shares the log's anatomy and dashes its trace**, exactly as the injection row
+ *  does and for the same reason: every solid trace is something the *model* did, and
+ *  this is not. The model asked; we answered for the operator. A dashed elbow into a
+ *  dashed socket beside the call it judged is what says that at a glance, before a word
  *  of the row is read.
  *
  *  **A refusal is the one state that gets a flag.** A cleared call is followed by the call
@@ -84,14 +84,17 @@ export function ReviewCard(props: {
     props.review.decision ? VERDICT[props.review.decision] : "checking…";
   return (
     <div class="group/review">
-      {/* No `hover:bg-raised`: that is what a row sitting on its own card gets, and this
-          one deliberately has none — the same posture the injection row takes. */}
+      {/* No `hover:bg-raised`: that fill is for the model's calls, the work an operator
+          opens to inspect, and this one deliberately has none — the same posture the
+          injection row takes. */}
       <ProcessRow
         open={open()}
         onToggle={toggle}
         icon="review"
         iconClass={
-          props.review.decision === "block" ? "text-alert" : "text-dim"
+          props.review.decision === "block"
+            ? "border-dashed text-alert"
+            : "border-dashed text-dim"
         }
         label="Review"
         title={`Review of ${props.review.name}`}

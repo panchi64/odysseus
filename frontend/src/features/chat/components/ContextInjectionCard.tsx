@@ -19,15 +19,14 @@ const PLACEMENT: Record<ContextInjection["placement"], string> = {
 /** One block of context the chassis put in front of the model — a project's instruction
  *  files, the skill catalog, the plan reminder, the date.
  *
- *  **It shares the rail's anatomy and refuses its card.** Every other row in a turn is
- *  something the model *did*, and those sit on a raised `bg-surface` panel because a call
- *  is a claim on attention. This is the opposite kind of fact: nobody in the conversation
- *  wrote it and the model did not ask for it — we put it there. So it keeps `ProcessRow`
- *  (the column only reads as one sequence if its rows share an anatomy, §7) and drops the
- *  surface, sitting flat on the page the way the work log's own header does. Glyph, tone
- *  and the absence of a card all say the same thing at a glance, which is what the
- *  separation has to survive on: an operator scanning a turn should never have to read a
- *  row to know whether the model or the chassis is speaking.
+ *  **It shares the log's anatomy and dashes its trace.** Every other row in a turn is
+ *  something the model *did*. This is the opposite kind of fact: nobody in the
+ *  conversation wrote it and the model did not ask for it — we put it there. So it keeps
+ *  `ProcessRow` (the column only reads as one sequence if its rows share an anatomy, §7)
+ *  but hangs off the trunk by a dashed elbow into a dashed socket (`Branch chassis`),
+ *  and takes no hover fill. Glyph, tone and the dashed trace all say the same thing at a
+ *  glance, which is what the separation has to survive on: an operator scanning a turn
+ *  should never have to read a row to know whether the model or the chassis is speaking.
  *
  *  The trailing figure is the block's **token cost**, in the slot a tool call spends on
  *  elapsed time — the honest analogue, since what an injection costs is window and what a
@@ -48,13 +47,14 @@ export function ContextInjectionCard(props: {
   };
   return (
     <div class="group/context">
-      {/* No `hover:bg-raised`: that is what a row sitting on its own card gets, and this
-          one deliberately has none — the same posture the settled reasoning row takes. */}
+      {/* No `hover:bg-raised`: that fill is for the model's calls, the work an operator
+          opens to inspect, and this one deliberately has none — the same posture the
+          settled reasoning row takes. */}
       <ProcessRow
         open={open()}
         onToggle={toggle}
         icon={INJECTION_ICON}
-        iconClass="text-dim"
+        iconClass="border-dashed text-dim"
         label={segmentLabel(props.injection.contributor)}
         title={`Context injected by ${props.injection.contributor}`}
         trailing={

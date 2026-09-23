@@ -102,7 +102,7 @@ export function ReasoningBlock(props: {
           >
             {/* The same "what was this about" slot a tool row fills with its
                 salient argument. Without it, a settled think was a bare word on
-                a rail of rows that all carried a detail — the one row in the
+                a trunk of rows that all carried a detail — the one row in the
                 column that said nothing about itself. */}
             <Show when={peek()}>
               <Sep />
@@ -132,7 +132,7 @@ export function ReasoningBlock(props: {
 
           Nothing sits in the foreground. The wall is its own indicator: text
           arriving is the most direct signal there is that the model is working,
-          and the live rail beside it already says so in light. A label and a
+          and the lit trunk beside it already says so in light. A label and a
           throbber on top were both restating it. */}
       <div
         class="ody-reasoning-stage"

@@ -20,15 +20,15 @@ import {
 import type { ViewItem } from "../viewport/viewItems";
 import {
   BlockRow,
-  topSpacing,
   type ChipLookupEntry,
   type RowHandlers,
+  type TopSpacing,
 } from "./BlockRow";
 import { WorkLog } from "./WorkLog";
 
 /** Render an assistant turn as its ordered, interleaved blocks — the agent's
- *  true think → tool → text → … sequence — with a per-block rail for separation
- *  and a folded work log when the process grows long. */
+ *  true think → tool → text → … sequence — its process gathered into work logs,
+ *  each a trunk of rows between the answers. */
 export function TurnBlocks(
   props: {
     blocks: AssistantBlock[] | undefined;
@@ -144,7 +144,8 @@ export function TurnBlocks(
             const it = item();
             return it?.type === "group" ? it.group : undefined;
           };
-          const top = () => topSpacing(layout(), indexOfKey(key));
+          const top = (): TopSpacing =>
+            indexOfKey(key) === 0 ? "none" : "gap";
           const row = (
             <Show
               when={log()}
@@ -174,7 +175,7 @@ export function TurnBlocks(
                   top={top()}
                   forceOpen={props.forceOpen}
                   /* A live call is pinned inside the log now rather than lifted
-                     out of it, so the rail's LED has to reach in here too. */
+                     out of it, so the trunk's light has to reach in here too. */
                   activeIds={activeIds()}
                   streaming={props.streaming}
                   onResolveHostCommands={props.onResolveHostCommands}
@@ -185,9 +186,8 @@ export function TurnBlocks(
               )}
             </Show>
           );
-          /* A plain fade, not a rise: these rows sit against a continuous
-             timeline rail, and anything that moved would drag the rail's
-             hairline with it. Materializing in place says "this arrived"
+          /* A plain fade, not a rise: a work log is a continuous trunk of
+             hairlines, and anything that moved would drag the trunk with it. Materializing in place says "this arrived"
              without disturbing the structure it arrived into. */
           return revealRows ? <Reveal>{row}</Reveal> : row;
         }}
