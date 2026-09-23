@@ -872,6 +872,21 @@ body {
 .ody-trace-body {
   animation: ody-reveal-fade var(--motion-base) var(--ease) 40ms both;
 }
+/* The socket the trace lands on: lit the instant the stroke arrives, dark again
+   a beat later. Stepped, not eased — contact is a machine event, so it snaps. */
+.ody-trace-pin {
+  animation: ody-trace-contact 320ms var(--ease-machine);
+}
+/* Dark for the first half (the implicit 0% is the socket's own colour) while
+   the stroke travels — `ody-trace-across` lands at 160ms — lit for the second,
+   and no fill, so it drops back to its own colour when the blip ends. */
+@keyframes ody-trace-contact {
+  50%,
+  100% {
+    border-color: var(--color-info);
+    color: var(--color-info);
+  }
+}
 
 /* GLASS — a translucent surface over whatever is behind it. `isolation` gives
    the panel its own stacking context so the frame marks can sit above the

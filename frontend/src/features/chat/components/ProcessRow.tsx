@@ -97,6 +97,10 @@ export function ProcessRow(props: {
   iconClass?: string;
   /** The row's name, in the interface's voice: "Read", "Reasoning", "Work log". */
   label: string;
+  /** The label's voice. `label` (sans) by default; `meta` is the machine's —
+   *  mono uppercase, at the dim tone — for a row that is telemetry rather than a
+   *  thing to open. */
+  labelVariant?: "label" | "meta";
   /** Everything between the label and the right cluster. Segments supply their
    *  own `Sep`, since only the caller knows which of them are present. */
   children?: JSX.Element;
@@ -159,8 +163,11 @@ export function ProcessRow(props: {
           )}
         </Show>
         <Text
-          variant="label"
-          tone="bright"
+          variant={props.labelVariant ?? "label"}
+          /* A `meta` label is telemetry, so it recedes to the ambient tone: the
+             sentence above it (the work log's reason) is what should be read
+             first, and a bright uppercase word beside it would win that. */
+          tone={props.labelVariant === "meta" ? "dim" : "bright"}
           class="max-w-[45%] shrink-0 truncate"
         >
           {props.label}
