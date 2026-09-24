@@ -88,10 +88,9 @@ export interface SearchProviderInput {
  *  compaction — folding whole earlier *turns* into a utility-model summary once the
  *  context window fills: whether it's on, how full the window must get first
  *  (`autoCompactThreshold` is a fraction of the window, the same 0–1 quantity the
- *  context meter reports; the UI presents it as a percentage), and how many of the
- *  most recent exchanges survive a fold word for word (`autoCompactKeepTurns`, a whole
- *  count where 0 means the summary replaces everything). It is the only
- *  reduction there is — per-tool-result digesting was removed.
+ *  context meter reports; the UI presents it as a percentage). A fold keeps nothing
+ *  verbatim — the summary alone carries the thread. It is the only reduction there
+ *  is — per-tool-result digesting was removed.
  *  `agentRequestLimit` is how many model round-trips a single turn may spend before it
  *  stops — the ceiling a long tool-using turn actually runs out of.
  *  `inactivityTimeoutS` is how long (seconds) a run may go without emitting an event
@@ -115,7 +114,6 @@ export interface SearchProviderInput {
 export interface ChatSettings {
   autoCompactEnabled: boolean;
   autoCompactThreshold: number;
-  autoCompactKeepTurns: number;
   /** How long a thread must sit untouched before the backend writes its work
    *  summary — the paragraph the thread-recap band shows on re-entry. Minutes. */
   workSummaryIdleMinutes: number;

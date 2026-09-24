@@ -107,7 +107,6 @@ async def fold(run: Run, ctx: CompactionContext, *, reason: CompactionReason) ->
             model=ctx.model,
             reason=reason,
             reasoning_off=ctx.reasoning_off,
-            keep_turns=ctx.policy.keep_turns,
             settings=ctx.settings,
             max_input_tokens=ctx.max_input_tokens,
             on_plan=lambda plan: run.emit(
@@ -187,7 +186,7 @@ async def maybe_compact(
 
     Returns ``history`` unchanged whenever compaction is off, unmeasurable (no declared
     window), not yet due, has nothing left to fold, or the summarizer failed."""
-    if ctx is None or not ctx.policy.enabled:
+    if ctx is None or ctx.policy is None or not ctx.policy.enabled:
         return history, False
     if not should_compact(
         history,
@@ -233,8 +232,7 @@ async def compact_and_retry(
 
     The order below is load-bearing:
 
-    - the dangling-call strip runs on the folded history alone, because a *retained* turn
-      that once stopped at a bound can end on an unanswered tool call, and this turn's own
+    - the dangling-call strip runs on the folded history alone, because this turn's own
       trailing call is answered by the very request being retried;
     - the merge runs over the **concatenation**, because the library merges consecutive
       requests when it cleans a history it is resuming, and a checkpoint hoisted in front
@@ -250,7 +248,7 @@ async def compact_and_retry(
     overflow: they get the stop, and the **Compact and retry** it offers, which is the
     same fold under their own hand.
     """
-    if not ctx.policy.enabled:
+    if ctx.policy is None or not ctx.policy.enabled:
         return None
     folded = await _fold_replay(run, ctx, reason="overflow")
     if folded is None:

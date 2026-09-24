@@ -6,9 +6,8 @@ import { toChatSettings, toChatSettingsBody } from "./chatSettingsDto";
  *
  * A PUT here sends only the keys the caller touched, and "touched" is decided by an
  * `!== undefined` test rather than by truthiness. That distinction is invisible until a
- * setting has a meaningful falsy value — and three do: keeping **0** exchanges verbatim
- * past a fold is a real choice (summarize everything), and a `null` wall clock or `null`
- * sub-agent cap is the value that removes the bound. Written as `if (patch.x)`, all three
+ * setting has a meaningful falsy value — and two do: a `null` wall clock or `null`
+ * sub-agent cap is the value that removes the bound. Written as `if (patch.x)`, both
  * would be dropped on the floor with no error anywhere, and only for the operators who
  * picked them.
  */
@@ -16,7 +15,6 @@ import { toChatSettings, toChatSettingsBody } from "./chatSettingsDto";
 const DTO = {
   auto_compact_enabled: true,
   auto_compact_threshold: 0.8,
-  auto_compact_keep_turns: 3,
   work_summary_idle_minutes: 15,
   context_warn_threshold: 0.75,
   context_alert_threshold: 0.9,
@@ -31,7 +29,6 @@ describe("reading the stored preferences", () => {
     expect(toChatSettings(DTO)).toEqual({
       autoCompactEnabled: true,
       autoCompactThreshold: 0.8,
-      autoCompactKeepTurns: 3,
       workSummaryIdleMinutes: 15,
       contextWarnThreshold: 0.75,
       contextAlertThreshold: 0.9,
@@ -41,26 +38,19 @@ describe("reading the stored preferences", () => {
       subagentMaxConcurrent: null,
     });
   });
-
-  test("a stored 0 comes back as 0, not as a default", () => {
-    expect(
-      toChatSettings({ ...DTO, auto_compact_keep_turns: 0 })
-        .autoCompactKeepTurns,
-    ).toBe(0);
-  });
 });
 
 describe("writing a patch", () => {
   test("only the touched keys are sent", () => {
-    expect(toChatSettingsBody({ autoCompactKeepTurns: 3 })).toEqual({
-      auto_compact_keep_turns: 3,
+    expect(toChatSettingsBody({ autoCompactThreshold: 0.6 })).toEqual({
+      auto_compact_threshold: 0.6,
     });
   });
 
-  test("keeping nothing verbatim survives the encode", () => {
+  test("removing the wall clock survives the encode", () => {
     // The trap this whole file exists for.
-    expect(toChatSettingsBody({ autoCompactKeepTurns: 0 })).toEqual({
-      auto_compact_keep_turns: 0,
+    expect(toChatSettingsBody({ wallClockTimeoutS: null })).toEqual({
+      wall_clock_timeout_s: null,
     });
   });
 

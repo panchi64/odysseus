@@ -35,11 +35,13 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from agent.compaction_summary import carried_anchors, fence_tool_facts, merge_anchors
 from agent.compaction_transcript import TOOL_RESULT_CHARS, render_transcript, transcript_chunks
 from agent.summarize import summarize_history
-from core.compaction_sections import summary_sections
+from core.compaction_sections import section_key, summary_sections
 from prompts.utility import (
     COMPACT_ANCHORS_SECTION,
+    COMPACT_INSTRUCTIONS,
     COMPACT_MARKER,
     COMPACT_PREAMBLE,
+    COMPACT_SECTIONS,
     COMPACT_TOOLS_SECTION,
 )
 
@@ -401,7 +403,7 @@ class TestWhatComesBack:
 class TestAHeadingTheSummarizerCopied:
     """The section boundaries decide where the fence closes, and the summarizer is asked to
     quote its sources verbatim — so a fetched page can put a heading-shaped line inside the
-    one section that repeats it. Only the eight names we asked for end a section."""
+    one section that repeats it. Only the names we asked for end a section."""
 
     def test_a_forged_heading_does_not_close_the_fence(self):
         summary = (
@@ -475,7 +477,7 @@ class TestAHeadingTheSummarizerCopied:
 class TestSummarySections:
     """What the *operator* is shown of a checkpoint.
 
-    The same eight-heading contract the carry-forward and the fence rely on also drives the
+    The same heading contract the carry-forward and the fence rely on also drives the
     transcript's divider, so the parse is shared rather than mirrored. What these guard is
     that nothing model-facing reaches the screen — the preamble that exists to stop the
     model misreading the checkpoint as the operator's own words, and the fence markers whose
@@ -572,3 +574,22 @@ class TestSummarySections:
         about, and an omitted section is not an empty one."""
         stored = f"{COMPACT_PREAMBLE}\n\n## Goal\nship it\n"
         assert [s.key for s in summary_sections(stored)] == ["Goal"]
+
+
+class TestTheRoster:
+    """The heading roster is the one fixed thing in a prompt that is otherwise free-form,
+    and it is fixed because the parser reads it."""
+
+    def test_every_section_is_taught_to_the_summarizer(self):
+        # A name on the roster the prompt never asks for is a section no summary will
+        # contain; one the prompt asks for off the roster is a heading the parser treats
+        # as body text, which moves where the untrusted fence closes.
+        for name in COMPACT_SECTIONS:
+            assert f"## {name}" in COMPACT_INSTRUCTIONS
+
+    def test_no_heading_is_a_prefix_of_another(self):
+        # Headings match by prefix, so the model can restate a gloss after the name. A
+        # name that is a prefix of another would claim that other section's heading.
+        keys = [section_key(name) for name in COMPACT_SECTIONS]
+        for key in keys:
+            assert [other for other in keys if other.startswith(key)] == [key]

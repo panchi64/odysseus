@@ -55,9 +55,7 @@ from ._helpers import client_app
 #: tokens, which alone would overrun it and fold every thread on sight.
 _NO_OVERHEAD = TurnOverhead(system=0, tools=0)
 
-#: Keep one exchange verbatim, so a fold leaves the replay ending on a response the way a
-#: real thread's does.
-_POLICY = AutoCompactPolicy(enabled=True, threshold=0.80, keep_turns=1)
+_POLICY = AutoCompactPolicy(enabled=True, threshold=0.80)
 
 
 def _ctx_error() -> ModelHTTPError:
@@ -222,15 +220,15 @@ async def test_a_second_overflow_blocks_with_the_detail_the_client_keys_on():
 
 
 async def test_a_collapsed_fold_boundary_does_not_re_record_the_history():
-    """The boundary between the folded history and the turn can be *one* message.
+    """The boundary between the folded history and the turn is *one* message.
 
-    A previous turn that stopped before it answered leaves history ending on a user
-    request; the fold hoists a checkpoint in front of it, and the turn's own prompt is
-    another user request right behind — three requests in a row, which both the library and
-    our own normalization collapse into one. Slicing the turn out at a message index there
-    hands the persist a message that is half checkpoint, half prompt, and the summary (with
-    everything else the replay put in front of the prompt) is re-recorded as words the
-    operator typed."""
+    A fold keeps nothing verbatim, so the folded replay *is* the checkpoint — a request —
+    and the turn's own prompt is another request right behind it, which both the library
+    and our own normalization collapse into one. Slicing the turn out at a message index
+    there hands the persist a message that is half checkpoint, half prompt, and the summary
+    (with everything else the replay put in front of the prompt) is re-recorded as words
+    the operator typed. A previous turn that stopped before it answered, folded along with
+    the rest, must not come back either."""
     async with client_app() as (_client, app):
         store = app.state.conversations
         cid = await _seed(store, tail_tokens=100)
@@ -253,32 +251,6 @@ async def test_a_collapsed_fold_boundary_does_not_re_record_the_history():
         assert after[-2:] == ["next question", "the answer"]
         assert sum("FOLDED AWAY" in text for text in after) == 1
         assert after.count("dangling question") == 1
-
-
-async def test_a_fold_that_keeps_no_turns_records_the_checkpoint_once():
-    """The same collapse, reached the other way: with ``keep_turns=0`` the folded replay
-    *is* the checkpoint, so its last message is always a request and the boundary always
-    collapses — a thread on the shipped-legal minimum would double every summary."""
-    async with client_app() as (_client, app):
-        store = app.state.conversations
-        cid = await _seed(store, tail_tokens=100)
-        before = len(await store.history(cid))
-
-        run = _run_chat(
-            app,
-            cid,
-            model=_OverflowsThenAnswers(),
-            auto_compact=AutoCompactPolicy(enabled=True, threshold=0.80, keep_turns=0),
-        )
-        await run.wait()
-
-        assert run.status is RunStatus.done
-        await store._worker.join()
-        store._cache.clear()
-        after = _texts(await store.history(cid))
-        assert sum("FOLDED AWAY" in text for text in after) == 1
-        assert len(after) == before + 3
-        assert after[-2:] == ["next question", "the answer"]
 
 
 async def test_the_gauge_moves_when_the_overflow_fold_lands_not_when_it_answers():
@@ -331,7 +303,7 @@ async def test_compaction_switched_off_is_not_overruled_by_an_overflow():
             store=store,
             conversation_id=cid,
             context_window=10_000,
-            auto_compact=AutoCompactPolicy(enabled=False, threshold=0.80, keep_turns=1),
+            auto_compact=AutoCompactPolicy(enabled=False, threshold=0.80),
         )
         run = app.state.runs.submit(kind="chat", owner_id=OPERATOR_ID, orchestrator=orch)
         await run.wait()

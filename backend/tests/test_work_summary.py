@@ -480,12 +480,12 @@ class TestTheChatSettingsRoute:
 
     async def test_a_put_touching_only_this_leaves_the_rest_alone(self):
         async with client_app() as (client, _app):
-            await client.put("/chat/settings", json={"auto_compact_keep_turns": 7})
+            await client.put("/chat/settings", json={"auto_compact_threshold": 0.6})
             body = (
                 await client.put("/chat/settings", json={"work_summary_idle_minutes": 30})
             ).json()
             assert body["work_summary_idle_minutes"] == 30
-            assert body["auto_compact_keep_turns"] == 7
+            assert body["auto_compact_threshold"] == pytest.approx(0.6)
 
     async def test_a_put_touching_another_field_leaves_this_alone(self):
         async with client_app() as (client, _app):

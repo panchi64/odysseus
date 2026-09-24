@@ -92,7 +92,7 @@ export interface FoldState {
    *  Read for exactly one decision: whether a blocked terminal is worth saying out loud.
    *  A chat turn that stops leaves a persistent marker on the turn it stopped, so the
    *  detail is already on screen; a **fold** has no turn to mark, and one that declines
-   *  before it announces itself — the thread has nothing above the retained tail — would
+   *  before it announces itself — nothing has been said since the last fold — would
    *  otherwise end in silence, which is the exact failure this surface was built to fix. */
   runKind: string | null;
 }
@@ -885,7 +885,7 @@ export function createFolder(
         // ended — so this is the abandoned case, which is where the *reason* matters.
         setMessages(produce(dropLiveFolds));
         // The backend's own sentence, which is the only place the distinction lives:
-        // "nothing above the retained tail", "the summarizer wrote nothing" and "the
+        // "nothing new since the last fold", "the summarizer wrote nothing" and "the
         // conversation moved under it" are three different things to have happened and
         // lead to three different next moves.
         //

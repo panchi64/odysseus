@@ -11,7 +11,7 @@ The checkpoint lands under the reseated leaf and the incoming answer hangs off t
 checkpoint, so every enumeration that asks "what are this turn's other versions" has to
 look *through* the checkpoint rather than stopping at it. These tests pin that rule at
 each site it has to hold: version chips, version switching, a second regenerate, rewind,
-delete, the turn count `compaction_plan` cuts on, and a cold reload — because a shape
+delete, the turn a later fold's divider anchors on, and a cold reload — because a shape
 that only holds in memory is a shape that breaks on the operator's next page load.
 """
 
@@ -52,9 +52,9 @@ def _texts(messages: list) -> list[str]:
     ]
 
 
-async def _compact(store, cid: str, *, keep_turns: int = 2, summary: str = "SUMMARY"):
+async def _compact(store, cid: str, *, summary: str = "SUMMARY"):
     """Fold with a fixed summary — the tree work is under test here, not the model."""
-    plan = await store.compaction_plan(cid, keep_turns=keep_turns)
+    plan = await store.compaction_plan(cid)
     if plan is None:
         return None
     return store.record_compaction(
@@ -82,7 +82,7 @@ async def _fold_at_a_regenerate(store, cid: str) -> str:
     await _seed(store, cid)
     answer = _assistant_views(await store.messages_view(cid))[-1]
     assert await store.regenerate_point(cid, answer.id)
-    assert await _compact(store, cid, keep_turns=2) is not None
+    assert await _compact(store, cid) is not None
     store.record(cid, [ModelResponse(parts=[TextPart(content="a3-again")])])
     return _assistant_views(await store.messages_view(cid))[-1].id
 
@@ -145,7 +145,7 @@ async def test_an_edit_at_a_branch_point_versions_the_request_through_the_checkp
 
         original = [v for v in await store.messages_view(cid) if v.role == "user"][-1]
         assert await store.edit_point(cid, original.id)
-        assert await _compact(store, cid, keep_turns=2) is not None
+        assert await _compact(store, cid) is not None
         store.record(cid, _turn("q3-edited", "a3-edited"))
 
         edited = [v for v in await store.messages_view(cid) if v.role == "user"][-1]
@@ -154,10 +154,10 @@ async def test_an_edit_at_a_branch_point_versions_the_request_through_the_checkp
         assert _texts(await store.model_history(cid))[-2:] == ["q3-edited", "a3-edited"]
 
 
-async def test_the_reseated_request_survives_a_fold_that_keeps_nothing():
-    """`keep_turns=0` cuts at the end of the path, which at a branch point would swallow
-    the request about to be re-answered and leave the regenerate answering the summary.
-    The boundary is held one node short instead."""
+async def test_the_reseated_request_survives_the_fold():
+    """A fold cuts at the end of the path, which at a branch point would swallow the
+    request about to be re-answered and leave the regenerate answering the summary. The
+    boundary is held one node short instead."""
     async with client_app() as (_client, app):
         store = app.state.conversations
         cid = await store.create_conversation(OPERATOR_ID)
@@ -165,9 +165,29 @@ async def test_the_reseated_request_survives_a_fold_that_keeps_nothing():
 
         answer = _assistant_views(await store.messages_view(cid))[-1]
         assert await store.regenerate_point(cid, answer.id)
-        assert await _compact(store, cid, keep_turns=0) is not None
+        assert await _compact(store, cid) is not None
 
         assert _texts(await store.model_history(cid)) == ["SUMMARY", "q3"]
+
+
+async def test_a_checkpoint_just_folded_at_a_branch_point_has_nothing_after_it():
+    """The request the fold left standing sits *before* the checkpoint on the path, still
+    waiting on its answer. Folding again before that answer lands would take it with it,
+    so there is nothing to fold until the answer has been recorded."""
+    async with client_app() as (_client, app):
+        store = app.state.conversations
+        cid = await store.create_conversation(OPERATOR_ID)
+        await _seed(store, cid)
+
+        answer = _assistant_views(await store.messages_view(cid))[-1]
+        assert await store.regenerate_point(cid, answer.id)
+        assert await _compact(store, cid) is not None
+        assert await store.compaction_plan(cid) is None
+
+        store.record(cid, [ModelResponse(parts=[TextPart(content="a3-again")])])
+        plan = await store.compaction_plan(cid)
+        assert plan is not None
+        assert _texts(plan.messages) == ["SUMMARY", "q3", "a3-again"]
 
 
 async def test_a_branch_point_fold_on_top_of_an_earlier_one_absorbs_it():
@@ -177,18 +197,19 @@ async def test_a_branch_point_fold_on_top_of_an_earlier_one_absorbs_it():
         store = app.state.conversations
         cid = await store.create_conversation(OPERATOR_ID)
         await _seed(store, cid)
-        assert await _compact(store, cid, keep_turns=2, summary="FIRST") is not None
+        assert await _compact(store, cid, summary="FIRST") is not None
         store.record(cid, _turn("q4", "a4"))
         store.record(cid, _turn("q5", "a5"))
 
         answer = _assistant_views(await store.messages_view(cid))[-1]
         assert await store.regenerate_point(cid, answer.id)
-        plan = await store.compaction_plan(cid, keep_turns=1)
+        plan = await store.compaction_plan(cid)
         assert plan is not None
-        # The older summary is folded *into* the new one, never re-exposed as a turn.
-        assert _texts(plan.messages) == ["FIRST", "q2", "a2", "q3", "a3", "q4", "a4"]
+        # The older summary is folded *into* the new one, never re-exposed as a turn, and
+        # the request being regenerated is held back.
+        assert _texts(plan.messages) == ["FIRST", "q4", "a4"]
 
-        assert await _compact(store, cid, keep_turns=1, summary="SECOND") is not None
+        assert await _compact(store, cid, summary="SECOND") is not None
         store.record(cid, [ModelResponse(parts=[TextPart(content="a5-again")])])
 
         assert _texts(await store.model_history(cid)) == ["SECOND", "q5", "a5-again"]
@@ -267,12 +288,12 @@ async def test_rewinding_to_the_last_turn_keeps_the_fold_and_above_it_drops_it()
         store = app.state.conversations
         cid = await store.create_conversation(OPERATOR_ID)
         await _seed(store, cid)
-        assert await _compact(store, cid, keep_turns=2) is not None
+        assert await _compact(store, cid) is not None
 
         views = await store.messages_view(cid)
         last_answer = _assistant_views(views)[-1]
         assert await store.rewind(cid, last_answer.id)
-        assert _texts(await store.model_history(cid)) == ["SUMMARY", "q2", "a2", "q3", "a3"]
+        assert _texts(await store.model_history(cid)) == ["SUMMARY"]
 
         earlier = _assistant_views(views)[1]  # a1, above the divider
         assert await store.rewind(cid, earlier.id)
@@ -332,27 +353,21 @@ async def test_a_cold_reload_projects_the_same_branched_tree():
         assert _texts(await store.model_history(cid)) == warm_replay
 
 
-# --- turn counting across a checkpoint ---------------------------------------
+# --- turn boundaries across a checkpoint -------------------------------------
 
 
-async def test_the_first_turn_after_a_checkpoint_counts_as_a_turn():
+async def test_the_first_turn_after_a_checkpoint_anchors_the_next_divider():
     """`_is_turn_start` reads "follows a response" — and a checkpoint is a request. Without
-    treating one as a turn boundary, the exchange right after a fold is invisible to the
-    count, so `keep_turns` keeps one turn too many and a thread that should fold decides
-    there is nothing to do."""
+    treating one as a turn boundary, the exchange right after a fold is invisible, and a
+    second fold that ends in it would anchor its divider on the last turn *before* the
+    first checkpoint — a live client drawing it somewhere a reload would not."""
     async with client_app() as (_client, app):
         store = app.state.conversations
         cid = await store.create_conversation(OPERATOR_ID)
         await _seed(store, cid)
-        assert await _compact(store, cid, keep_turns=2) is not None
-        for i in range(4, 8):
-            store.record(cid, _turn(f"q{i}", f"a{i}"))
+        assert await _compact(store, cid) is not None
+        store.record(cid, _turn("q4", "a4"))
 
-        # Exactly four turns stand after the checkpoint (q4…q7). Keeping four folds nothing…
-        assert await store.compaction_plan(cid, keep_turns=4) is None
-        # …and keeping three cuts at q5, so q4's exchange — the one that follows the
-        # checkpoint — is the turn that pays. Miscounting it would have made this None too.
-        plan = await store.compaction_plan(cid, keep_turns=3)
+        plan = await store.compaction_plan(cid)
         assert plan is not None
-        assert _texts(plan.messages)[-2:] == ["q4", "a4"]
-        assert "q5" not in _texts(plan.messages)
+        assert plan.anchor_id == _assistant_views(await store.messages_view(cid))[-1].id

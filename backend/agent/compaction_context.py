@@ -36,7 +36,6 @@ class CompactionContext:
 
     store: ConversationStore
     conversation_id: str
-    policy: AutoCompactPolicy
     # The utility model that writes the summary, with its reasoning-off settings — the
     # same cheap model the namer and the judge use.
     model: Model
@@ -46,17 +45,22 @@ class CompactionContext:
     # summarizer's own window when the endpoint declares one, so the input can never
     # overrun the model that has to read it.
     max_input_tokens: int | None = None
+    # When the automatic triggers fire — whether compaction is on for this thread, and at
+    # what share of the window. Read only by the triggers, never by the fold itself, so the
+    # operator's own "compact now" (which no trigger decides) carries none, and a trigger
+    # handed a context without one does not fire.
+    policy: AutoCompactPolicy | None = None
 
 
 def build_compaction_context(
     *,
     store: ConversationStore | None,
     conversation_id: str | None,
-    policy: AutoCompactPolicy,
     model: Model | None,
     reasoning_off: ModelSettings | None,
     settings: Settings,
     utility_context_window: int | None,
+    policy: AutoCompactPolicy | None = None,
 ) -> CompactionContext | None:
     """The context a fold runs under, or ``None`` when this thread cannot fold at all — no
     conversation to fold (a stateless run) or no utility model to write the summary with.

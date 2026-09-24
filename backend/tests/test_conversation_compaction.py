@@ -12,8 +12,8 @@ would do:
   after a compaction would persist the wrong slice.
 - **Branch safety.** A checkpoint grafted onto a reseated leaf would re-parent the incoming
   answer out of its own version set, silently breaking version switching.
-- **The boundary.** Mid-run steering messages persist as their own user requests, so
-  "keep the last two turns" must not be fooled into keeping two asides.
+- **The boundary.** A fold takes everything since the newest checkpoint and nothing
+  before it, so an earlier summary is absorbed rather than re-exposed as a turn.
 - **Containment.** The summary is a real message row; it must not reach the listing
   preview, the message count, cross-chat search, or a transcript read.
 """
@@ -69,9 +69,9 @@ def _texts(messages: list) -> list[str]:
     return out
 
 
-async def _compact(store, cid: str, *, keep_turns: int = 2, summary: str = "SUMMARY"):
+async def _compact(store, cid: str, *, summary: str = "SUMMARY"):
     """Run a compaction with a fixed summary — the boundary logic under test, not the model."""
-    plan = await store.compaction_plan(cid, keep_turns=keep_turns)
+    plan = await store.compaction_plan(cid)
     if plan is None:
         return None
     return store.record_compaction(
@@ -86,49 +86,24 @@ async def _compact(store, cid: str, *, keep_turns: int = 2, summary: str = "SUMM
 # --- the replay view ---------------------------------------------------------
 
 
-async def test_model_history_hoists_the_summary_and_keeps_the_tail():
-    """The model reads the summary as a preamble, then the retained turns verbatim —
-    and the *full* history is untouched, since three callers depend on it."""
+async def test_a_fold_covers_the_whole_thread_and_the_replay_is_the_summary_alone():
+    """`compaction_plan` cuts at `len(path)`, so the fold covers the *whole* thread and the
+    model's replay is the summary alone — and the *full* history is untouched, since three
+    callers depend on it."""
     async with client_app() as (_client, app):
         store = app.state.conversations
         cid = await store.create_conversation(OPERATOR_ID)
         for i in range(4):
             store.record(cid, _turn(f"q{i}", f"a{i}"))
 
-        full_before = _texts(await store.history(cid))
-        assert await _compact(store, cid, keep_turns=2) is not None
-
-        # The transcript keeps every original turn (the checkpoint is appended, not
-        # substituted) — `history()` must not have lost a thing.
-        assert _texts(await store.history(cid))[: len(full_before)] == full_before
-
-        # The model sees: summary, then the last two exchanges. q0/a0 and q1/a1 are gone.
-        assert _texts(await store.model_history(cid)) == [
-            "SUMMARY",
-            "q2",
-            "a2",
-            "q3",
-            "a3",
-        ]
-
-
-async def test_keep_turns_zero_retains_nothing_after_the_boundary():
-    """The default. `compaction_plan` cuts at `len(path)` rather than at a turn start, so
-    the fold covers the *whole* thread and the model's replay is the summary alone — no
-    retained tail restating what the summary already says."""
-    async with client_app() as (_client, app):
-        store = app.state.conversations
-        cid = await store.create_conversation(OPERATOR_ID)
-        for i in range(4):
-            store.record(cid, _turn(f"q{i}", f"a{i}"))
-
-        plan = await store.compaction_plan(cid, keep_turns=0)
+        plan = await store.compaction_plan(cid)
         assert plan is not None
         assert len(plan.messages) == 8  # every message on the path, q0/a0 … q3/a3
-        assert await _compact(store, cid, keep_turns=0) is not None
+        assert await _compact(store, cid) is not None
 
         assert _texts(await store.model_history(cid)) == ["SUMMARY"]
-        # And nothing was destroyed — the operator's transcript still has all of it.
+        # And nothing was destroyed — the checkpoint is appended, not substituted, so the
+        # operator's transcript still has all of it.
         assert _texts(await store.history(cid))[:8] == [
             "q0",
             "a0",
@@ -141,36 +116,35 @@ async def test_keep_turns_zero_retains_nothing_after_the_boundary():
         ]
 
 
-async def test_keep_turns_zero_still_folds_a_single_turn_thread():
-    """With no tail to retain there is no minimum thread length — one exchange is
-    foldable, where `keep_turns=2` would (rightly) find nothing to do."""
+async def test_a_single_turn_thread_folds_whole():
+    """One prompt the model answered by filling the window is the thread that most needs
+    a fold."""
     async with client_app() as (_client, app):
         store = app.state.conversations
         cid = await store.create_conversation(OPERATOR_ID)
         store.record(cid, _turn("q0", "a0"))
 
-        assert await store.compaction_plan(cid, keep_turns=2) is None
-        plan = await store.compaction_plan(cid, keep_turns=0)
+        plan = await store.compaction_plan(cid)
         assert plan is not None and len(plan.messages) == 2
 
 
-async def test_a_second_compaction_at_keep_turns_zero_absorbs_the_first():
-    """The never-reach-past-an-earlier-checkpoint rule has to hold at 0 too, where the
-    boundary is the end of the path rather than a turn start."""
+async def test_a_second_compaction_absorbs_the_first():
+    """A second fold summarizes the *first summary* plus what followed — never the
+    original turns a second time, which would defeat the point of the first pass, and never
+    the older summary re-exposed as a plain turn."""
     async with client_app() as (_client, app):
         store = app.state.conversations
         cid = await store.create_conversation(OPERATOR_ID)
         for i in range(2):
             store.record(cid, _turn(f"q{i}", f"a{i}"))
-        assert await _compact(store, cid, keep_turns=0, summary="FIRST") is not None
+        assert await _compact(store, cid, summary="FIRST") is not None
         for i in range(2, 4):
             store.record(cid, _turn(f"q{i}", f"a{i}"))
 
-        plan = await store.compaction_plan(cid, keep_turns=0)
+        plan = await store.compaction_plan(cid)
         assert plan is not None
-        # The first summary plus what followed it — never the original turns again.
         assert _texts(plan.messages) == ["FIRST", "q2", "a2", "q3", "a3"]
-        assert await _compact(store, cid, keep_turns=0, summary="SECOND") is not None
+        assert await _compact(store, cid, summary="SECOND") is not None
         assert _texts(await store.model_history(cid)) == ["SECOND"]
 
 
@@ -190,7 +164,7 @@ async def test_the_replay_view_survives_a_cold_reload():
         cid = await store.create_conversation(OPERATOR_ID)
         for i in range(4):
             store.record(cid, _turn(f"q{i}", f"a{i}"))
-        assert await _compact(store, cid, keep_turns=2) is not None
+        assert await _compact(store, cid) is not None
 
         warm = _texts(await store.model_history(cid))
         await store._worker.join()
@@ -207,7 +181,7 @@ async def test_the_persistence_index_still_selects_exactly_the_new_turn():
         cid = await store.create_conversation(OPERATOR_ID)
         for i in range(4):
             store.record(cid, _turn(f"q{i}", f"a{i}"))
-        assert await _compact(store, cid, keep_turns=2) is not None
+        assert await _compact(store, cid) is not None
 
         replayed = await store.model_history(cid)
         start = len(replayed)
@@ -220,95 +194,20 @@ async def test_the_persistence_index_still_selects_exactly_the_new_turn():
         # The new turn landed once, in order, on the active path — not duplicated and
         # not truncated.
         assert _texts(await store.history(cid))[-2:] == ["q4", "a4"]
-        assert _texts(await store.model_history(cid)) == [
-            "SUMMARY",
-            "q2",
-            "a2",
-            "q3",
-            "a3",
-            "q4",
-            "a4",
-        ]
+        assert _texts(await store.model_history(cid)) == ["SUMMARY", "q4", "a4"]
 
 
 # --- boundary selection ------------------------------------------------------
 
 
-async def test_nothing_to_compact_when_the_thread_is_short():
+async def test_nothing_to_compact_only_when_nothing_follows_the_checkpoint():
     async with client_app() as (_client, app):
         store = app.state.conversations
         cid = await store.create_conversation(OPERATOR_ID)
+        assert await store.compaction_plan(cid) is None
         store.record(cid, _turn("q0", "a0"))
-        store.record(cid, _turn("q1", "a1"))
-        assert await store.compaction_plan(cid, keep_turns=2) is None
-
-
-async def test_a_second_compaction_never_uncovers_the_first():
-    """Each compaction folds only the region after the previous checkpoint, so the older
-    summary is absorbed into the newer one rather than resurfacing as a plain turn."""
-    async with client_app() as (_client, app):
-        store = app.state.conversations
-        cid = await store.create_conversation(OPERATOR_ID)
-        for i in range(4):
-            store.record(cid, _turn(f"q{i}", f"a{i}"))
-        assert await _compact(store, cid, keep_turns=2, summary="FIRST") is not None
-        for i in range(4, 8):
-            store.record(cid, _turn(f"q{i}", f"a{i}"))
-        assert await _compact(store, cid, keep_turns=2, summary="SECOND") is not None
-
-        replayed = _texts(await store.model_history(cid))
-        assert replayed == ["SECOND", "q6", "a6", "q7", "a7"]
-        assert "FIRST" not in replayed  # absorbed, not re-exposed
-
-
-async def test_the_folded_input_is_the_replay_view_not_the_raw_transcript():
-    """A second compaction summarizes the *first summary* plus what followed — never the
-    original turns a second time, which would defeat the point of the first pass."""
-    async with client_app() as (_client, app):
-        store = app.state.conversations
-        cid = await store.create_conversation(OPERATOR_ID)
-        for i in range(4):
-            store.record(cid, _turn(f"q{i}", f"a{i}"))
-        assert await _compact(store, cid, keep_turns=2, summary="FIRST") is not None
-        for i in range(4, 8):
-            store.record(cid, _turn(f"q{i}", f"a{i}"))
-
-        plan = await store.compaction_plan(cid, keep_turns=2)
-        assert plan is not None
-        folded = _texts(plan.messages)
-        assert folded[0] == "FIRST"
-        assert "q0" not in folded and "q1" not in folded  # already inside FIRST
-
-
-async def test_mid_run_steering_messages_do_not_count_as_turns():
-    """A message sent while a run was executing persists as its own user request right
-    behind the tool-return request it was injected into. Counting bare user prompts would
-    keep two of those asides verbatim and fold a real exchange instead."""
-    async with client_app() as (_client, app):
-        store = app.state.conversations
-        cid = await store.create_conversation(OPERATOR_ID)
-        store.record(cid, _turn("q0", "a0"))
-        store.record(cid, _turn("q1", "a1"))
-        # A tool-using turn with two steering messages split out behind the tool return.
-        store.record(
-            cid,
-            [
-                ModelRequest(parts=[UserPromptPart(content="q2")]),
-                ModelResponse(parts=[ToolCallPart(tool_name="t", args={}, tool_call_id="c1")]),
-                ModelRequest(parts=[ToolReturnPart(tool_name="t", content="r", tool_call_id="c1")]),
-                ModelRequest(parts=[UserPromptPart(content="aside-1")]),
-                ModelRequest(parts=[UserPromptPart(content="aside-2")]),
-                ModelResponse(parts=[TextPart(content="a2")]),
-            ],
-        )
-        plan = await store.compaction_plan(cid, keep_turns=2)
-        assert plan is not None
-        folded = _texts(plan.messages)
-        # Two turn starts kept = q1's and q2's exchanges; only q0's folds. If the asides
-        # had counted, q1 would have been folded away too.
-        assert folded == ["q0", "a0"]
-        assert await _compact(store, cid, keep_turns=2) is not None
-        assert _texts(await store.model_history(cid))[:2] == ["SUMMARY", "q1"]
+        assert await _compact(store, cid) is not None
+        assert await store.compaction_plan(cid) is None
 
 
 async def test_compaction_folds_while_the_leaf_is_a_branch_point():
@@ -322,15 +221,15 @@ async def test_compaction_folds_while_the_leaf_is_a_branch_point():
         cid = await store.create_conversation(OPERATOR_ID)
         for i in range(4):
             store.record(cid, _turn(f"q{i}", f"a{i}"))
-        assert await store.compaction_plan(cid, keep_turns=2) is not None
+        assert await store.compaction_plan(cid) is not None
 
         answer = [m for m in await store.messages_view(cid) if m.role == "assistant"][-1]
         assert await store.regenerate_point(cid, answer.id)
-        assert await _compact(store, cid, keep_turns=2) is not None
+        assert await _compact(store, cid) is not None
 
-        # The reseated request is still the tail of the replay, so the regenerate that
+        # The reseated request is still the end of the replay, so the regenerate that
         # follows re-answers the operator rather than the summary.
-        assert _texts(await store.model_history(cid)) == ["SUMMARY", "q2", "a2", "q3"]
+        assert _texts(await store.model_history(cid)) == ["SUMMARY", "q3"]
 
         store.record(cid, [ModelResponse(parts=[TextPart(content="a3-again")])])
         assert _texts(await store.model_history(cid))[-1] == "a3-again"
@@ -344,7 +243,7 @@ async def test_record_compaction_refuses_a_stale_plan():
         cid = await store.create_conversation(OPERATOR_ID)
         for i in range(4):
             store.record(cid, _turn(f"q{i}", f"a{i}"))
-        plan = await store.compaction_plan(cid, keep_turns=2)
+        plan = await store.compaction_plan(cid)
         assert plan is not None
 
         # The operator regenerates while the summary is being written.
@@ -475,14 +374,13 @@ async def test_compact_conversation_end_to_end():
             cid,
             reason="threshold",
             model=TestModel(custom_output_text="the story so far"),
-            keep_turns=2,
         )
         assert isinstance(outcome, CompactionOutcome)
         # The stored summary is labelled, so the model can't read it as the operator's own
-        # words once the provider merges it with the first retained prompt — and the event
+        # words once the provider merges it with the next turn's prompt — and the event
         # carries the same string the divider renders on a reload.
         assert outcome.summary == f"{COMPACT_PREAMBLE}\n\nthe story so far"
-        assert outcome.messages_compacted == 4  # q0/a0/q1/a1
+        assert outcome.messages_compacted == 8  # q0/a0 … q3/a3
         assert _texts(await store.model_history(cid))[0] == outcome.summary
 
 
@@ -500,7 +398,6 @@ async def test_the_outcome_reports_what_the_fold_cost():
             cid,
             reason="threshold",
             model=TestModel(custom_output_text="short"),
-            keep_turns=0,
         )
         assert isinstance(outcome, CompactionOutcome)
         assert outcome.messages_compacted == 8
@@ -526,7 +423,6 @@ async def test_the_cold_read_divider_reports_the_same_figures_as_the_event():
             cid,
             reason="threshold",
             model=TestModel(custom_output_text="short"),
-            keep_turns=0,
         )
         assert isinstance(outcome, CompactionOutcome)
 
@@ -556,7 +452,6 @@ async def test_the_fold_reason_survives_a_cold_read():
             cid,
             reason="overflow",
             model=TestModel(custom_output_text="short"),
-            keep_turns=0,
         )
         assert isinstance(outcome, CompactionOutcome)
         assert outcome.reason == "overflow"
@@ -602,7 +497,6 @@ async def test_a_second_folds_stats_cover_only_what_it_folded():
             cid,
             reason="threshold",
             model=TestModel(custom_output_text="first"),
-            keep_turns=0,
         )
         for i in range(2, 5):
             store.record(cid, _turn(f"q{i}", f"a{i}"))
@@ -611,7 +505,6 @@ async def test_a_second_folds_stats_cover_only_what_it_folded():
             cid,
             reason="threshold",
             model=TestModel(custom_output_text="second"),
-            keep_turns=0,
         )
         assert first is not None and second is not None
         assert first.messages_compacted == 4  # q0/a0/q1/a1
@@ -635,7 +528,7 @@ async def test_a_checkpoint_stays_out_of_the_listing_search_and_transcript():
         for i in range(4):
             store.record(cid, _turn(f"q{i}", f"a{i}"))
         before = await store.get_summary(cid, OPERATOR_ID)
-        assert await _compact(store, cid, keep_turns=2, summary="A DISTINCTIVE SUMMARY")
+        assert await _compact(store, cid, summary="A DISTINCTIVE SUMMARY")
 
         after = await store.get_summary(cid, OPERATOR_ID)
         assert after.preview == before.preview  # still the last real message
@@ -654,24 +547,27 @@ async def test_a_checkpoint_stays_out_of_the_listing_search_and_transcript():
         assert "DISTINCTIVE" not in transcript.text
 
 
-async def test_the_divider_renders_above_the_turns_it_kept():
-    """Transcript order, not tree order: the checkpoint is appended at the tip but shown
-    where the fold happened, or it would claim to have folded the turns below it."""
+async def test_the_divider_renders_above_the_request_a_branch_point_fold_left_standing():
+    """Transcript order, not tree order: at a branch point the checkpoint is appended
+    under the reseated request but shown where the fold happened, or it would claim to
+    have folded the request still waiting on its answer."""
     async with client_app() as (_client, app):
         store = app.state.conversations
         cid = await store.create_conversation(OPERATOR_ID)
         for i in range(4):
             store.record(cid, _turn(f"q{i}", f"a{i}"))
-        assert await _compact(store, cid, keep_turns=2) is not None
+        answer = [m for m in await store.messages_view(cid) if m.role == "assistant"][-1]
+        assert await store.regenerate_point(cid, answer.id)
+        assert await _compact(store, cid) is not None
 
         views = await store.messages_view(cid)
         roles = [v.role for v in views]
         assert roles.count("compaction") == 1
         divider = roles.index("compaction")
         assert views[divider].content == "SUMMARY"
-        # Everything before the divider is what was folded; q2 opens the retained tail.
-        assert [v.content for v in views[:divider] if v.role == "user"] == ["q0", "q1"]
-        assert [v.content for v in views[divider + 1 :] if v.role == "user"] == ["q2", "q3"]
+        # Everything before the divider is what was folded; q3 is still standing below it.
+        assert [v.content for v in views[:divider] if v.role == "user"] == ["q0", "q1", "q2"]
+        assert [v.content for v in views[divider + 1 :] if v.role == "user"] == ["q3"]
 
 
 # --- the engine trigger ------------------------------------------------------
@@ -819,9 +715,9 @@ async def test_the_plans_anchor_names_the_rendered_turn_the_divider_follows():
         for i in range(4):
             store.record(cid, _turn(f"q{i}", f"a{i}"))
 
-        plan = await store.compaction_plan(cid, keep_turns=2)
+        plan = await store.compaction_plan(cid)
         assert plan is not None
-        assert await _compact(store, cid, keep_turns=2) is not None
+        assert await _compact(store, cid) is not None
 
         views = await store.messages_view(cid)
         divider = next(i for i, v in enumerate(views) if v.role == "compaction")
@@ -869,9 +765,10 @@ async def test_the_library_really_does_merge_and_its_own_index_is_not_a_substitu
     history = [
         ModelRequest(parts=[UserPromptPart(content="first")]),
         ModelResponse(parts=[TextPart(content="answered")]),
-        # What a compaction checkpoint in front of a retained tail produces.
+        # What a checkpoint in front of the request a branch-point fold left standing
+        # produces.
         ModelRequest(parts=[UserPromptPart(content="checkpoint")]),
-        ModelRequest(parts=[UserPromptPart(content="tail")]),
+        ModelRequest(parts=[UserPromptPart(content="standing")]),
     ]
     naive_start = len(history)
 
@@ -938,9 +835,6 @@ def test_the_policy_resolves_from_config_defaults():
     assert policy.enabled is True
     # 80%, not 95%: a fold at 95% leaves no room for the turn that triggered it.
     assert policy.threshold == pytest.approx(0.80)
-    # The last few exchanges survive verbatim — a summary is at its most lossy about the
-    # work in flight, which is exactly the work the next turn continues.
-    assert policy.keep_turns == 3
 
 
 def test_the_policy_takes_operator_overrides():
@@ -1061,8 +955,8 @@ async def test_manual_compact_folds_and_announces_itself(monkeypatch):
 
 
 async def test_manual_compact_blocks_when_there_is_nothing_to_fold(monkeypatch):
-    # With nothing retained after the boundary, "nothing to fold" means an empty thread —
-    # a single exchange is foldable, where a retained tail would have swallowed it.
+    # A fold takes everything since the newest checkpoint, so "nothing to fold" means
+    # nothing has been said — here, an empty thread.
     async with client_app() as (client, app):
         patch_model_resolution(monkeypatch)
         cid = await app.state.conversations.create_conversation(OPERATOR_ID)
@@ -1071,37 +965,18 @@ async def test_manual_compact_blocks_when_there_is_nothing_to_fold(monkeypatch):
         assert "compaction.started" not in _emitted(run)
 
 
-@pytest.mark.parametrize(
-    ("keep", "expected"),
-    [(1, "the last 1 exchange word"), (4, "the last 4 exchanges word")],
-)
-async def test_a_refusal_names_the_retained_tail(monkeypatch, keep, expected):
-    """A thread no longer than the retained tail is the ordinary way to meet this refusal,
-    and "there is nothing to compact" reads, on a thread full of turns, as a broken button.
-    The detail has to name what is actually stopping it — the retained count — so the
-    operator can change it instead of pressing again.
-
-    The count is *set* rather than read off the config default, because the sentence is
-    built from the operator's stored setting: a test that asserted on the default would be
-    asserting on a number it does not control. Both counts because the sentence inflects,
-    and a stray "1 exchanges" is exactly the kind of thing nothing else catches.
-
-    It also pins that the manual trigger reads the **resolved** policy rather than a
-    partial reading of its own — the retained tail is the operator's answer whichever
-    trigger fired, and this is the number that proves it arrived."""
+async def test_manual_compact_folds_a_single_turn_thread(monkeypatch):
+    """The button has no prerequisite. A single prompt the model answered by filling the
+    window is exactly the moment the operator most needs to fold."""
     async with client_app() as (client, app):
         patch_model_resolution(monkeypatch)
-        await client.put("/chat/settings", json={"auto_compact_keep_turns": keep})
         store = app.state.conversations
         cid = await store.create_conversation(OPERATOR_ID)
-        # Exactly the retained tail: real turns, and still nothing above them to fold.
-        for i in range(keep):
-            store.record(cid, _turn(f"q{i}", f"a{i}"))
+        store.record(cid, _turn("q0", "a0"))
 
         run = await _fold_now(client, app, cid)
-        assert run.status is RunStatus.blocked
-        assert expected in run.detail
-        assert "Settings" in run.detail
+        assert run.status is not RunStatus.blocked, run.detail
+        assert "conversation.compacted" in _emitted(run)
 
 
 async def test_a_fold_that_had_something_to_fold_and_failed_says_so(monkeypatch):
@@ -1113,7 +988,7 @@ async def test_a_fold_that_had_something_to_fold_and_failed_says_so(monkeypatch)
         patch_model_resolution(monkeypatch, output_text="")
         store = app.state.conversations
         cid = await store.create_conversation(OPERATOR_ID)
-        for i in range(get_settings().auto_compact_keep_turns + 3):
+        for i in range(4):
             store.record(cid, _turn(f"q{i}", f"a{i}"))
 
         run = await _fold_now(client, app, cid)
@@ -1167,7 +1042,7 @@ async def test_a_manual_fold_and_an_automatic_one_are_the_same_fold(monkeypatch)
 
         async def _thread() -> str:
             cid = await store.create_conversation(OPERATOR_ID)
-            for i in range(get_settings().auto_compact_keep_turns + 3):
+            for i in range(4):
                 store.record(cid, _turn(f"q{i}", f"a{i}"))
             return cid
 
@@ -1234,7 +1109,7 @@ async def test_the_fold_streams_the_summary_as_it_is_written(monkeypatch):
         patch_model_resolution(monkeypatch, output_text="the story so far")
         store = app.state.conversations
         cid = await store.create_conversation(OPERATOR_ID)
-        for i in range(get_settings().auto_compact_keep_turns + 3):
+        for i in range(4):
             store.record(cid, _turn(f"q{i}", f"a{i}"))
 
         run = await _fold_now(client, app, cid)

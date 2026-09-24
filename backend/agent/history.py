@@ -87,7 +87,7 @@ def merge_consecutive_requests(messages: list[ModelMessage]) -> list[ModelMessag
     one message too far, dropping the operator's own message from the turn it persists.
 
     Two things produce adjacent requests here, and both are load-bearing: a compaction
-    checkpoint hoisted in front of a retained tail that opens on a user prompt, and
+    checkpoint followed by the user prompt of the turn after it, and
     :func:`split_injected_requests`' own output replayed on the *next* turn. Normalizing
     up front costs nothing (the library was going to do exactly this) and makes the index
     honest in both cases. New objects throughout — the store's in-memory tree shares these

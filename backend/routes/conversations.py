@@ -22,12 +22,7 @@ from pydantic import BaseModel, Field
 from agent.attribution import attribute_answer
 from agent.compaction_context import build_compaction_context
 from agent.folding import fold
-from agent.summarize import (
-    FoldFailed,
-    FoldFailure,
-    NothingToFold,
-    resolve_auto_compact_policy,
-)
+from agent.summarize import FoldFailed, FoldFailure, NothingToFold
 from agent.title import title_from_history
 from core.compaction_sections import SummarySection
 from core.config import get_settings
@@ -1332,22 +1327,10 @@ async def set_auto_compact_override(
     return await _compaction_state(request, conversation_id)
 
 
-def _nothing_to_fold(keep_turns: int) -> str:
-    """Why this conversation had nothing to fold, in the operator's terms.
-
-    "There is nothing to compact" is true and useless: the thread plainly has turns in
-    it, so the only reading left is that the button is broken. What it is actually
-    reporting is the retained tail — compaction keeps the last ``keep_turns`` exchanges
-    word for word, so a thread that is not *longer* than the tail has nothing above it to
-    summarize — and naming that turns a dead end into a setting the operator can change."""
-    if keep_turns <= 0:
-        return "There is nothing to fold — this conversation has no turns yet."
-    return (
-        f"Nothing to fold yet. Compaction keeps the last {keep_turns} "
-        f"{'exchange' if keep_turns == 1 else 'exchanges'} word for word, so a thread "
-        "needs more than that before there is anything above them to summarize. The "
-        "retained count is in Settings → Chat."
-    )
+#: Why this conversation had nothing to fold. A fold takes everything since the newest
+#: checkpoint, so the only cause is that nothing has been said since the thread began or
+#: since its last fold.
+_NOTHING_TO_FOLD = "Nothing to fold — there are no new turns since the last compaction."
 
 
 #: What a fold that *had* work to do and did not land tells the operator. One sentence per
@@ -1384,7 +1367,7 @@ async def _run_manual_fold(run: Run, request: Request, pick: RetitleRequest) -> 
     The threshold and the on/off switch are deliberately ignored, and that is the **only**
     thing this trigger does differently from the automatic one: the operator asked for it
     explicitly, so there is nothing left for a trigger to decide. Everything downstream —
-    the retained tail, the input budget, the never-reach-past-an-earlier-checkpoint rule,
+    what gets folded, the input budget, the never-reach-past-an-earlier-checkpoint rule,
     the events, the checkpoint that gets written — is the shared path's.
 
     Failure is reported rather than swallowed, which is the other half of that split. An
@@ -1408,18 +1391,10 @@ async def _run_manual_fold(run: Run, request: Request, pick: RetitleRequest) -> 
     except DegradedCapabilityError as exc:
         run.block(str(exc))
         return
+    # No policy: it says when the automatic triggers fire, and nothing here is a trigger.
     ctx = build_compaction_context(
         store=deps.store(request),
         conversation_id=conversation_id,
-        # The operator's stored preferences with this thread's override folded in — the
-        # same resolution every other fold runs under. Only `keep_turns` is read below,
-        # but resolving the policy whole is what keeps this from being a second, partial
-        # reading of settings that the shared one can drift away from.
-        policy=await resolve_auto_compact_policy(
-            deps.settings_store(request),
-            OPERATOR_ID,
-            override=await deps.store(request).get_compaction_override(conversation_id),
-        ),
         model=utility.model,
         reasoning_off=utility.reasoning_off,
         settings=get_settings(),
@@ -1430,7 +1405,7 @@ async def _run_manual_fold(run: Run, request: Request, pick: RetitleRequest) -> 
         return
     result = await fold(run, ctx, reason="manual")
     if isinstance(result, NothingToFold):
-        run.block(_nothing_to_fold(result.keep_turns))
+        run.block(_NOTHING_TO_FOLD)
     elif isinstance(result, FoldFailed):
         run.block(_FOLD_FAILED[result.cause])
 

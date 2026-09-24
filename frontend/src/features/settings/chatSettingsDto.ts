@@ -8,11 +8,10 @@
  *
  * **The silent mistake is the falsy value.** A PUT here carries only the keys the
  * caller touched, and "touched" has to be an `!== undefined` test rather than a
- * truthiness one, because three of these settings have a meaningful falsy value: keeping
- * **0** exchanges verbatim past a fold is a real choice (let the summary stand for
- * everything), and a **null** wall clock or **null** sub-agent cap is the value that
- * removes the bound. Under a truthiness test all three are dropped on the way out, with no
- * error and no sign — and only for the operators who chose them.
+ * truthiness one, because two of these settings have a meaningful falsy value: a **null**
+ * wall clock or **null** sub-agent cap is the value that removes the bound. Under a
+ * truthiness test both are dropped on the way out, with no error and no sign — and only
+ * for the operators who chose them.
  */
 
 import type { ChatSettings } from "./model";
@@ -20,7 +19,6 @@ import type { ChatSettings } from "./model";
 export interface ChatSettingsDTO {
   auto_compact_enabled: boolean;
   auto_compact_threshold: number;
-  auto_compact_keep_turns: number;
   work_summary_idle_minutes: number;
   context_warn_threshold: number;
   context_alert_threshold: number;
@@ -35,7 +33,6 @@ export function toChatSettings(dto: ChatSettingsDTO): ChatSettings {
   return {
     autoCompactEnabled: dto.auto_compact_enabled,
     autoCompactThreshold: dto.auto_compact_threshold,
-    autoCompactKeepTurns: dto.auto_compact_keep_turns,
     workSummaryIdleMinutes: dto.work_summary_idle_minutes,
     contextWarnThreshold: dto.context_warn_threshold,
     contextAlertThreshold: dto.context_alert_threshold,
@@ -56,8 +53,6 @@ export function toChatSettingsBody(
     body.auto_compact_enabled = patch.autoCompactEnabled;
   if (patch.autoCompactThreshold !== undefined)
     body.auto_compact_threshold = patch.autoCompactThreshold;
-  if (patch.autoCompactKeepTurns !== undefined)
-    body.auto_compact_keep_turns = patch.autoCompactKeepTurns;
   if (patch.workSummaryIdleMinutes !== undefined)
     body.work_summary_idle_minutes = patch.workSummaryIdleMinutes;
   if (patch.contextWarnThreshold !== undefined)

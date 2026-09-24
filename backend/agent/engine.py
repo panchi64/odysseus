@@ -210,8 +210,8 @@ def build_chat_orchestrator(
 
     ``auto_compact`` is the conversation-compaction policy (the operator's default folded
     with any per-thread override; absent ⇒ the config defaults). When the replayed history
-    *plus the turn about to run* would reach its share of ``context_window``, the turns
-    before the retained tail are summarized onto a checkpoint before the agent runs, and
+    *plus the turn about to run* would reach its share of ``context_window``, everything
+    since the newest checkpoint is summarized onto a new one before the agent runs, and
     the turn continues from that summary. The same fold is the recovery when a provider
     refuses an over-long request mid-turn. The summarizer is ``utility_model`` — the same
     cheap model the namer and the judge use — and ``utility_context_window`` is that

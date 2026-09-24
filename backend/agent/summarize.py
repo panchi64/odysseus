@@ -30,12 +30,11 @@ turns chunked to fit rather than elided) and :mod:`agent.compaction_summary` han
 comes back (anchors carried across folds verbatim, tool-sourced facts fenced on the way
 into the checkpoint). This module owns *when* a thread folds and *what is recorded*.
 
-``auto_compact_keep_turns`` is **3** by default, and is an operator setting beside the
-threshold rather than a config-only knob. The boundary is a turn start, so the last three
-exchanges are replayed word for word under the summary: a summary is at its most lossy
-about the work in flight, which is exactly the work the next turn continues. 0 is still a
-legal choice — the summary then *is* the whole replay — and the operator makes it in
-Settings, not in a deploy's environment.
+**A fold keeps no retained tail.** It summarizes everything since the newest checkpoint —
+that checkpoint's own summary included — and the new summary alone carries the thread
+from there: nothing is replayed word for word beneath it. A single exchange that filled
+the window folds whole; only a thread with nothing after its newest checkpoint has
+nothing to fold.
 """
 
 from __future__ import annotations
@@ -90,20 +89,16 @@ class AutoCompactPolicy:
 
     enabled: bool
     threshold: float
-    keep_turns: int
 
 
 @dataclass(frozen=True)
 class NothingToFold:
-    """The thread had nothing above the retained tail, so no fold was attempted.
+    """Nothing followed the thread's newest checkpoint, so no fold was attempted.
 
     Not a failure, and the distinction is the whole reason this is its own type: a fold
     that found nothing to do and a fold that tried and could not are the same ``None`` to
     a caller, and reporting the second as the first is what makes a broken button look
-    like an empty conversation. ``keep_turns`` is what the tail was measured at, so the
-    sentence a caller writes can name the setting rather than the symptom."""
-
-    keep_turns: int
+    like an empty conversation (``ConversationStore.compaction_plan``)."""
 
 
 #: Why a fold that had work to do did not land. ``summarizer_empty`` is a model that
@@ -154,18 +149,12 @@ def build_auto_compact_policy(
     *,
     enabled: bool | None = None,
     threshold: float | None = None,
-    keep_turns: int | None = None,
 ) -> AutoCompactPolicy:
     """Resolve the effective policy from the config defaults, with optional operator
-    overrides.
-
-    ``keep_turns`` takes ``None`` for "not overridden" rather than treating 0 as unset: 0 is
-    a choice the operator can make (the summary becomes the whole replay), so it has to be
-    distinguishable from an absent preference."""
+    overrides."""
     return AutoCompactPolicy(
         enabled=settings.auto_compact_enabled if enabled is None else enabled,
         threshold=settings.auto_compact_threshold if threshold is None else threshold,
-        keep_turns=settings.auto_compact_keep_turns if keep_turns is None else keep_turns,
     )
 
 
@@ -182,7 +171,6 @@ async def resolve_auto_compact_policy(
         get_settings(),
         enabled=resolve_compaction_enabled(override, stored.enabled),
         threshold=stored.threshold,
-        keep_turns=stored.keep_turns,
     )
 
 
@@ -230,7 +218,6 @@ async def compact_conversation(
     model: Model,
     reason: CompactionReason,
     reasoning_off: ModelSettings | None = None,
-    keep_turns: int | None = None,
     settings: Settings | None = None,
     max_input_tokens: int | None = None,
     on_plan: Callable[[CompactionPlan], None] | None = None,
@@ -266,10 +253,9 @@ async def compact_conversation(
     mid-turn overflow recovery, the operator's own button — and a default here would let a
     new one silently record the most common answer instead of its own."""
     cfg = settings or get_settings()
-    tail = cfg.auto_compact_keep_turns if keep_turns is None else keep_turns
-    plan = await store.compaction_plan(conversation_id, keep_turns=tail)
+    plan = await store.compaction_plan(conversation_id)
     if plan is None:
-        return NothingToFold(keep_turns=tail)
+        return NothingToFold()
     if on_plan is not None:
         on_plan(plan)
     summary = await summarize_history(

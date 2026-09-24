@@ -502,8 +502,8 @@ describe("whose queued message it is", () => {
 
 describe("a fold that declines still says why", () => {
   // The whole point of the button is that a fold is no longer silent, and the most
-  // likely way for it to do nothing is the case where it never starts: the thread is
-  // not longer than the retained tail, so there is nothing above it to summarize. No
+  // likely way for it to do nothing is the case where it never starts: nothing has been
+  // said since the thread's last fold, so there is nothing to summarize. No
   // `compaction.started` is emitted then, so there is no live turn to clean up — and
   // keying the report on that cleanup made this exact case go quiet again.
   const ended = (detail: string): RunEvent =>

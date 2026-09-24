@@ -1,6 +1,6 @@
 """The compaction summary's section contract, as a parser.
 
-``prompts/utility.py`` asks the summarizer for eight fixed headings, and that roster is a
+``prompts/utility.py`` asks the summarizer for a fixed roster of headings, and that roster is a
 **parsed contract rather than a style guide**: the carry-forward reads `Anchors` out of it
 verbatim, and `fence_tool_facts` uses it to decide where the untrusted fence closes. Both
 of those, and the operator's own transcript, need the same answer to "what are this

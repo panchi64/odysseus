@@ -65,9 +65,9 @@ REVEALED = {"browse_open_page", "browse_delete_page"}
 #: unmeasured overhead would fold every one of them on sight.
 _NO_OVERHEAD = TurnOverhead(system=0, tools=0)
 
-#: Fold everything: with one seeded turn there is no tail to keep, and the checkpoint is
-#: then the whole of what the retried request replays.
-_FOLD_ALL = AutoCompactPolicy(enabled=True, threshold=0.80, keep_turns=0)
+#: A fold keeps nothing verbatim, so the checkpoint is the whole of what the retried
+#: request replays.
+_FOLD_ALL = AutoCompactPolicy(enabled=True, threshold=0.80)
 
 
 def _categories():
@@ -562,7 +562,7 @@ async def test_the_carried_reveal_persists_with_the_checkpoint():
         _seed_revealed_turn(store, cid)
 
         outcome = await compact_conversation(
-            store, cid, reason="manual", model=TestModel(custom_output_text="so far"), keep_turns=0
+            store, cid, reason="manual", model=TestModel(custom_output_text="so far")
         )
         assert outcome is not None
         await store._worker.join()
@@ -589,7 +589,7 @@ async def test_a_second_fold_inherits_the_first_folds_reveal():
         _seed_revealed_turn(store, cid)
 
         model = TestModel(custom_output_text="so far")
-        assert await compact_conversation(store, cid, reason="manual", model=model, keep_turns=0)
+        assert await compact_conversation(store, cid, reason="manual", model=model)
         store.record(
             cid,
             [
@@ -597,7 +597,7 @@ async def test_a_second_fold_inherits_the_first_folds_reveal():
                 ModelResponse(parts=[TextPart(content="carried")]),
             ],
         )
-        assert await compact_conversation(store, cid, reason="manual", model=model, keep_turns=0)
+        assert await compact_conversation(store, cid, reason="manual", model=model)
 
         replayed = await store.model_history(cid)
         assert len(replayed) == 1  # the second checkpoint absorbed the first
@@ -618,7 +618,7 @@ async def test_a_fold_records_no_delta_when_nothing_was_revealed():
             ],
         )
         assert await compact_conversation(
-            store, cid, reason="manual", model=TestModel(custom_output_text="so far"), keep_turns=0
+            store, cid, reason="manual", model=TestModel(custom_output_text="so far")
         )
         parts = [p for m in await store.model_history(cid) for p in m.parts]
         assert [type(p).__name__ for p in parts] == ["UserPromptPart"]

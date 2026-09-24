@@ -535,15 +535,13 @@ class Settings(BaseSettings):
     # Conversation auto-compaction — the **only** context reduction that fires on measured
     # pressure rather than unconditionally. Once a thread's *projected* footprint (what is
     # already in the replay plus the prompt and context about to be added) reaches
-    # `auto_compact_threshold` of the model's context window, everything older than the last
-    # `auto_compact_keep_turns` exchanges is summarized by the utility model into one
-    # checkpoint, and the thread carries on from that summary plus the retained turns.
+    # `auto_compact_threshold` of the model's context window, everything since the newest
+    # checkpoint is summarized by the utility model into one new checkpoint, and the thread
+    # carries on from that summary alone — no turns are retained verbatim beneath it.
     # The threshold is 0.80, not the old 0.95: at 95% the fold leaves no room for the turn
-    # that triggered it, so the very next request overflows anyway. `auto_compact_keep_turns`
-    # is 3, not 0 — a summary is lossy about the exchange in flight, and the last few turns
-    # verbatim are what keeps a fold from derailing the work the operator is mid-way through.
-    # Nothing is deleted: the operator's transcript keeps every turn, and only what is
-    # re-sent to the model shrinks. It fires **between** turns, in the orchestrator prelude,
+    # that triggered it, so the very next request overflows anyway. Nothing is deleted:
+    # the operator's transcript keeps every turn, and only what is re-sent to the model
+    # shrinks. It fires **between** turns, in the orchestrator prelude,
     # so it can never disturb reasoning already in flight — with one exception: a provider
     # context-overflow inside a turn folds once and retries the failed request.
     # `auto_compact_input_max_tokens` bounds the transcript handed to the summarizer, which
@@ -554,12 +552,11 @@ class Settings(BaseSettings):
     # `<think>` block on a runtime that ignores the reasoning-off lever.
     # `auto_compact_timeout_s` sits *below* `run_inactivity_timeout_s` (120s) on purpose:
     # a summarizer allowed to run as long as the watchdog would let the watchdog kill the
-    # run it was trying to save. Enabled/threshold/keep-turns are the *defaults* — the
+    # run it was trying to save. Enabled/threshold are the *defaults* — the
     # operator overrides them at runtime via `PUT /chat/settings`, and enablement per thread
     # via `/conversations/{id}`.
     auto_compact_enabled: bool = True
     auto_compact_threshold: float = 0.80
-    auto_compact_keep_turns: int = 3
     auto_compact_input_max_tokens: int = 32000
     auto_compact_max_tokens: int = 4096
     auto_compact_timeout_s: float = 100.0

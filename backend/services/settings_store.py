@@ -22,24 +22,15 @@ from runs import DEFAULT_CONTEXT_THRESHOLDS, ContextThresholds
 # Conversation auto-compaction (agent/summarize.py) — the product's one pressure-driven
 # context reduction: whether to fold a thread's older turns into a utility-model summary
 # once its footprint reaches `threshold` of the model's context window, expressed as a
-# fraction (0.80 = 80%), and how many of the most recent exchanges survive the fold
-# verbatim. Keep-turns is an operator setting rather than config-only because it is the
-# dial that decides how much of the work in flight a fold is allowed to blur.
+# fraction (0.80 = 80%).
 AUTO_COMPACT_ENABLED_KEY = "chat.auto_compact_enabled"
 AUTO_COMPACT_THRESHOLD_KEY = "chat.auto_compact_threshold"
-AUTO_COMPACT_KEEP_TURNS_KEY = "chat.auto_compact_keep_turns"
-
-# The ceiling on retained exchanges. Not a safety bound on the store but a sanity one: a
-# keep-turns high enough to retain the whole thread would make the fold a no-op at exactly
-# the moment the thread is out of room. Shared with the route so the wire's bound and the
-# store's fallback rule can't drift.
-AUTO_COMPACT_KEEP_TURNS_MAX = 20
 
 # The per-conversation work summary (services/work_summaries.py): how many minutes a thread
 # must have been quiet before the background sweep writes an account of what the agent did
-# in it. An operator setting rather than config-only for the same reason keep-turns is one —
-# how long a pause has to be before it counts as *leaving* a thread is a property of how
-# somebody works, and the band is either there when they come back or it is useless.
+# in it. An operator setting rather than config-only because how long a pause has to be
+# before it counts as *leaving* a thread is a property of how somebody works, and the band
+# is either there when they come back or it is useless.
 WORK_SUMMARY_IDLE_MINUTES_KEY = "chat.work_summary_idle_minutes"
 
 # The ceiling on that idle window. A sanity bound, not a safety one: a window measured in
@@ -304,13 +295,10 @@ def _bounded_int_or(raw: str | None, default: int, *, maximum: int, minimum: int
 class AutoCompactSettings:
     """The operator's effective conversation auto-compaction preferences. ``threshold`` is
     a fraction of the model's context window, not a percentage — the UI presents it as one,
-    but the wire and the store carry the same 0–1 quantity the context meter already uses.
-    ``keep_turns`` is how many of the most recent exchanges the fold replays verbatim; 0 is
-    a legitimate choice (the summary is the whole replay), not a missing value."""
+    but the wire and the store carry the same 0–1 quantity the context meter already uses."""
 
     enabled: bool
     threshold: float
-    keep_turns: int
 
 
 def _float_or(raw: str | None, default: float) -> float:
@@ -363,18 +351,10 @@ async def get_auto_compact(store: SettingsStore, owner_id: str) -> AutoCompactSe
     """The operator's effective conversation auto-compaction settings — runtime overrides
     where set (and valid), else the config defaults. One batched read for the group."""
     cfg = get_settings()
-    values = await store.get_many(
-        owner_id,
-        (AUTO_COMPACT_ENABLED_KEY, AUTO_COMPACT_THRESHOLD_KEY, AUTO_COMPACT_KEEP_TURNS_KEY),
-    )
+    values = await store.get_many(owner_id, (AUTO_COMPACT_ENABLED_KEY, AUTO_COMPACT_THRESHOLD_KEY))
     return AutoCompactSettings(
         enabled=_bool_or(values.get(AUTO_COMPACT_ENABLED_KEY), cfg.auto_compact_enabled),
         threshold=_float_or(values.get(AUTO_COMPACT_THRESHOLD_KEY), cfg.auto_compact_threshold),
-        keep_turns=_bounded_int_or(
-            values.get(AUTO_COMPACT_KEEP_TURNS_KEY),
-            cfg.auto_compact_keep_turns,
-            maximum=AUTO_COMPACT_KEEP_TURNS_MAX,
-        ),
     )
 
 
@@ -386,7 +366,6 @@ async def set_auto_compact(
         owner_id, AUTO_COMPACT_ENABLED_KEY, "true" if settings.enabled else "false"
     )
     await store.set(owner_id, AUTO_COMPACT_THRESHOLD_KEY, str(settings.threshold))
-    await store.set(owner_id, AUTO_COMPACT_KEEP_TURNS_KEY, str(settings.keep_turns))
     return settings
 
 

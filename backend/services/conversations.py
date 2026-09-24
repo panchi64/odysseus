@@ -416,13 +416,11 @@ def _is_turn_start(path: list[_Node], index: int) -> bool:
     Not every user-prompt request opens a turn. A message the operator sends *while a run
     is executing* is persisted as its own request sitting directly behind the tool-return
     request it was injected into (the engine's injected-request split), so counting bare
-    user prompts would read a mid-run aside as a whole exchange — and a compaction that
-    keeps "the last two turns" would keep two asides and fold a real one.
+    user prompts would read a mid-run aside as a whole exchange.
 
     A checkpoint counts as a predecessor because the first turn after a fold is a real
-    turn: reading only "follows a response" would drop it from the count and let
-    ``compaction_plan`` decide there was nothing to fold with a whole exchange more than
-    ``keep_turns`` standing after the checkpoint."""
+    turn: reading only "follows a response" would skip it, and a later fold that ends in
+    that turn would anchor its divider on the turn before the checkpoint."""
     if not _opens_turn(path[index]):
         return False
     if index == 0:
@@ -1153,17 +1151,22 @@ class ConversationStore:
             command=stamped_command(message), file_refs=stamped_file_refs(message)
         )
 
-    async def compaction_plan(
-        self, conversation_id: str, *, keep_turns: int
-    ) -> CompactionPlan | None:
+    async def compaction_plan(self, conversation_id: str) -> CompactionPlan | None:
         """What compacting this conversation right now would fold, or ``None`` when it
         would fold nothing.
 
-        The boundary is the ``keep_turns``-th-from-last turn start **after the newest
-        existing checkpoint**, so a compaction can never reach back past an earlier one and
-        re-expose its summary as an ordinary turn. Cutting at a turn start is also what
-        keeps the retained tail replayable: a turn always opens with an operator prompt, so
-        the split can't strand an assistant tool call from its result.
+        A fold takes **everything the model replays** — the newest checkpoint's summary,
+        if there is one, and every node after it — and nothing stays verbatim beneath the
+        new summary: the summary alone carries the thread from here. Folding the newest
+        checkpoint in with the rest is what keeps a compaction from reaching back past an
+        earlier one and re-exposing its summary as an ordinary turn; the old summary is
+        absorbed into the new one instead. Cutting at the end of the path also means the
+        split can never strand an assistant tool call from its result.
+
+        The only thread with nothing to fold is one where **nothing follows the newest
+        checkpoint** on the active path — a thread that has just been folded, or has no
+        messages at all. A single exchange folds: a lone prompt the model answered by
+        filling the window is the thread that most needs it.
 
         A leaf that already has children is a **branch point** — a regenerate or edit has
         reseated the leaf and its run hasn't recorded yet — and it folds like any other.
@@ -1174,24 +1177,21 @@ class ConversationStore:
         window — the one moment it could not happen.
 
         At a branch point the boundary is held one node short of the leaf, so the request
-        about to be re-answered is never itself folded away: with ``keep_turns=0`` the cut
-        is otherwise ``len(path)``, and a regenerate replaying only the summary would be
-        answering the fold instead of the operator."""
+        about to be re-answered is never itself folded away: the cut is otherwise
+        ``len(path)``, and a regenerate replaying only the summary would be answering the
+        fold instead of the operator. The same hold is why a checkpoint just appended at a
+        branch point is a tip with nothing after it: the request it left standing is before
+        it on the path, and is still waiting on its answer."""
         tree = await self._tree(conversation_id)
         leaf = tree.active_leaf_id
         if leaf is None:
             return None
         path = tree.active_path()
         checkpoint, _ = _checkpoint_split(path)
-        starts = [i for i in range(checkpoint + 1, len(path)) if _is_turn_start(path, i)]
-        if len(starts) <= keep_turns:
+        boundary = len(path) - 1 if tree.children.get(leaf) else len(path)
+        if boundary <= checkpoint + 1:
             return None
-        boundary = starts[-keep_turns] if keep_turns > 0 else len(path)
-        if tree.children.get(leaf):
-            boundary = min(boundary, len(path) - 1)
         folded = _replay_nodes(path, stop=boundary)
-        if not folded:
-            return None
         through_id = path[boundary - 1].id
         return CompactionPlan(
             messages=[node.message for node in folded],
