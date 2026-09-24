@@ -447,11 +447,21 @@ between them; both drop down the sides as the sides close; and the glass surface
 resolves inside the frame that has just been described. Closing runs the gesture
 in reverse, so the region is taken apart rather than switched off.
 
-Three surfaces use it, and the list is meant to stay short: the chat **View**,
-the **settings dialog**, and the **⌘K palette**. It is the arrival of a place, so
+Four surfaces use it, and the list is meant to stay short: the chat **View**,
+the **settings dialog**, the **⌘K palette**, and the composer's **context
+breakdown** (the panel behind the context ring). It is the arrival of a place, so
 it belongs to things that are places. A menu, a toast, a confirm and a form
 dialog all keep the ordinary reveal — being *built* would be theatre at that
 size, and the gesture stops meaning anything if everything performs it.
+
+The context breakdown is the one that looks like a popover, and what puts it on
+the list is what it's *for*, not its size. The operator opens it to read at their
+own pace — what the context window is full of, and which of those answers calls for
+which action — and points at it while they do. That is a place they went to.
+A menu is the opposite act: a choice made on the way to something else, dismissed
+the moment it's made. So the composer's level picker and model picker, which sit
+beside the ring, stay menus. Two things side by side arriving differently is the
+distinction doing its job, not an inconsistency.
 
 It runs at the **stage budget (320ms)**, which is not a new exception to the
 ceiling below: the ceiling governs what the operator is waiting on, and a whole
