@@ -18,6 +18,9 @@ Two domains:
   of its declaration instead of in a branch at the engine.
 - :mod:`prompts.utility` — the cheap background calls (the thread **namer**, the
   deliverable **judge**) that run on the utility model.
+- :mod:`prompts.compaction` — the request that asks the main model to fold its own
+  thread (appended to its conversation, never part of its brief), and the section
+  roster and label the stored summary is parsed by.
 
 Prompts are plain Python string constants so callers compose them the same way
 they compose any other value (``.format(...)`` for the templated ones). Import

@@ -10,7 +10,7 @@ checkpoint's sections" — so the parse lives here, once, below everything that 
 ``agent/compaction_summary.py`` imports ``services.conversation_view``, so anything in
 ``services`` (the conversation projection, which renders a checkpoint on a cold read) could
 not import the parser back from ``agent`` without a cycle. This module imports only
-``prompts.utility`` and ``core.untrusted``, both leaves, so the producer, the live event and
+``prompts.compaction`` and ``core.untrusted``, both leaves, so the producer, the live event and
 the cold-read projection can all reach it.
 
 **The roster is a security boundary, not a convenience.** The summarizer is asked to quote
@@ -28,7 +28,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from prompts.utility import (
+from prompts.compaction import (
     COMPACT_ANCHORS_SECTION,
     COMPACT_MARKER,
     COMPACT_PREAMBLE,
@@ -202,7 +202,7 @@ def summary_sections(text: str) -> list[SummarySection]:
     """Split a stored checkpoint into the sections a renderer should show.
 
     Only sections actually present are returned, in roster order — the prompt allows the
-    summarizer to omit one the transcript said nothing about, and an omitted section is not
+    summarizer to omit one the conversation said nothing about, and an omitted section is not
     an empty one. The ``COMPACT_PREAMBLE`` is never a section; neither are the fence
     markers, whose nonce is addressed to the model.
 

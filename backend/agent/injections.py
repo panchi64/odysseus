@@ -48,7 +48,7 @@ from pydantic_ai.models import ModelRequestContext
 from core.text import CHARS_PER_TOKEN_PROSE, truncate_on_boundary
 from runs import INJECTED_TEXT_LIMIT, ContextInjected, Run
 
-from .emit import ChassisEvent
+from .emit import ChassisEvent, is_side_run
 
 
 def contributor_id(provider: Callable[..., Any]) -> str:
@@ -144,6 +144,11 @@ class AnnounceInjections(AbstractCapability[Any]):
     async def before_model_request(
         self, ctx: RunContext[Any], request_context: ModelRequestContext
     ) -> ModelRequestContext:
+        # A side run (the compaction summary) sends the same brief on the same agent, and
+        # its stream reaches nobody — marking the parts seen there would leave the turn's
+        # own first request announcing nothing.
+        if is_side_run(ctx):
+            return request_context
         for body in self.announce(request_context.model_request_parameters.instruction_parts):
             await ctx.emit(ChassisEvent(body=body))
         return request_context

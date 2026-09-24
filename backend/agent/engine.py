@@ -52,6 +52,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from pydantic_ai import (
+    Agent,
     DeferredToolResults,
     ModelMessage,
     ModelRequest,
@@ -60,7 +61,7 @@ from pydantic_ai import (
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
-from core.config import get_settings
+from core.config import Settings, get_settings
 from core.container import ServiceContainer
 from runs import (
     DEFAULT_CONTEXT_THRESHOLDS,
@@ -85,9 +86,11 @@ from tools import (
 
 from .attribution import attribute_answer, last_answer_id, tool_results
 from .code_mode import code_mode_limits
+from .compaction_context import build_compaction_context
 from .factory import NO_DORMANT, build_agent
 from .finalize import finalize, flush_recorder, parked_context, persist_parked_cancel
 from .flush import PersistContext, TurnFlush
+from .folding import fold
 from .history import TurnStart
 from .meta import Judge, make_utility_judge
 from .naming import (
@@ -98,12 +101,78 @@ from .naming import (
 )
 from .parking import DEFAULT_BINDING, ParkedTurn
 from .prelude import TurnSetup, prepare_turn
-from .summarize import AutoCompactPolicy
+from .summarize import AutoCompactPolicy, FoldResult
 from .title import last_user_text
-from .turn import NO_CAPS, TurnResult, drive_turn
+from .turn import NO_CAPS, TurnResult, drive_turn, turn_deps
 from .verify import should_verify, verify_and_correct
 
 logger = logging.getLogger(__name__)
+
+
+def turn_agent(
+    model: Model,
+    *,
+    categories: Any = None,
+    dormant: Mapping[str, str] = NO_DORMANT,
+    instruction_providers: Sequence[InstructionProvider] = (),
+    settings: Settings,
+) -> Agent:
+    """The agent a chat turn runs on — and the one its compaction summary is written on.
+
+    One function for both because the summary's whole value is that its request matches
+    the turn's: the same brief and the same tool array in front of the same messages, so a
+    local engine serves it from the prefix it already holds. An operator's hand-started
+    fold composes its agent here too, rather than a lookalike that could drift."""
+    return build_agent(
+        model,
+        categories=categories,
+        instruction_providers=instruction_providers,
+        dormant=dormant,
+        code_mode=code_mode_limits(settings),
+    )
+
+
+async def fold_now(
+    run: Run,
+    *,
+    model: Model,
+    store: ConversationStore,
+    conversation_id: str,
+    categories: Any = None,
+    dormant: Mapping[str, str] = NO_DORMANT,
+    instruction_providers: Sequence[InstructionProvider] = (),
+    capabilities: ServiceContainer = NO_CAPS,
+    disabled_tools: frozenset[str] = frozenset(),
+    binding: ConversationBinding = DEFAULT_BINDING,
+    workspace_key: str = "",
+) -> FoldResult:
+    """The operator's own fold, on the agent and deps a chat turn on this thread would run
+    with — so the summary is written by the thread's main model, exactly as an automatic
+    fold's is. No policy: nothing here is a trigger, so there is nothing to decide."""
+    settings = get_settings()
+    agent = turn_agent(
+        model,
+        categories=categories,
+        instruction_providers=instruction_providers,
+        dormant=dormant,
+        settings=settings,
+    )
+    ctx = build_compaction_context(
+        store=store,
+        conversation_id=conversation_id,
+        agent=agent,
+        deps=turn_deps(
+            run,
+            caps=capabilities,
+            disabled_tools=disabled_tools,
+            conversation_id=conversation_id,
+            binding=binding,
+            workspace_key=workspace_key,
+        ),
+        settings=settings,
+    )
+    assert ctx is not None  # noqa: S101 — a store and a conversation always make one
+    return await fold(run, ctx, reason="manual")
 
 
 def build_chat_orchestrator(
@@ -131,7 +200,6 @@ def build_chat_orchestrator(
     command: Invocation | None = None,
     vision: bool = False,
     auto_compact: AutoCompactPolicy | None = None,
-    utility_context_window: int | None = None,
     disabled_tools: frozenset[str] = frozenset(),
     binding: ConversationBinding = DEFAULT_BINDING,
     request_limit: int | None = None,
@@ -213,9 +281,9 @@ def build_chat_orchestrator(
     *plus the turn about to run* would reach its share of ``context_window``, everything
     since the newest checkpoint is summarized onto a new one before the agent runs, and
     the turn continues from that summary. The same fold is the recovery when a provider
-    refuses an over-long request mid-turn. The summarizer is ``utility_model`` — the same
-    cheap model the namer and the judge use — and ``utility_context_window`` is that
-    model's own window, which bounds the transcript it is handed.
+    refuses an over-long request mid-turn. The summary is written by this turn's own agent
+    on ``model`` — the conversation continuing, so the engine's cached prefix is reused —
+    never by the utility model.
     """
 
     async def orchestrate(run: Run) -> None:
@@ -231,18 +299,18 @@ def build_chat_orchestrator(
             if auto_compact is not None
             else None
         )
-        agent = build_agent(
+        agent = turn_agent(
             model,
             categories=categories,
             instruction_providers=instruction_providers,
             dormant=dormant,
-            code_mode=code_mode_limits(settings),
+            settings=settings,
         )
         announced: set[str] = set()
 
         # --- the stop-flush hooks, armed before anything that can suspend -------------
-        # Everything in the prelude below awaits (a history read, a whole utility-model
-        # fold under its own timeout, attachment staging, the context providers) and none
+        # Everything in the prelude below awaits (a history read, a whole fold with no
+        # time limit, attachment staging, the context providers) and none
         # of it emits, so the inactivity watchdog is ticking against a run that looks idle
         # — and the compaction bound and the inactivity bound share a default, so a fold
         # running to its own limit trips it. Armed after that window, the hooks would be
@@ -363,6 +431,7 @@ def build_chat_orchestrator(
         await prepare_turn(
             setup,
             run,
+            agent,
             prompt=prompt,
             store=store,
             conversation_id=conversation_id,
@@ -376,9 +445,7 @@ def build_chat_orchestrator(
             binding=binding,
             prompt_context_providers=prompt_context_providers,
             auto_compact=auto_compact,
-            utility_model=utility_model,
-            utility_settings=utility_settings,
-            utility_context_window=utility_context_window,
+            disabled_tools=disabled_tools,
             context_window=context_window,
             title_model=title_model,
             title_settings=title_settings,

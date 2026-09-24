@@ -41,6 +41,18 @@ class ProviderPreset:
     vision: bool = False
 
 
+@dataclass(frozen=True)
+class ModelLimits:
+    """What a provider reports about one model's size limits — None wherever it doesn't
+    say. Discovered, never tabled: a hard-coded figure is right until the day a new
+    model or a beta quietly makes it wrong."""
+
+    # The input ceiling a prompt must fit — what the gauge and the fold trigger measure.
+    context_window: int | None = None
+    # The largest `max_tokens` one response may ask for.
+    max_output_tokens: int | None = None
+
+
 @runtime_checkable
 class Provider(Protocol):
     """One model-API family. Stateless; safe to share across requests."""
@@ -65,7 +77,7 @@ class Provider(Protocol):
         URL. The window that matters is the one the server will accept.
 
         ``spec.context_window`` is the answer to the right question: the registry funnels
-        every resolution through ``_with_context_windows``, which prefers the operator's
+        every resolution through ``_with_model_limits``, which prefers the operator's
         own figure and otherwise probes the server. **When it is set, it wins** — in
         every adapter.
 
@@ -110,6 +122,29 @@ class Provider(Protocol):
         OpenAI-compatible server happily serves a 256k model and a 32k model at the
         same base URL, and a window cached against the endpoint would be wrong for one
         of them."""
+        ...
+
+    async def model_limits(
+        self, base_url: str, api_key: str | None, model: str, *, client: object = None
+    ) -> ModelLimits:
+        """Every limit ``model`` reports, in one lookup — what the registry asks.
+
+        The window from :meth:`context_window`, plus the largest ``max_tokens`` one
+        response may request. One call rather than one per fact because a provider that
+        states both states them on the same catalog row, and asking twice would be two
+        round-trips for one answer. An adapter that knows only the window returns
+        ``ModelLimits(context_window=await self.context_window(...))``.
+
+        The output ceiling exists for one library behavior. Pydantic AI's
+        ``AnthropicModel`` must send ``max_tokens`` — the Messages API requires it — and
+        substitutes 4096 when no layer supplied one, so every answer and every summary
+        a caller left unbounded is silently cut at 4096 tokens. The model's own
+        advertised maximum is the honest reading of "unbounded"; ``build_model`` puts it
+        on the model's standing settings, where a request's own ``max_tokens`` still
+        wins. The OpenAI and Gemini wires treat an absent value as the server's own
+        limit, so there is nothing to supply and they report None.
+
+        **Never raises**, for the reason :meth:`context_window` gives."""
         ...
 
     def reasoning_off(self, descriptor: ModelDescriptor) -> ModelSettings:

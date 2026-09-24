@@ -7,9 +7,8 @@ summariser has to read model-authored text — what the agent did is only in its
 and tool calls — so the operator's turns stand in the clear and everything else is fenced.
 A regression there does not break the feature; it quietly hands a small, unguarded model a
 web page's instructions wearing the workspace's voice, and stores the result as the
-thread's own account of itself. Tool *returns* are excluded outright, which is the one
-place this differs from the compaction transcript, and that exclusion is load-bearing for
-the same reason.
+thread's own account of itself. Tool *returns* are excluded outright, and that exclusion is
+load-bearing for the same reason.
 
 The **sweep** is the half with an economic property: every candidate it picks is a model
 call, so each of the three conditions it applies is tested from both sides. A thread still

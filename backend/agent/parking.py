@@ -125,7 +125,7 @@ class ParkedTurn:
     # What this turn may fold with, carried for the same reason `binding` is: a resume
     # continues a turn that was already near the model's ceiling, and the recovery it needs
     # when a request overruns cannot be re-derived here — the resume orchestrator has no
-    # settings store, no policy and no utility model. None ⇒ this turn cannot fold.
+    # settings store and no policy. None ⇒ this turn cannot fold.
     compaction: CompactionContext | None = None
     # Which workspace the turn was working in, carried for exactly the reason `binding` is:
     # a sub-agent parks on an approval like any other turn, and a resume that let this

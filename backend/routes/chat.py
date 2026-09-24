@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -180,7 +181,7 @@ class ChatCreated(BaseModel):
 class ChatSettings(BaseModel):
     """Operator-tunable chat preferences. The ``auto_compact*`` fields tune conversation
     compaction — the product's one context reduction: fold older *turns* into a
-    utility-model summary once the context window fills.
+    summary the thread's own model writes once the context window fills.
     ``agent_request_limit`` is how many model round-trips one turn may spend before it
     stops. They're optional on a PUT — an omitted one is left unchanged — and always
     populated on a GET. snake_case out, matching the rest of the ``/chat`` surface.
@@ -245,21 +246,26 @@ class ChatSettings(BaseModel):
     subagent_max_concurrent: int | None = Field(default=None, ge=1)
 
 
+#: What :func:`resolve_turn_models` resolves: the main model, the background model, its
+#: reasoning-off settings, the main model's context window, and whether the main model
+#: reads images.
+type TurnModels = tuple[Model, Model, ModelSettings | None, int | None, bool]
+
+
 async def resolve_turn_models(
     model_registry: ModelRegistry,
     endpoint_id: str | None,
     model: str | None,
     *,
     owner_id: str = OPERATOR_ID,
-) -> tuple[Model, Model, ModelSettings | None, int | None, bool, int | None]:
+) -> TurnModels:
     """Resolve the `main` model plus the background (utility/title) pair, raising a
     clear 4xx/503 on misconfiguration.
 
-    Six values: the main model, the background model, its reasoning-off settings, the main
-    model's context window, whether the main model reads images, and the background model's
-    own context window. The last is here rather than resolved later because it is a
-    property of a resolution only this function performs — and the summarizer, which is
-    that background model, must be handed a transcript that fits inside it.
+    Five values: the main model, the background model, its reasoning-off settings, the main
+    model's context window, and whether the main model reads images. A conversation's
+    compaction summary is written by the main model, not the background one, so the
+    operator's own fold resolves through here too.
 
     Kept separate from the submit step so it runs **before** any conversation
     mutation: a regenerate/edit must not reposition (and persist) the active leaf
@@ -279,7 +285,7 @@ async def resolve_turn_models(
     except DegradedCapabilityError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     # No context window, no turn. The window is discovered from the provider where the
-    # provider will say (`ModelRegistry._with_context_windows`), so reaching here means
+    # provider will say (`ModelRegistry._with_model_limits`), so reaching here means
     # this one won't and the operator hasn't filled it in either.
     #
     # A hard stop rather than a degraded run, because every guard that keeps a thread
@@ -308,10 +314,6 @@ async def resolve_turn_models(
     settings = get_settings()
     utility_model = resolved
     title_settings: ModelSettings | None = None
-    # The background model's own window, defaulting to the main model's while the two are
-    # the same model — an honest default rather than "unknown", since that is exactly what
-    # it is when no `utility` endpoint is bound.
-    utility_window = main.context_window
     if settings.verify_enabled or settings.title_enabled:
         background = await model_registry.resolve_background(
             owner_id=owner_id,
@@ -320,20 +322,12 @@ async def resolve_turn_models(
         )
         utility_model = background.model
         title_settings = background.reasoning_off
-        utility_window = background.context_window
-    return (
-        resolved,
-        utility_model,
-        title_settings,
-        main.context_window,
-        main.vision,
-        utility_window,
-    )
+    return (resolved, utility_model, title_settings, main.context_window, main.vision)
 
 
 async def _resolve_models(
     request: Request, endpoint_id: str | None, model: str | None
-) -> tuple[Model, Model, ModelSettings | None, int | None, bool, int | None]:
+) -> TurnModels:
     return await resolve_turn_models(deps.models(request), endpoint_id, model)
 
 
@@ -341,7 +335,7 @@ def compose_turn(
     *,
     prompt: str | None,
     conversation_id: str,
-    models: tuple[Model, Model, ModelSettings | None, int | None, bool, int | None],
+    models: TurnModels,
     capabilities: ServiceContainer,
     registry: RunRegistry,
     store: ConversationStore,
@@ -389,7 +383,7 @@ def compose_turn(
     identical orchestrator; the kind decides only which concurrency lane the run waits in
     (``runs/lanes.py``), so unattended work can never hold up the turn someone is sitting
     in front of."""
-    resolved, utility_model, background_settings, context_window, vision, utility_window = models
+    resolved, utility_model, background_settings, context_window, vision = models
     orchestrator = build_chat_orchestrator(
         prompt,
         model=resolved,
@@ -419,9 +413,6 @@ def compose_turn(
         vision=vision,
         # The operator's conversation-compaction policy; absent ⇒ the config defaults.
         auto_compact=auto_compact,
-        # The summarizer runs on the background model, so its window is what bounds the
-        # transcript a fold hands over.
-        utility_context_window=utility_window,
         # The operator's per-turn model-request ceiling; absent ⇒ the config default.
         request_limit=request_limit,
         # While offline mode is active the web containers are down, so hide the web
@@ -581,12 +572,52 @@ def _names_path(text: str, path: str) -> bool:
     return False
 
 
+@dataclass(frozen=True)
+class TurnScope:
+    """What decides the agent a turn on this thread runs and the deps it runs it with: the
+    thread's binding, the tools withheld from it, and the app's assembled catalog,
+    instructions and capability bag.
+
+    Gathered in one place because two things need the identical answer — a chat turn, and
+    the operator's own fold, whose summary is written on the agent that turn would run so
+    its request matches the one the model last served."""
+
+    binding: ConversationBinding
+    disabled_tools: frozenset[str]
+    capabilities: ServiceContainer
+    categories: Mapping[str, Any]
+    dormant: Mapping[str, str]
+    instruction_providers: Sequence[InstructionProvider]
+
+
+async def turn_scope(request: Request, conversation_id: str, *, vision: bool) -> TurnScope:
+    """This thread's :class:`TurnScope`, read off the `Request`.
+
+    ``vision`` is the resolved main model's image fact: a tool that answers with an image
+    is withheld from a model that can't read one."""
+    # Read once and used twice — the mode decides which tools belong in this run as well
+    # as where its file work happens, and the two must never be resolved separately.
+    binding = await deps.store(request).binding(conversation_id)
+    return TurnScope(
+        binding=binding,
+        disabled_tools=await deps.disabled_tools(request, binding.mode, vision=vision),
+        # The app's one agent-facing capability bag — assembled at startup from every
+        # feature manifest's `capabilities` export, so a turn never enumerates handles.
+        capabilities=deps.capabilities(request),
+        # The assembled tool catalog + the manifests' dynamic instructions — read per
+        # request so the turn always runs against what the app assembled.
+        categories=deps.tool_categories(request),
+        dormant=deps.dormant_summaries(request),
+        instruction_providers=deps.instruction_providers(request),
+    )
+
+
 async def _submit_turn(
     request: Request,
     *,
     prompt: str | None,
     conversation_id: str,
-    models: tuple[Model, Model, ModelSettings | None, int | None, bool, int | None],
+    models: TurnModels,
     attachment_ids: list[str] | None = None,
     file_refs: list[str] | None = None,
     command: Invocation | None = None,
@@ -597,18 +628,14 @@ async def _submit_turn(
     Async only because the enabled-tool policy is a persisted read; every other resource
     here is an `app.state` handle. `compose_turn` itself stays synchronous, so the
     submit remains a single uninterrupted step after the caller's conversation mutation."""
-    # Read once and used twice — the mode decides which tools belong in this run as well
-    # as where its file work happens, and the two must never be resolved separately.
-    binding = await deps.store(request).binding(conversation_id)
     # `models[4]` is the resolved main model's vision fact — the same one `compose_turn`
-    # passes to the engine for attachments. A tool that answers with an image is withheld
-    # from a model that can't read one.
+    # passes to the engine for attachments.
     #
-    # Hoisted out of the call below because the command catalog needs it too: a `/reviewer`
-    # is an offer to launch a sub-agent, and where `subagents_launch` has been withheld
-    # from this run there is nothing to offer. Resolving it twice would let the command the
-    # operator picked and the tools the turn actually has disagree.
-    disabled = await deps.disabled_tools(request, binding.mode, vision=models[4])
+    # Hoisted out of the call below because the command catalog needs the disabled set too:
+    # a `/reviewer` is an offer to launch a sub-agent, and where `subagents_launch` has been
+    # withheld from this run there is nothing to offer. Resolving it twice would let the
+    # command the operator picked and the tools the turn actually has disagree.
+    scope = await turn_scope(request, conversation_id, vision=models[4])
     return compose_turn(
         prompt=prompt,
         conversation_id=conversation_id,
@@ -617,25 +644,21 @@ async def _submit_turn(
         # policy is: it is a persisted read, and `compose_turn` is the synchronous step
         # after the caller has already mutated the conversation.
         turn_context=await _command_context(
-            request, command, conversation_id, binding, disabled
+            request, command, conversation_id, scope.binding, scope.disabled_tools
         ),
         # Written onto the turn as well as spoken into it — see `compose_turn`. Harmless on
         # a regenerate, which records no user request for it to land on.
         command=command,
-        # The app's one agent-facing capability bag — assembled at startup from every
-        # feature manifest's `capabilities` export, so a turn never enumerates handles.
-        capabilities=deps.capabilities(request),
+        capabilities=scope.capabilities,
         registry=deps.registry(request),
         store=deps.store(request),
         uploads=deps.uploads(request),
-        # The assembled tool catalog + the manifests' dynamic instructions — read per
-        # request so the turn always runs against what the app assembled.
-        categories=deps.tool_categories(request),
-        dormant=deps.dormant_summaries(request),
-        instruction_providers=deps.instruction_providers(request),
+        categories=scope.categories,
+        dormant=scope.dormant,
+        instruction_providers=scope.instruction_providers,
         prompt_context_providers=deps.prompt_context_providers(request),
-        disabled_tools=disabled,
-        binding=binding,
+        disabled_tools=scope.disabled_tools,
+        binding=scope.binding,
         attachment_ids=attachment_ids,
         file_refs=file_refs,
         ephemeral=ephemeral,

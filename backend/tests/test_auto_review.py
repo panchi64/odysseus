@@ -44,7 +44,8 @@ from agent.turn import TurnResult, drive_turn
 from core.container import ServiceContainer
 from core.db import init_db, make_engine
 from models._fields import utcnow
-from prompts.utility import COMPACT_PREAMBLE, REVIEW_INSTRUCTIONS
+from prompts.compaction import COMPACT_PREAMBLE
+from prompts.utility import REVIEW_INSTRUCTIONS
 from runs import Run, RunRegistry, RunStatus, RunStream
 from services.approval_grants import ApprovalGrantStore, GrantInfo
 from services.conversations import ConversationBinding

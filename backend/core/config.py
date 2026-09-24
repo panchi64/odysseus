@@ -536,7 +536,8 @@ class Settings(BaseSettings):
     # pressure rather than unconditionally. Once a thread's *projected* footprint (what is
     # already in the replay plus the prompt and context about to be added) reaches
     # `auto_compact_threshold` of the model's context window, everything since the newest
-    # checkpoint is summarized by the utility model into one new checkpoint, and the thread
+    # checkpoint is summarized by the thread's own main model — the conversation continuing,
+    # so a local engine reuses the prefix it already holds — into one new checkpoint, and the thread
     # carries on from that summary alone — no turns are retained verbatim beneath it.
     # The threshold is 0.80, not the old 0.95: at 95% the fold leaves no room for the turn
     # that triggered it, so the very next request overflows anyway. Nothing is deleted:
@@ -544,22 +545,13 @@ class Settings(BaseSettings):
     # shrinks. It fires **between** turns, in the orchestrator prelude,
     # so it can never disturb reasoning already in flight — with one exception: a provider
     # context-overflow inside a turn folds once and retries the failed request.
-    # `auto_compact_input_max_tokens` bounds the transcript handed to the summarizer, which
-    # by definition is folding most of the *main* model's window into a utility model that
-    # may be smaller; a transcript over the bound is summarized in chunks rather than
-    # elided, so the ceiling buys throughput rather than fidelity. `auto_compact_max_tokens`
-    # is the summary's own output budget, sized (like the titler's) to leave room for a
-    # `<think>` block on a runtime that ignores the reasoning-off lever.
-    # `auto_compact_timeout_s` sits *below* `run_inactivity_timeout_s` (120s) on purpose:
-    # a summarizer allowed to run as long as the watchdog would let the watchdog kill the
-    # run it was trying to save. Enabled/threshold are the *defaults* — the
+    # There is deliberately **no** output budget and **no** timeout for the summary: it replaces the
+    # thread, so it runs until the model finishes, and the fold holds the inactivity
+    # watchdog open while it does. Enabled/threshold are the *defaults* — the
     # operator overrides them at runtime via `PUT /chat/settings`, and enablement per thread
     # via `/conversations/{id}`.
     auto_compact_enabled: bool = True
     auto_compact_threshold: float = 0.80
-    auto_compact_input_max_tokens: int = 32000
-    auto_compact_max_tokens: int = 4096
-    auto_compact_timeout_s: float = 100.0
 
     # What the footprint estimator assumes the per-turn overhead costs — instructions,
     # system prompt and tool schemas — when a thread carries no measured `TurnOverhead`

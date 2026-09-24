@@ -19,6 +19,7 @@ import pytest
 from core.vault import Vault
 from services import llm
 from services.providers.anthropic import PROVIDER as ANTHROPIC
+from services.providers.base import ModelLimits
 from services.providers.google import PROVIDER as GOOGLE
 
 
@@ -232,18 +233,61 @@ async def test_gemini_reports_its_input_limit():
         assert await GOOGLE.context_window("https://g", "key", "gemini-x", client=client) == 1048576
 
 
-async def test_anthropic_admits_it_cannot_say():
-    # Deliberately not a table of known Anthropic windows: such a table is correct
-    # until a new model or an extended-context beta makes it silently wrong, and a
-    # gauge that is confidently wrong is worse than one that defers to the operator.
-    assert await ANTHROPIC.context_window("https://a", "key", "claude-x") is None
+async def test_anthropic_reads_both_limits_off_one_models_entry():
+    # Discovered rather than tabled: a table of known Anthropic windows is correct until
+    # a new model or an extended-context beta makes it silently wrong. One request
+    # answers both, since both sit on the same entry.
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        assert request.headers["x-api-key"] == "key"
+        return httpx.Response(
+            200,
+            json={"id": "claude-x", "max_input_tokens": 1_000_000, "max_tokens": 128_000},
+        )
+
+    async with _client(handler) as client:
+        limits = await ANTHROPIC.model_limits("https://a", "key", "claude-x", client=client)
+        window = await ANTHROPIC.context_window("https://a/v1", "key", "claude-x", client=client)
+    assert limits == ModelLimits(context_window=1_000_000, max_output_tokens=128_000)
+    assert window == 1_000_000
+    assert seen == ["/v1/models/claude-x", "/v1/models/claude-x"]
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(404, json={"type": "error"}),
+        httpx.Response(200, json={"id": "claude-x"}),
+        httpx.Response(200, json={"id": "claude-x", "max_input_tokens": True, "max_tokens": 0}),
+    ],
+)
+async def test_anthropic_answers_none_where_the_entry_does_not_say(response):
+    # An Anthropic-compatible proxy with no such route, or an entry without the fields,
+    # leaves both unknown — and the library's own figures in place — rather than raising.
+    async with _client(lambda request: response) as client:
+        limits = await ANTHROPIC.model_limits("https://a", "key", "claude-x", client=client)
+    assert limits == ModelLimits()
+
+
+async def test_anthropic_unreachable_is_not_an_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    async with _client(handler) as client:
+        assert await ANTHROPIC.model_limits("https://a", "k", "claude-x", client=client) == (
+            ModelLimits()
+        )
 
 
 # ── Resolution: precedence, caching, and the gate ────────────────────────────────
 
 
-async def _registry(tmp_path, monkeypatch, *, window: int | None):
-    """A registry whose stub provider reports ``window``."""
+async def _registry(
+    tmp_path, monkeypatch, *, window: int | None, max_output: int | None = None
+):
+    """A registry whose stub provider reports ``window`` and ``max_output``."""
     from pydantic_ai.models.test import TestModel
 
     from core.db import init_db, make_engine
@@ -256,9 +300,9 @@ async def _registry(tmp_path, monkeypatch, *, window: int | None):
         requires_key = False
         asked = 0
 
-        async def context_window(self, base_url, api_key, model, *, client=None):
+        async def model_limits(self, base_url, api_key, model, *, client=None):
             type(self).asked += 1
-            return window
+            return ModelLimits(context_window=window, max_output_tokens=max_output)
 
         # Enough of the rest of the contract for a full resolve to run: the gate test
         # goes through `resolve_detailed`, which builds a model and asks the adapter
@@ -303,10 +347,22 @@ async def test_a_discovered_window_reaches_resolution(tmp_path, monkeypatch):
 async def test_the_operators_own_value_wins(tmp_path, monkeypatch):
     # The field is the override for providers that can't answer, so a discovered value
     # silently replacing a deliberate one would make the setting appear not to work.
-    registry, stub = await _registry(tmp_path, monkeypatch, window=200_000)
+    registry, _ = await _registry(tmp_path, monkeypatch, window=200_000)
     await _bind(registry, context_window=8192)
     assert await registry.main_context_window("operator") == 8192
-    assert stub.asked == 0  # not even consulted
+
+
+async def test_the_output_ceiling_is_discovered_even_beside_an_operator_window(
+    tmp_path, monkeypatch
+):
+    # The operator's field overrides the window only; the output ceiling has no field of
+    # its own, so the provider is still asked for it, once, and remembered.
+    registry, stub = await _registry(tmp_path, monkeypatch, window=200_000, max_output=64_000)
+    await _bind(registry, context_window=8192)
+    for _ in range(3):
+        [spec] = await registry._resolve_specs("main", owner_id="operator")
+        assert (spec.context_window, spec.max_output_tokens) == (8192, 64_000)
+    assert stub.asked == 1
 
 
 async def test_the_provider_is_asked_once_and_then_remembered(tmp_path, monkeypatch):

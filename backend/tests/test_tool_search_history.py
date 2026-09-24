@@ -35,12 +35,11 @@ from pydantic_ai import (
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import TextPart, ToolSearchCallPart, ToolSearchReturnPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
-from pydantic_ai.models.test import TestModel
 from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_ai.usage import RequestUsage
 
 from agent import ParkedTurn, build_chat_orchestrator, build_resume_orchestrator
-from agent.compaction_transcript import render_transcript
+from agent.compaction_summary import summary_request
 from agent.history import (
     TurnStart,
     drop_dangling_tool_calls,
@@ -53,7 +52,7 @@ from routes.deps import OPERATOR_ID
 from runs import RunStatus, TurnOverhead
 from tools import RunDeps
 
-from ._helpers import client_app
+from ._helpers import client_app, fold_with, is_fold_request
 
 #: The dormant group under test. One plain tool and one that needs approval, so the same
 #: group covers both "the model may call it once it is loaded" and the park.
@@ -120,9 +119,14 @@ def _searcher(seen: list[set[str]], *, then_call: str | None = None):
 
 
 def _answerer(seen: list[set[str]]):
-    """Answers without ever searching, so what it was handed is the whole story."""
+    """Answers without ever searching, so what it was handed is the whole story — and
+    writes ``FOLDED AWAY`` when asked to fold, a request it does not record, since ``seen``
+    is about what the *turn* was offered."""
 
-    async def stream_fn(_messages, info):
+    async def stream_fn(messages, info):
+        if is_fold_request(messages):
+            yield "FOLDED AWAY"
+            return
         seen.append({tool.name for tool in info.function_tools})
         yield "done"
 
@@ -145,19 +149,19 @@ class _OverflowsThenAnswers(WrapperModel):
         super().__init__(_answerer(seen))
         self.refused = False
 
-    def _check(self) -> None:
-        if not self.refused:
+    def _check(self, messages) -> None:
+        if not self.refused and not is_fold_request(messages):
             self.refused = True
             raise _ctx_error()
 
-    async def request(self, *args, **kwargs):  # type: ignore[override]
-        self._check()
-        return await super().request(*args, **kwargs)
+    async def request(self, messages, *args, **kwargs):  # type: ignore[override]
+        self._check(messages)
+        return await super().request(messages, *args, **kwargs)
 
     @asynccontextmanager
-    async def request_stream(self, *args, **kwargs):  # type: ignore[override]
-        self._check()
-        async with super().request_stream(*args, **kwargs) as stream:
+    async def request_stream(self, messages, *args, **kwargs):  # type: ignore[override]
+        self._check(messages)
+        async with super().request_stream(messages, *args, **kwargs) as stream:
             yield stream
 
 
@@ -325,25 +329,19 @@ async def test_the_work_log_renders_the_search_as_a_tool_row():
         assert view[1].content == "done"
 
 
-async def test_the_summarizer_reads_the_search_as_one_line():
-    """A search returns the workspace's own tool names, so it is the one tool return that
-    is neither fenced as someone else's words nor dumped as a page of JSON."""
+async def test_the_summary_request_keeps_the_search_so_its_tools_are_the_turns():
+    """The summary is the thread's own model continuing its conversation, and a reveal
+    lives only in the messages — so the summary request replays the search exactly as a
+    turn would, and is offered the same loaded group. Dropping it would change the tool
+    array and throw away the very prefix the summary is written on to reuse."""
     async with client_app() as (_client, app):
         store = app.state.conversations
         cid = await store.create_conversation(OPERATOR_ID)
         await _turn(app, cid, model=_searcher([]))
 
-        text = render_transcript(await store.history(cid))
-        assert '<tool-call tool="search_tools">' in text
-        assert '{"queries": ["browse"]}' in text
-        line = next(
-            line for line in text.splitlines() if "browse_open_page" in line
-        )
-        assert "browse_delete_page" in line
-        assert "UNTRUSTED CONTENT" not in line
-        # The names ride in their own element rather than a fenced payload: they are the
-        # workspace's own, and fencing would label them as somebody else's words.
-        assert '<tools-loaded tool="search_tools">' in text
+        request = summary_request(await store.model_history(cid))
+        assert set(revealed_tools(request)) == REVEALED
+        assert any(isinstance(p, ToolSearchCallPart) for m in request for p in m.parts)
 
 
 # --- 3. streaming ---------------------------------------------------------------------
@@ -471,7 +469,6 @@ async def test_the_prelude_fold_carries_the_reveal_onto_the_checkpoint():
             cid,
             model=_answerer(seen),
             prompt="x" * 6_000,
-            utility_model=TestModel(custom_output_text="FOLDED AWAY"),
             context_window=10_000,
             auto_compact=_FOLD_ALL,
         )
@@ -511,7 +508,6 @@ async def test_a_fold_of_a_thread_that_revealed_nothing_reveals_nothing():
             cid,
             model=_answerer(seen),
             prompt="x" * 6_000,
-            utility_model=TestModel(custom_output_text="FOLDED AWAY"),
             context_window=10_000,
             auto_compact=_FOLD_ALL,
         )
@@ -535,7 +531,6 @@ async def test_the_overflow_fold_keeps_the_tools_the_turn_had_loaded():
             cid,
             model=_OverflowsThenAnswers(seen),
             prompt="next question",
-            utility_model=TestModel(custom_output_text="FOLDED AWAY"),
             context_window=10_000,
             auto_compact=_FOLD_ALL,
         )
@@ -562,7 +557,7 @@ async def test_the_carried_reveal_persists_with_the_checkpoint():
         _seed_revealed_turn(store, cid)
 
         outcome = await compact_conversation(
-            store, cid, reason="manual", model=TestModel(custom_output_text="so far")
+            store, cid, reason="manual", **fold_with("so far", categories=_categories())
         )
         assert outcome is not None
         await store._worker.join()
@@ -588,8 +583,8 @@ async def test_a_second_fold_inherits_the_first_folds_reveal():
         cid = await store.create_conversation(OPERATOR_ID)
         _seed_revealed_turn(store, cid)
 
-        model = TestModel(custom_output_text="so far")
-        assert await compact_conversation(store, cid, reason="manual", model=model)
+        fold = fold_with("so far", categories=_categories())
+        assert await compact_conversation(store, cid, reason="manual", **fold)
         store.record(
             cid,
             [
@@ -597,7 +592,7 @@ async def test_a_second_fold_inherits_the_first_folds_reveal():
                 ModelResponse(parts=[TextPart(content="carried")]),
             ],
         )
-        assert await compact_conversation(store, cid, reason="manual", model=model)
+        assert await compact_conversation(store, cid, reason="manual", **fold)
 
         replayed = await store.model_history(cid)
         assert len(replayed) == 1  # the second checkpoint absorbed the first
@@ -617,8 +612,6 @@ async def test_a_fold_records_no_delta_when_nothing_was_revealed():
                 ModelResponse(parts=[TextPart(content="hi")]),
             ],
         )
-        assert await compact_conversation(
-            store, cid, reason="manual", model=TestModel(custom_output_text="so far")
-        )
+        assert await compact_conversation(store, cid, reason="manual", **fold_with("so far"))
         parts = [p for m in await store.model_history(cid) for p in m.parts]
         assert [type(p).__name__ for p in parts] == ["UserPromptPart"]

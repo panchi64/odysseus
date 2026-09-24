@@ -32,6 +32,7 @@ from core.vault import Vault
 from models.registry import ModelEndpoint, ModelRole
 from services import embeddings, llm
 from services.providers import DEFAULT_PROVIDER_ID, get_provider
+from services.providers.base import ModelLimits
 
 
 def _same_server(one: str, two: str) -> bool:
@@ -91,10 +92,10 @@ class ModelRegistry:
         # Pooled client for provider model discovery; None ⇒ a transient client
         # per call (the path tests take, where discovery is monkeypatched out).
         self._http_client = http_client
-        # Discovered context windows, keyed (base_url, model) — see
-        # `_discover_context_window`. Process-local and rebuildable, so it is a cache
-        # and not state: losing it costs one provider round-trip, never correctness.
-        self._context_windows: dict[tuple[str, str], int | None] = {}
+        # Discovered model limits, keyed (base_url, model) — see `_discover_limits`.
+        # Process-local and rebuildable, so it is a cache and not state: losing it
+        # costs one provider round-trip, never correctness.
+        self._model_limits: dict[tuple[str, str], ModelLimits] = {}
         # The implicit `main` chain, keyed by owner — see `implicit_main_binding`.
         # Same cache discipline as the windows above: process-local, rebuildable, and
         # dropped by `forget_implicit_main` on any endpoint write, because every input
@@ -197,7 +198,7 @@ class ModelRegistry:
         # A write can move the base URL, the model, or the operator's own window —
         # every input the memoized discovery keyed on — so the cache is dropped rather
         # than reasoned about field by field. It costs one round-trip to rebuild.
-        self.forget_context_windows()
+        self.forget_model_limits()
         self.forget_implicit_main()
         return await in_session(self._engine, work)
 
@@ -373,7 +374,7 @@ class ModelRegistry:
             # so reject it here rather than silently resolving to a benched endpoint.
             if not endpoint.enabled:
                 raise DegradedCapabilityError(f"endpoint {endpoint.name!r} is disabled")
-            return await self._with_context_windows(
+            return await self._with_model_limits(
                 [self._to_spec(endpoint, role, model_override=override_model)]
             )
 
@@ -401,7 +402,7 @@ class ModelRegistry:
                 f"all endpoints bound to role {role!r} are disabled"
             )
         # Pin applies to the head only; the tail falls back on each endpoint's default.
-        return await self._with_context_windows(
+        return await self._with_model_limits(
             [
                 self._to_spec(endpoint, role, model_override=pinned_model if i == 0 else None)
                 for i, endpoint in enumerate(live)
@@ -454,9 +455,8 @@ class ModelRegistry:
         self._implicit_main[owner_id] = answer
         return answer
 
-    async def _with_context_windows(self, specs: list[llm.EndpointSpec]) -> list[llm.EndpointSpec]:
-        """Fill in each spec's context window from its provider where the operator
-        didn't state one.
+    async def _with_model_limits(self, specs: list[llm.EndpointSpec]) -> list[llm.EndpointSpec]:
+        """Fill in each spec's context window and output ceiling from its provider.
 
         Here, at the single point every resolution path funnels through, so the model a
         run is built on and the ceiling the gauge measures against can't come from
@@ -465,46 +465,57 @@ class ModelRegistry:
 
         An operator-set window on the endpoint always wins: it is the override for
         exactly the case discovery can't serve, and a discovered value quietly
-        replacing a deliberate one would make the field appear not to work."""
-        return [
-            spec
-            if spec.context_window is not None
-            else replace(spec, context_window=await self._discover_context_window(spec))
-            for spec in specs
-        ]
+        replacing a deliberate one would make the field appear not to work. The
+        provider is still asked when the operator set one, because the output ceiling
+        has no operator field to take its place."""
+        resolved = []
+        for spec in specs:
+            limits = await self._discover_limits(spec)
+            resolved.append(
+                replace(
+                    spec,
+                    context_window=(
+                        spec.context_window
+                        if spec.context_window is not None
+                        else limits.context_window
+                    ),
+                    max_output_tokens=limits.max_output_tokens,
+                )
+            )
+        return resolved
 
-    async def _discover_context_window(self, spec: llm.EndpointSpec) -> int | None:
+    async def _discover_limits(self, spec: llm.EndpointSpec) -> ModelLimits:
         """The provider's answer for this model, memoized per (base_url, model).
 
         Cached because this sits on the path of *every* turn and the answer changes
         about as often as the served model does — an uncached lookup would put an extra
-        provider round-trip in front of each run for a number that was already known.
+        provider round-trip in front of each run for numbers that were already known.
         Keyed on the base URL rather than the endpoint id so re-pointing an endpoint
-        can't serve a window discovered from the server it used to be."""
+        can't serve limits discovered from the server it used to be."""
         key = (spec.base_url, spec.model)
-        if key not in self._context_windows:
-            self._context_windows[key] = await get_provider(spec.provider).context_window(
+        if key not in self._model_limits:
+            self._model_limits[key] = await get_provider(spec.provider).model_limits(
                 spec.base_url, spec.api_key, spec.model, client=self._http_client
             )
-        return self._context_windows[key]
+        return self._model_limits[key]
 
     def forget_implicit_main(self) -> None:
         """Drop the memoized implicit `main` — after any endpoint create/update/delete,
         since which endpoint is first, whether it is enabled, and what it serves are all
         inputs to it.
 
-        Deliberately *not* folded into `forget_context_windows`. That one is also called
+        Deliberately *not* folded into `forget_model_limits`. That one is also called
         by `list_provider_models`, which runs **inside** the implicit scan — so clearing
         both there would leave the scan's own result depending on whether the assignment
         happened to come after the clear. Correct today, and the kind of correctness that
         breaks the next time either method moves."""
         self._implicit_main.clear()
 
-    def forget_context_windows(self) -> None:
-        """Drop the memoized windows — after an endpoint write, and whenever discovery
+    def forget_model_limits(self) -> None:
+        """Drop the memoized limits — after an endpoint write, and whenever discovery
         is explicitly re-run. A model reloaded at a different context length is exactly
         the case the operator is refreshing to pick up."""
-        self._context_windows.clear()
+        self._model_limits.clear()
 
     async def resolve_detailed(
         self,
@@ -674,7 +685,7 @@ class ModelRegistry:
         # Discovery is what the picker calls when it opens, and the operator opening it
         # is the moment to re-ask about windows too: a model reloaded at a different
         # context length is exactly what they'd be looking for.
-        self.forget_context_windows()
+        self.forget_model_limits()
         return await get_provider(endpoint.provider).discover(
             endpoint.base_url, api_key, client=self._http_client
         )

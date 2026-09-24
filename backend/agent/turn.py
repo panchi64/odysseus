@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from pydantic_ai import (
@@ -86,6 +86,54 @@ class TurnResult:
     # human-readable reason, carried through to `finalize` so it can persist a
     # marker on the turn's branch node (see `ConversationStore.record`).
     blocked_reason: str | None = None
+
+
+def turn_deps(
+    run: Run,
+    *,
+    caps: ServiceContainer = NO_CAPS,
+    disabled_tools: frozenset[str] = frozenset(),
+    conversation_id: str | None = None,
+    binding: ConversationBinding = DEFAULT_BINDING,
+    workspace_key: str = "",
+    turn_start: TurnStart | None = None,
+    review_budget: ReviewBudget | None = None,
+) -> RunDeps:
+    """The ``RunDeps`` a turn runs its agent with.
+
+    A function rather than a construction inside :func:`drive_turn` because a compaction
+    summary is written on the turn's own agent (``agent/compaction_summary.py``), and the
+    request it sends has to render the same brief and offer the same tools a turn would —
+    the mode, the level, the disabled set and the capability bag all shape one or the
+    other. Two constructions of the same deps would be two answers to that question."""
+    return RunDeps(
+        run=run,
+        owner_id=run.owner_id,
+        # The whole agent-facing capability bag rides in as one handle — a tool
+        # resolves what it needs by type and degrades when it's absent.
+        caps=caps,
+        disabled_tools=disabled_tools,
+        conversation_id=conversation_id,
+        # Where this run's file work happens. Resolved from the *conversation's* stored
+        # binding by the caller, never from a live request — switching the active project
+        # must not change what an already-running thread is doing.
+        project_id=binding.project_id,
+        mode=binding.mode,
+        # And how far it may go on its own. The toolset stack reads this to mark the tools
+        # that reach past it, so the level is enforced before a call runs rather than
+        # apologised for afterwards.
+        permission=binding.permission,
+        # Which workspace this run's file work happens in. Empty — every turn an operator
+        # sends — fills itself in from the conversation, which is the ordinary case and
+        # needs no argument anywhere. A sub-agent's run is the case that passes one: it
+        # works in the workspace of the thread that launched it, or in a delegated child of
+        # it, and neither is named by its own conversation (`services/workspace.py`).
+        workspace_key=workspace_key,
+        # What a ruling made inside a tool call needs of the turn — the boundary the
+        # review's transcript opens on, and the review budget (`agent/code_mode.py`).
+        turn_start=turn_start,
+        review_budget=review_budget,
+    )
 
 
 async def drive_turn(
@@ -152,31 +200,13 @@ async def drive_turn(
     # answering for them, which is what every other degrade here does. It rides on the
     # deps as well, so a call a `run_code` script makes spends from the same counter.
     review_budget = ReviewBudget(limit=settings.review_max_per_turn)
-    deps = RunDeps(
-        run=run,
-        owner_id=run.owner_id,
-        # The whole agent-facing capability bag rides in as one handle — a tool
-        # resolves what it needs by type and degrades when it's absent.
+    deps = turn_deps(
+        run,
         caps=caps,
         disabled_tools=disabled_tools,
         conversation_id=conversation_id,
-        # Where this run's file work happens. Resolved from the *conversation's* stored
-        # binding by the caller, never from a live request — switching the active project
-        # must not change what an already-running thread is doing.
-        project_id=binding.project_id,
-        mode=binding.mode,
-        # And how far it may go on its own. The toolset stack reads this to mark the tools
-        # that reach past it, so the level is enforced before a call runs rather than
-        # apologised for afterwards.
-        permission=binding.permission,
-        # Which workspace this run's file work happens in. Empty — every turn an operator
-        # sends — fills itself in from the conversation, which is the ordinary case and
-        # needs no argument anywhere. A sub-agent's run is the case that passes one: it
-        # works in the workspace of the thread that launched it, or in a delegated child of
-        # it, and neither is named by its own conversation (`services/workspace.py`).
+        binding=binding,
         workspace_key=workspace_key,
-        # What a ruling made inside a tool call needs of the turn — the boundary the
-        # review's transcript opens on, and the budget above (`agent/code_mode.py`).
         turn_start=turn_start,
         review_budget=review_budget,
     )
@@ -303,7 +333,13 @@ async def drive_turn(
                     None
                     if compacted or correcting or compaction is None or turn_start is None
                     else await compact_and_retry(
-                        run, compaction, partial_history=_partial_history(), turn_start=turn_start
+                        run,
+                        # The summary is written on *this* segment's agent and deps: on a
+                        # resume the context came off the park, whose deps hold the run
+                        # that parked rather than the one now driving the turn.
+                        replace(compaction, agent=agent, deps=deps),
+                        partial_history=_partial_history(),
+                        turn_start=turn_start,
                     )
                 )
                 if rebuilt is not None:

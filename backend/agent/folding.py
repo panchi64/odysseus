@@ -84,10 +84,9 @@ async def fold(run: Run, ctx: CompactionContext, *, reason: CompactionReason) ->
     only *whether* to fold and what ``reason`` to stamp; everything past that point is
     here.
 
-    That was not true until recently, and the one trigger sitting outside this function
-    paid for it in every way a duplicated path does: it emitted neither event, so a
-    hand-started fold was invisible, and it assembled its own arguments, so it ran the
-    summarizer against a different input budget than an automatic fold would.
+    The summary is written by ``ctx.agent`` — the turn's own agent, continuing its own
+    conversation — so every trigger has to hand over the agent and deps a turn would run
+    with; the operator's button composes them the way a chat turn does.
 
     **This never raises**, and that is a property of the function rather than a favour to
     one caller: a fold is an efficiency measure, and a turn that dies for one is worse off
@@ -96,40 +95,36 @@ async def fold(run: Run, ctx: CompactionContext, *, reason: CompactionReason) ->
     so — which is why the outcome comes back as a value instead of being swallowed here.
 
     ``compaction.started`` goes out from inside the plan callback rather than before it, so
-    it is emitted only once there is genuinely something to fold and can state what. It
-    also refreshes the inactivity watchdog on the way past, which matters more than it
-    looks: the summarizer is a whole model call with its own timeout, and it emits nothing
-    while it runs."""
+    it is emitted only once there is genuinely something to fold and can state what.
+
+    **A fold has no time limit.** The summarizer runs until it finishes, and the whole
+    fold sits inside ``Run.keepalive`` so the inactivity watchdog cannot end it — the
+    run's own wall clock, when one is set, is the only bound left."""
     try:
-        result = await compact_conversation(
-            ctx.store,
-            ctx.conversation_id,
-            model=ctx.model,
-            reason=reason,
-            reasoning_off=ctx.reasoning_off,
-            settings=ctx.settings,
-            max_input_tokens=ctx.max_input_tokens,
-            on_plan=lambda plan: run.emit(
-                CompactionStarted(
-                    conversation_id=ctx.conversation_id,
-                    reason=reason,
-                    messages=len(plan.messages),
-                    tokens_estimate=estimate_tokens(plan.messages),
-                )
-            ),
-            # The summary as it is written. Every delta also touches the activity clock,
-            # which makes the watchdog margin comfortable rather than merely sufficient:
-            # `compaction.started` alone left one frame at the beginning of a pass whose
-            # own timeout sits just under the inactivity bound.
-            on_delta=lambda delta: run.emit(
-                CompactionDelta(
-                    conversation_id=ctx.conversation_id,
-                    text=delta.text,
-                    part=delta.part,
-                    parts=delta.parts,
-                )
-            ),
-        )
+        # The summarizer has no time limit, so the run's inactivity watchdog must not stand
+        # in for one: a local model prefilling a long thread can go minutes before its
+        # first token, and a model thinking before it writes streams no event at all (its
+        # reasoning is not part of the summary) and looks idle while it works.
+        async with run.keepalive():
+            result = await compact_conversation(
+                ctx.store,
+                ctx.conversation_id,
+                agent=ctx.agent,
+                deps=ctx.deps,
+                reason=reason,
+                on_plan=lambda plan: run.emit(
+                    CompactionStarted(
+                        conversation_id=ctx.conversation_id,
+                        reason=reason,
+                        messages=len(plan.messages),
+                        tokens_estimate=estimate_tokens(plan.messages),
+                    )
+                ),
+                # The summary as it is written, so the operator watches it arrive.
+                on_delta=lambda text: run.emit(
+                    CompactionDelta(conversation_id=ctx.conversation_id, text=text)
+                ),
+            )
     except Exception:  # noqa: BLE001 — a fold must never take its caller down with it
         logger.warning("compaction failed for %s", ctx.conversation_id, exc_info=True)
         return FoldFailed("error")
@@ -243,6 +238,11 @@ async def compact_and_retry(
       still a boundary: without recording how much of it is the turn's own, the persist
       re-records the checkpoint summary — and whatever else the replay put in front of the
       prompt, the reinjected brief included — as new operator messages.
+
+    What gets summarized is the thread's *recorded* turns (``compaction_plan``), not the
+    request that overran — this turn is not in the tree yet — so the summary request is
+    the smaller of the two. If even that overruns the window, the fold fails like any other
+    and the turn stops with the context notice; nothing is trimmed to make it fit.
 
     An operator who switched compaction off for this thread is not overruled by an
     overflow: they get the stop, and the **Compact and retry** it offers, which is the

@@ -612,13 +612,14 @@ CompactionReason = Literal["threshold", "overflow", "manual"]
 
 class CompactionStarted(_Body):
     """A fold is about to be summarized — emitted *before* the summarizer call, which is
-    the one part of compaction that takes real time (a whole utility-model pass).
+    the one part of compaction that takes real time (a whole model pass over the thread).
 
-    Without it the operator watches a thread sit silent for up to the compaction timeout
+    Without it the operator watches a thread sit silent for as long as the summary takes
     with nothing said, and the only frame that ever mentioned compaction was the one that
     announced it as already done. It also refreshes the inactivity watchdog (every
-    ``Run.emit`` touches the activity clock), so a summarizer running to its own bound
-    can't be read as a stalled run. Additive to v1; no bump."""
+    ``Run.emit`` touches the activity clock) — the fold itself then holds the watchdog open
+    with ``Run.keepalive``, so a long summary can't be read as a stalled run. Additive to
+    v1; no bump."""
 
     type: Literal["compaction.started"] = "compaction.started"
     conversation_id: str
@@ -645,10 +646,9 @@ class CompactionDelta(_Body):
     when ``conversation.compacted`` lands with the real thing — never stores one, and never
     treats one as the summary the model will actually read.
 
-    ``part``/``parts`` locate the delta in a chunked fold, where the transcript is
-    summarized in pieces and then merged: without them a client shows the summary restart
-    from the top two or three times with nothing saying why. ``parts`` counts the merge as
-    one of them, and an ordinary single-pass fold is ``1 of 1``. Additive to v1; no bump."""
+    ``part``/``parts`` once located the delta in a chunked fold. A fold is now always one
+    pass by the thread's own model, so every delta is ``1 of 1``; the fields stay because
+    they are on the v1 wire and a client may still read them. Additive to v1; no bump."""
 
     type: Literal["compaction.delta"] = "compaction.delta"
     conversation_id: str

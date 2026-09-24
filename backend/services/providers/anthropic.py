@@ -7,6 +7,8 @@ their native shape) instead of squeezing Claude through an OpenAI-compat gateway
 
 from __future__ import annotations
 
+from urllib.parse import quote
+
 import httpx
 from pydantic_ai.models import Model
 from pydantic_ai.models.anthropic import AnthropicModel
@@ -16,8 +18,8 @@ from pydantic_ai.settings import ModelSettings
 
 from core.config import get_settings
 from core.exceptions import DegradedCapabilityError
-from services.llm import EndpointSpec, descriptor_of
-from services.providers.base import ProviderPreset
+from services.llm import EndpointSpec, descriptor_of, positive_int
+from services.providers.base import ModelLimits, ProviderPreset
 from services.reasoning import ModelDescriptor
 
 _DEFAULT_BASE_URL = "https://api.anthropic.com"
@@ -53,16 +55,23 @@ class AnthropicNativeProvider:
 
     def build_model(self, spec: EndpointSpec) -> Model:
         provider = _SdkProvider(api_key=spec.api_key, base_url=spec.base_url)
+        settings = self.model_settings(descriptor_of(spec))
+        if spec.max_output_tokens is not None:
+            # The model's own ceiling in place of the library's 4096 — `Provider
+            # .model_limits` has why. On the construction-time settings for the reason
+            # `model_settings` gives, which is also what lets a caller that does want a
+            # bound still set one per request.
+            settings = {**settings, "max_tokens": spec.max_output_tokens}
         return AnthropicModel(
             spec.model,
             provider=provider,
-            settings=self.model_settings(descriptor_of(spec)),
+            settings=settings,
             # Our window when we have one, the library's otherwise — `Provider
             # .build_model` has the reasoning. This adapter talks to one lab, so a model
             # name really does name that model and the library's figure is the best
-            # available; `context_window` below deliberately reports nothing, so on a
-            # hosted endpoint this is usually the only source there is. Partial either
-            # way: every other inferred capability of the named model stands.
+            # available when the models API couldn't be asked, or a proxy in front of it
+            # doesn't say. Partial either way: every other inferred capability of the
+            # named model stands.
             profile=(
                 ModelProfile(context_window=spec.context_window)
                 if spec.context_window is not None
@@ -97,24 +106,47 @@ class AnthropicNativeProvider:
     async def context_window(
         self, base_url: str, api_key: str | None, model: str, *, client=None
     ) -> int | None:
-        """Anthropic's models API doesn't carry a context length, so there is nothing
-        here to read.
+        """The model's ``max_input_tokens``, read off its models-API entry."""
+        return (await self.model_limits(base_url, api_key, model, client=client)).context_window
 
-        Deliberately not a hard-coded table of known Anthropic windows. Such a table
-        would be right until the day it silently isn't — a new model, or a beta that
-        extends an existing one — and a context gauge that is confidently wrong is
-        worse than one that admits it doesn't know: the operator would only find out
-        by hitting a ceiling the meter said was far away."""
-        return None
+    async def model_limits(
+        self, base_url: str, api_key: str | None, model: str, *, client=None
+    ) -> ModelLimits:
+        """Both limits from the model's own ``GET /v1/models/{id}`` entry:
+        ``max_input_tokens`` is the context window, ``max_tokens`` the largest output
+        one request may ask for.
+
+        Read from the API rather than a hard-coded table of known Anthropic models. Such
+        a table would be right until the day it silently isn't — a new model, or a beta
+        that extends an existing one — and a limit that is confidently wrong is worse
+        than one that admits it doesn't know: the operator would only find out by hitting
+        a ceiling the meter said was far away. An Anthropic-compatible proxy that serves
+        no such entry, or one without these fields, answers None for whatever is missing,
+        and the library's own figures stand."""
+        try:
+            row = await self._get(
+                f"{_models_url(base_url)}/{quote(model, safe='')}", api_key, client=client
+            )
+        except httpx.HTTPError, ValueError:
+            return ModelLimits()
+        if not isinstance(row, dict):
+            return ModelLimits()
+        return ModelLimits(
+            context_window=positive_int(row.get("max_input_tokens")),
+            max_output_tokens=positive_int(row.get("max_tokens")),
+        )
 
     async def _list_models(
         self, base_url: str, api_key: str | None, *, client: httpx.AsyncClient | None = None
     ) -> object:
+        return await self._get(_models_url(base_url), api_key, client=client)
+
+    async def _get(
+        self, url: str, api_key: str | None, *, client: httpx.AsyncClient | None = None
+    ) -> object:
         http = client or httpx.AsyncClient(follow_redirects=True)
         try:
-            response = await http.get(
-                _models_url(base_url), headers=_headers(api_key), timeout=_TIMEOUT
-            )
+            response = await http.get(url, headers=_headers(api_key), timeout=_TIMEOUT)
             response.raise_for_status()
             return response.json()
         finally:

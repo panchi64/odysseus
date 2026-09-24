@@ -34,6 +34,7 @@ from pydantic_ai.usage import RequestUsage
 
 from agent import build_chat_orchestrator
 from agent.compaction_context import CompactionContext
+from agent.factory import build_agent
 from agent.meta import Verdict
 from agent.model_errors import (
     CONTEXT_OVERFLOW_AFTER_FOLD_DETAIL,
@@ -42,13 +43,13 @@ from agent.model_errors import (
 )
 from agent.parking import park_for_input
 from agent.summarize import AutoCompactPolicy, should_compact
-from agent.turn import TurnResult
+from agent.turn import TurnResult, turn_deps
 from agent.verify import verify_and_correct
 from core.config import get_settings
 from routes.deps import OPERATOR_ID
 from runs import Run, RunStatus, RunStream, TurnOverhead
 
-from ._helpers import client_app
+from ._helpers import client_app, fold_aware_model, is_fold_request
 
 #: Measured, and empty. These fixtures run against a deliberately tiny window, and an
 #: *unmeasured* overhead makes the trigger assume the shipped catalog — several thousand
@@ -69,30 +70,42 @@ def _ctx_error() -> ModelHTTPError:
 
 
 class _OverflowsThenAnswers(WrapperModel):
-    """A model that refuses its first ``failures`` requests as over-long, then answers.
+    """A model that refuses its first ``failures`` turn requests as over-long, then answers
+    — and writes ``FOLDED AWAY`` when asked to fold, since the summary is the thread's own
+    model continuing its conversation. ``requests`` counts the turn's requests only; a fold
+    request overflows only when ``fold_overflows`` says so.
 
     The point of wrapping rather than faking: the retry has to survive the real library
     path — history cleaning, the resume-without-prompt shape, the streaming node — and a
     stub that answered without going through it would prove nothing about any of that."""
 
-    def __init__(self, *, failures: int = 1, answer: str = "the answer") -> None:
-        super().__init__(TestModel(custom_output_text=answer))
+    def __init__(
+        self, *, failures: int = 1, answer: str = "the answer", fold_overflows: bool = False
+    ) -> None:
+        super().__init__(fold_aware_model(answer=answer, summary="FOLDED AWAY"))
         self.failures = failures
+        self.fold_overflows = fold_overflows
         self.requests = 0
+        self.folds = 0
 
-    def _check(self) -> None:
+    def _check(self, messages) -> None:
+        if is_fold_request(messages):
+            self.folds += 1
+            if self.fold_overflows:
+                raise _ctx_error()
+            return
         self.requests += 1
         if self.requests <= self.failures:
             raise _ctx_error()
 
-    async def request(self, *args, **kwargs):  # type: ignore[override]
-        self._check()
-        return await super().request(*args, **kwargs)
+    async def request(self, messages, *args, **kwargs):  # type: ignore[override]
+        self._check(messages)
+        return await super().request(messages, *args, **kwargs)
 
     @asynccontextmanager
-    async def request_stream(self, *args, **kwargs):  # type: ignore[override]
-        self._check()
-        async with super().request_stream(*args, **kwargs) as stream:
+    async def request_stream(self, messages, *args, **kwargs):  # type: ignore[override]
+        self._check(messages)
+        async with super().request_stream(messages, *args, **kwargs) as stream:
             yield stream
 
 
@@ -133,7 +146,6 @@ def _run_chat(app, cid: str | None, *, model, prompt="next question", **kwargs):
         prompt,
         model=model,
         categories={},
-        utility_model=TestModel(custom_output_text="FOLDED AWAY"),
         store=app.state.conversations if cid else None,
         conversation_id=cid,
         context_window=10_000,
@@ -219,6 +231,40 @@ async def test_a_second_overflow_blocks_with_the_detail_the_client_keys_on():
         assert "folded into a summary" in notice.message
 
 
+async def test_the_summary_is_written_by_the_turns_own_model_on_its_recorded_turns():
+    """The overflow fold summarizes the thread's *recorded* turns — this turn is not in the
+    tree yet — on the model the turn runs on, so it is the smaller request of the two."""
+    async with client_app() as (_client, app):
+        store = app.state.conversations
+        cid = await _seed(store, tail_tokens=100)
+
+        model = _OverflowsThenAnswers()
+        run = _run_chat(app, cid, model=model)
+        await run.wait()
+
+        assert run.status is RunStatus.done
+        assert model.folds == 1
+        assert _bodies(run, "conversation.compacted")[0].summary.endswith("FOLDED AWAY")
+
+
+async def test_a_summary_request_that_overflows_too_stops_the_turn_with_the_notice():
+    """No trimming fallback: if even the recorded turns do not fit, the fold fails like any
+    other, and the turn stops with the ordinary context notice — which still offers the
+    fold, since none landed."""
+    async with client_app() as (_client, app):
+        store = app.state.conversations
+        cid = await _seed(store, tail_tokens=100)
+
+        model = _OverflowsThenAnswers(fold_overflows=True)
+        run = _run_chat(app, cid, model=model)
+        await run.wait()
+
+        assert run.status is RunStatus.blocked
+        assert run.detail == CONTEXT_OVERFLOW_DETAIL
+        assert model.folds == 1
+        assert not _bodies(run, "conversation.compacted")
+
+
 async def test_a_collapsed_fold_boundary_does_not_re_record_the_history():
     """The boundary between the folded history and the turn is *one* message.
 
@@ -299,7 +345,6 @@ async def test_compaction_switched_off_is_not_overruled_by_an_overflow():
             "next question",
             model=_OverflowsThenAnswers(),
             categories={},
-            utility_model=TestModel(custom_output_text="FOLDED AWAY"),
             store=store,
             conversation_id=cid,
             context_window=10_000,
@@ -392,14 +437,14 @@ async def test_a_thread_that_never_measured_its_overhead_does_not_assume_zero():
 def test_a_parked_turn_carries_what_it_would_fold_with():
     """An approval can sit for hours. The thread it resumes into is the one that was
     already near its ceiling, and nothing in the resume orchestrator could re-derive the
-    policy, the store and the summarizer model it would need."""
+    policy, the store and the agent the summary is written on."""
     run = Run(id="p", kind="chat", owner_id=OPERATOR_ID, stream=RunStream())
     ctx = CompactionContext(
         store=object(),  # type: ignore[arg-type]
         conversation_id="c1",
         policy=_POLICY,
-        model=TestModel(),
-        reasoning_off=None,
+        agent=build_agent(TestModel(), categories={}),
+        deps=turn_deps(run, conversation_id="c1"),
         settings=get_settings(),
     )
 

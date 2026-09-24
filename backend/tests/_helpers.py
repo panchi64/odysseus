@@ -12,6 +12,7 @@ from pydantic_ai.models.test import TestModel
 
 from app import create_app
 from core.config import Settings
+from services.providers.base import ModelLimits
 
 #: The window the stub provider reports. It lives on the *provider*, not on the
 #: ResolvedModel a test builds, because that is where a window comes from in
@@ -21,7 +22,7 @@ _STUB_PROVIDER_ID = "test-stub"
 
 
 class _StubProvider:
-    """A provider adapter that reports a context window and nothing else.
+    """A provider adapter that reports a context window and no other limit.
 
     Exists so a stubbed resolution still travels the real discovery path. A test that
     hard-coded `context_window=` onto its `ResolvedModel` would satisfy the chat
@@ -29,17 +30,17 @@ class _StubProvider:
     production — the provider lookup, the manual-value-wins precedence, and the
     memoization — leaving all of it unexercised by any route test.
 
-    Only `context_window` is implemented: resolution is stubbed before it ever builds
-    a model, so nothing here is asked to."""
+    Only the limits are implemented: resolution is stubbed before it ever builds a
+    model, so nothing here is asked to."""
 
     id = _STUB_PROVIDER_ID
     display_name = "Test stub"
     requires_key = False
 
-    async def context_window(
+    async def model_limits(
         self, base_url: str, api_key: str | None, model: str, *, client=None
-    ) -> int | None:
-        return STUB_CONTEXT_WINDOW
+    ) -> ModelLimits:
+        return ModelLimits(context_window=STUB_CONTEXT_WINDOW)
 
 
 async def stub_resolution(registry, model, *, reasoning_off=None):
@@ -51,7 +52,7 @@ async def stub_resolution(registry, model, *, reasoning_off=None):
     from services.registry import ResolvedModel
 
     spec = _stub_spec()
-    [resolved] = await registry._with_context_windows([spec])
+    [resolved] = await registry._with_model_limits([spec])
     return ResolvedModel(
         model=model,
         reasoning_off=reasoning_off or {},
@@ -62,7 +63,7 @@ async def stub_resolution(registry, model, *, reasoning_off=None):
 def _stub_spec():
     from services.llm import EndpointSpec
 
-    # `context_window=None` is the point: it is what sends `_with_context_windows` to
+    # `context_window=None` is the point: it is what sends `_with_model_limits` to
     # the provider instead of short-circuiting on an operator-set value.
     return EndpointSpec(
         base_url="http://stub.invalid/v1",
@@ -83,6 +84,57 @@ def register_stub_provider(monkeypatch) -> None:
     registry = dict(providers._registry())
     registry[_STUB_PROVIDER_ID] = _StubProvider()
     monkeypatch.setattr(providers, "_PROVIDERS", registry)
+
+
+def is_fold_request(messages) -> bool:
+    """Whether a model request is a compaction summary — the turn's replay with the
+    compaction instructions appended as the last user message."""
+    from pydantic_ai import ModelRequest, UserPromptPart
+
+    from prompts.compaction import COMPACT_INSTRUCTIONS
+
+    last = messages[-1] if messages else None
+    return isinstance(last, ModelRequest) and any(
+        isinstance(part, UserPromptPart) and part.content == COMPACT_INSTRUCTIONS
+        for part in last.parts
+    )
+
+
+def fold_aware_model(*, answer: str = "the answer", summary: str = "FOLDED AWAY"):
+    """A main model that writes ``summary`` when asked to fold the thread and ``answer``
+    to anything else — the summary is written by the thread's own model now, so a test
+    driving a turn that folds needs one model that can tell the two requests apart."""
+    from pydantic_ai import ModelResponse, TextPart
+    from pydantic_ai.models.function import FunctionModel
+
+    def _text(messages) -> str:
+        return summary if is_fold_request(messages) else answer
+
+    async def respond(messages, info):
+        return ModelResponse(parts=[TextPart(content=_text(messages))])
+
+    async def stream(messages, info):
+        yield _text(messages)
+
+    return FunctionModel(respond, stream_function=stream)
+
+
+def fold_with(summary: str, *, categories=None) -> dict:
+    """The ``agent``/``deps`` pair ``compact_conversation`` writes a summary with: a turn's
+    agent on a model that answers the fold with ``summary``, and the deps a turn would run
+    it with. ``categories`` defaults to none, so no tool is offered."""
+    from agent.factory import build_agent
+    from agent.turn import turn_deps
+    from runs import Run, RunStream
+
+    run = Run(id="fold", kind="chat", owner_id="operator", stream=RunStream())
+    return {
+        "agent": build_agent(
+            fold_aware_model(summary=summary),
+            categories={} if categories is None else categories,
+        ),
+        "deps": turn_deps(run, conversation_id="c"),
+    }
 
 
 def patch_model_resolution(monkeypatch, *, output_text: str = "hi", call_tools=()):

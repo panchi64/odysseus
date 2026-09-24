@@ -1,4 +1,5 @@
-"""Conversation compaction — folding older turns into a utility-model summary.
+"""Conversation compaction — folding older turns into a summary the thread's own model
+writes.
 
 The product's **one** context reduction, and the only one that fires on measured pressure —
 the pressure-blind reductions (tool-result digesting, the attachment inline cap, the sandbox
@@ -34,21 +35,24 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RequestUsage
 
 from agent import build_chat_orchestrator
+from agent.factory import build_agent
 from agent.history import merge_consecutive_requests
 from agent.summarize import (
     CompactionOutcome,
+    FoldFailed,
     build_auto_compact_policy,
     compact_conversation,
     should_compact,
     summarize_history,
 )
+from agent.turn import turn_deps
 from core.config import Settings, get_settings
-from prompts.utility import COMPACT_PREAMBLE
+from prompts.compaction import COMPACT_PREAMBLE
 from routes.deps import OPERATOR_ID
 from runs import Run, RunStatus, RunStream, TurnOverhead
 from services.conversation_view import estimate_tokens, project_tree
 
-from ._helpers import client_app, patch_model_resolution
+from ._helpers import client_app, fold_aware_model, fold_with, patch_model_resolution
 
 
 def _turn(prompt: str, answer: str) -> list:
@@ -314,20 +318,27 @@ def test_the_estimate_ignores_binary_content():
 
 # --- the summarizer ----------------------------------------------------------
 #
-# How the transcript is rendered, fenced and chunked lives in `test_compaction_summarizer`;
-# what stays here is the fold's contract with the store and the run.
+# How the summary request is built, and what a side run may and may not do, lives in
+# `test_compaction_summarizer`; what stays here is the fold's contract with the store and
+# the run.
 
 
-async def test_summarize_history_degrades_to_none_on_failure():
-    """A summarizer outage must leave the thread uncompacted, never fail the turn it was
-    about to make room for."""
+async def test_summarize_history_degrades_to_a_failed_fold_on_a_model_error():
+    """A model outage must leave the thread uncompacted, never fail the turn it was about
+    to make room for."""
 
     class _Boom(TestModel):
-        async def request(self, *args, **kwargs):
+        async def request_stream(self, *args, **kwargs):
             raise RuntimeError("model down")
+            yield  # pragma: no cover
 
-    result = await summarize_history(_Boom(), [ModelRequest(parts=[UserPromptPart(content="hi")])])
-    assert result is None
+    run = Run(id="fold", kind="chat", owner_id=OPERATOR_ID, stream=RunStream())
+    result = await summarize_history(
+        build_agent(_Boom(), categories={}),
+        turn_deps(run),
+        [ModelRequest(parts=[UserPromptPart(content="hi")])],
+    )
+    assert result == FoldFailed("error")
 
 
 @pytest.mark.parametrize(
@@ -335,31 +346,30 @@ async def test_summarize_history_degrades_to_none_on_failure():
     [
         ("<think>weighing it up</think>the story so far", "the story so far"),
         ("<THINK>casing is the template's choice</think>\n\nthe story so far", "the story so far"),
-        # A model that exhausts max_tokens mid-thought emits an *unclosed* block, whose
-        # partial content Pydantic AI still returns. Left in, the summarizer's scratch
-        # reasoning would become the thread's standing memory.
-        ("the story so far\n<think>still reasoning when the budget ran", "the story so far"),
+        # A model that stops mid-thought emits an *unclosed* block, whose partial content
+        # Pydantic AI still returns. Left in, the model's scratch reasoning would become
+        # the thread's standing memory.
+        ("the story so far\n<think>still reasoning when it stopped", "the story so far"),
     ],
 )
 async def test_summarize_history_strips_a_leaked_think_block(raw: str, expected: str):
-    """Reasoning is requested off, but the lever is best-effort: a runtime that ignores it
-    inlines the chain-of-thought in the content. The summary is what the model replays for
-    the rest of the thread, so a leaked block must never survive into it."""
+    """A runtime that inlines its chain-of-thought in the content rather than as a thinking
+    part. The summary is what the model replays for the rest of the thread, so a leaked
+    block must never survive into it."""
     summary = await summarize_history(
-        TestModel(custom_output_text=raw),
-        [ModelRequest(parts=[UserPromptPart(content="hi")])],
+        messages=[ModelRequest(parts=[UserPromptPart(content="hi")])], **fold_with(raw)
     )
     assert summary == expected
 
 
-async def test_summarize_history_returns_none_when_only_reasoning_came_back():
+async def test_summarize_history_fails_when_only_reasoning_came_back():
     """A reply that is *nothing but* a think block leaves no summary — better to skip the
     compaction than to store an empty checkpoint the model would replay as its memory."""
     summary = await summarize_history(
-        TestModel(custom_output_text="<think>never got to the answer</think>"),
-        [ModelRequest(parts=[UserPromptPart(content="hi")])],
+        messages=[ModelRequest(parts=[UserPromptPart(content="hi")])],
+        **fold_with("<think>never got to the answer</think>"),
     )
-    assert summary is None
+    assert summary == FoldFailed("summarizer_empty")
 
 
 async def test_compact_conversation_end_to_end():
@@ -373,7 +383,7 @@ async def test_compact_conversation_end_to_end():
             store,
             cid,
             reason="threshold",
-            model=TestModel(custom_output_text="the story so far"),
+            **fold_with("the story so far"),
         )
         assert isinstance(outcome, CompactionOutcome)
         # The stored summary is labelled, so the model can't read it as the operator's own
@@ -397,7 +407,7 @@ async def test_the_outcome_reports_what_the_fold_cost():
             store,
             cid,
             reason="threshold",
-            model=TestModel(custom_output_text="short"),
+            **fold_with("short"),
         )
         assert isinstance(outcome, CompactionOutcome)
         assert outcome.messages_compacted == 8
@@ -422,7 +432,7 @@ async def test_the_cold_read_divider_reports_the_same_figures_as_the_event():
             store,
             cid,
             reason="threshold",
-            model=TestModel(custom_output_text="short"),
+            **fold_with("short"),
         )
         assert isinstance(outcome, CompactionOutcome)
 
@@ -451,7 +461,7 @@ async def test_the_fold_reason_survives_a_cold_read():
             store,
             cid,
             reason="overflow",
-            model=TestModel(custom_output_text="short"),
+            **fold_with("short"),
         )
         assert isinstance(outcome, CompactionOutcome)
         assert outcome.reason == "overflow"
@@ -496,7 +506,7 @@ async def test_a_second_folds_stats_cover_only_what_it_folded():
             store,
             cid,
             reason="threshold",
-            model=TestModel(custom_output_text="first"),
+            **fold_with("first"),
         )
         for i in range(2, 5):
             store.record(cid, _turn(f"q{i}", f"a{i}"))
@@ -504,7 +514,7 @@ async def test_a_second_folds_stats_cover_only_what_it_folded():
             store,
             cid,
             reason="threshold",
-            model=TestModel(custom_output_text="second"),
+            **fold_with("second"),
         )
         assert first is not None and second is not None
         assert first.messages_compacted == 4  # q0/a0/q1/a1
@@ -588,9 +598,9 @@ async def _run_turn(app, cid: str, *, policy):
     """Drive one real chat turn through the orchestrator against a seeded conversation."""
     orch = build_chat_orchestrator(
         "next question",
-        model=TestModel(custom_output_text="the answer"),
+        # The summary is written by the turn's own model, so one model answers both.
+        model=fold_aware_model(answer="the answer", summary="FOLDED AWAY"),
         categories={},
-        utility_model=TestModel(custom_output_text="FOLDED AWAY"),
         store=app.state.conversations,
         conversation_id=cid,
         context_window=10_000,
@@ -1020,6 +1030,38 @@ async def test_manual_compact_404s_for_an_unknown_conversation(monkeypatch):
         assert (await client.post("/conversations/nope/compact")).status_code == 404
 
 
+async def test_manual_compact_is_written_by_the_threads_main_model(monkeypatch):
+    """The operator's fold is the thread's own model continuing its own conversation, like
+    an automatic one — never the utility binding, which would read the thread cold on a
+    model that holds none of its prefix."""
+    from services.registry import ModelRegistry
+
+    from ._helpers import register_stub_provider, stub_resolution
+
+    register_stub_provider(monkeypatch)
+    roles: list[str] = []
+
+    async def resolve_detailed(self, role, **kwargs):
+        roles.append(role)
+        text = "written by main" if role == "main" else "written by utility"
+        return await stub_resolution(self, TestModel(custom_output_text=text, call_tools=[]))
+
+    monkeypatch.setattr(ModelRegistry, "resolve_detailed", resolve_detailed)
+    async with client_app() as (client, app):
+        store = app.state.conversations
+        cid = await store.create_conversation(OPERATOR_ID)
+        store.record(cid, _turn("q0", "a0"))
+
+        run = await _fold_now(client, app, cid)
+        assert run.status is RunStatus.done, run.detail
+        assert "main" in roles
+        landed = next(
+            e.body for e in run.stream.replay(0) if e.body.type == "conversation.compacted"
+        )
+        assert "written by main" in landed.summary
+        assert "written by utility" not in landed.summary
+
+
 # --- one fold, three triggers ------------------------------------------------
 
 
@@ -1030,8 +1072,9 @@ async def test_a_manual_fold_and_an_automatic_one_are_the_same_fold(monkeypatch)
     This is a regression test with a real history behind it. The operator's fold used to
     reach past ``agent.folding.fold`` and call the summarizer directly, assembling its own
     arguments as it went — so it emitted neither event, resolved a partial policy, and ran
-    the summarizer against a different input budget. Every one of those is invisible until
-    something compares the two, which is what this does.
+    the summarizer against a different input budget (and later on a different model).
+    Every one of those is invisible until something compares the two, which is what this
+    does.
 
     Compared deliberately: the event sequence, what the fold measured, and what the
     checkpoint a reload reads says. Not the summary text — the same stub writes both, so
@@ -1059,15 +1102,14 @@ async def test_a_manual_fold_and_an_automatic_one_are_the_same_fold(monkeypatch)
         # A bare Run rather than a submitted one: `fold` only needs something to emit
         # onto, and a submitted run closes its stream the moment its orchestrator returns.
         run = Run(id="fold-auto", kind="compaction", owner_id=OPERATOR_ID, stream=RunStream())
-        utility = await app.state.models.resolve_background(owner_id=OPERATOR_ID)
+        main = await app.state.models.resolve_detailed("main", owner_id=OPERATOR_ID)
         ctx = build_compaction_context(
             store=store,
             conversation_id=by_threshold,
             policy=build_auto_compact_policy(get_settings()),
-            model=utility.model,
-            reasoning_off=utility.reasoning_off,
+            agent=build_agent(main.model, categories={}),
+            deps=turn_deps(run, conversation_id=by_threshold),
             settings=get_settings(),
-            utility_context_window=utility.context_window,
         )
         assert ctx is not None
         auto = await fold(run, ctx, reason="threshold")
@@ -1122,6 +1164,5 @@ async def test_the_fold_streams_the_summary_as_it_is_written(monkeypatch):
 
         deltas = [e.body for e in run.stream.replay(0) if e.body.type == "compaction.delta"]
         assert "".join(d.text for d in deltas) == "the story so far"
-        # A single-pass fold — the common one — says so rather than counting a merge it
-        # never ran.
+        # A fold is one pass by the thread's own model, and says so.
         assert {(d.part, d.parts) for d in deltas} == {(1, 1)}

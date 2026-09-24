@@ -88,7 +88,8 @@ from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
 from core.untrusted import new_nonce, untrusted_fence, untrusted_preamble
-from prompts.utility import COMPACT_MARKER, REVIEW_INSTRUCTIONS
+from prompts.compaction import COMPACT_MARKER
+from prompts.utility import REVIEW_INSTRUCTIONS
 from services.permissions.capability import Capability
 
 logger = logging.getLogger(__name__)

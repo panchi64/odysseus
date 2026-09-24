@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel
-from pydantic_ai import CapabilityEvent
+from pydantic_ai import CapabilityEvent, RunContext
 from pydantic_ai.messages import ToolCallPart
 
 from runs import PrefixVerdict, TurnOverhead
@@ -111,3 +111,17 @@ class NestedToolFinished(CapabilityEvent, namespace=NAMESPACE):
     content: Any = None
     user_content: Any = None
     error: str | None = None
+
+
+#: The run metadata key that marks a **side run** — a request made on a turn's own agent
+#: for the chassis's purposes rather than the operator's, today only the compaction summary
+#: (``agent/compaction_summary.py``). Its event stream goes nowhere, so nothing it emits
+#: reaches the run; what has to be kept out as well is the state an observing capability
+#: holds *on itself*, which lives as long as the agent and so would carry a side run's
+#: request into the turn's own readings.
+SIDE_RUN = "odysseus.side_run"
+
+
+def is_side_run(ctx: RunContext[Any]) -> bool:
+    """Whether this request belongs to a side run, so an observer should leave it be."""
+    return bool((ctx.metadata or {}).get(SIDE_RUN))

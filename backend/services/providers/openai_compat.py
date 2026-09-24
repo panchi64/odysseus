@@ -17,7 +17,7 @@ from pydantic_ai.settings import ModelSettings
 from core.config import get_settings
 from services import llm, reasoning
 from services.llm import EndpointSpec
-from services.providers.base import ProviderPreset
+from services.providers.base import ModelLimits, ProviderPreset
 
 #: The three OpenAI cache fields. Named as a set so that switching retention off declares
 #: all of them unsupported rather than only the one this adapter would otherwise have sent —
@@ -121,6 +121,15 @@ class OpenAICompatProvider:
         self, base_url: str, api_key: str | None, model: str, *, client=None
     ) -> int | None:
         return await llm.discover_openai_context_window(base_url, model, api_key, client=client)
+
+    async def model_limits(
+        self, base_url: str, api_key: str | None, model: str, *, client=None
+    ) -> ModelLimits:
+        # The window only: this wire treats an absent `max_tokens` as the server's own
+        # limit, so there is no library default to replace.
+        return ModelLimits(
+            context_window=await self.context_window(base_url, api_key, model, client=client)
+        )
 
     def reasoning_off(self, descriptor: reasoning.ModelDescriptor) -> ModelSettings:
         return reasoning.disable_thinking(descriptor)

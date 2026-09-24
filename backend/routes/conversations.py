@@ -20,14 +20,14 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from agent.attribution import attribute_answer
-from agent.compaction_context import build_compaction_context
-from agent.folding import fold
+from agent.engine import fold_now
 from agent.summarize import FoldFailed, FoldFailure, NothingToFold
 from agent.title import title_from_history
 from core.compaction_sections import SummarySection
 from core.config import get_settings
 from core.exceptions import DegradedCapabilityError, NotFoundError
 from routes import deps
+from routes.chat import resolve_turn_models, turn_scope
 from routes.deps import OPERATOR_ID
 from runs import ContextWindow, ConversationBusyError, FoldPoint, Run, RunMetrics
 from services.approval_grants import COMMAND_SCOPED_TOOLS
@@ -1338,9 +1338,10 @@ _NOTHING_TO_FOLD = "Nothing to fold — there are no new turns since the last co
 #: summarizer that wrote nothing is worth retrying, and a leaf that moved means the fold
 #: described a path they have navigated away from.
 _FOLD_FAILED: Mapping[FoldFailure, str] = {
-    "summarizer_empty": (
-        "The fold did not land — the background model returned nothing, or ran out of "
-        "time reading the thread. Try again."
+    "summarizer_empty": ("The fold did not land — the model returned no summary. Try again."),
+    "tool_call": (
+        "The fold did not land — the model answered with a tool call instead of the "
+        "summary, and it was not run. Try again."
     ),
     "leaf_moved": (
         "The fold did not land — the conversation moved while it ran, so the summary "
@@ -1349,10 +1350,6 @@ _FOLD_FAILED: Mapping[FoldFailure, str] = {
     "error": "The fold did not land. Try again, or check the logs for what failed.",
 }
 
-_NO_SUMMARIZER = (
-    "No model is available to write the summary — bind a background model, or pick an "
-    "endpoint for this thread that still exists."
-)
 
 
 async def _run_manual_fold(run: Run, request: Request, pick: RetitleRequest) -> None:
@@ -1367,43 +1364,43 @@ async def _run_manual_fold(run: Run, request: Request, pick: RetitleRequest) -> 
     The threshold and the on/off switch are deliberately ignored, and that is the **only**
     thing this trigger does differently from the automatic one: the operator asked for it
     explicitly, so there is nothing left for a trigger to decide. Everything downstream —
-    what gets folded, the input budget, the never-reach-past-an-earlier-checkpoint rule,
+    what gets folded, the model that writes it, the never-reach-past-an-earlier-checkpoint rule,
     the events, the checkpoint that gets written — is the shared path's.
 
     Failure is reported rather than swallowed, which is the other half of that split. An
     automatic fold that fails lets the turn carry on, because nobody asked for it; this one
     was asked for, and a button whose failure looks like success is worse than one that
-    does not work."""
+    does not work.
+
+    **The summary is written by the thread's own main model** — the picker's selection,
+    resolved exactly as a chat turn resolves it — on the agent a turn would run, composed
+    from the same :class:`~routes.chat.TurnScope`. Never the utility model: the request is
+    the thread's replay plus one message, so the model that served the last turn serves it
+    from the prefix it already holds."""
     conversation_id = run.conversation_id
     assert conversation_id is not None  # noqa: S101 — set by the submit below
     try:
-        utility = await deps.models(request).resolve_background(
-            owner_id=OPERATOR_ID,
-            override_endpoint_id=pick.endpoint_id,
-            override_model=pick.model,
+        model, _, _, _, vision = await resolve_turn_models(
+            deps.models(request), pick.endpoint_id, pick.model
         )
-    except NotFoundError:
-        # Both halves of the resolve can raise it: no utility binding *and* a chat
-        # fallback that points at nothing — the thread's picked endpoint, when it has
-        # one. Naming only the first would send the operator to the wrong setting.
-        run.block(_NO_SUMMARIZER)
+    except HTTPException as exc:
+        # The resolve answers in HTTP because its other callers are routes; here the
+        # response has already gone, so the reason travels as the run's stop detail.
+        run.block(str(exc.detail))
         return
-    except DegradedCapabilityError as exc:
-        run.block(str(exc))
-        return
-    # No policy: it says when the automatic triggers fire, and nothing here is a trigger.
-    ctx = build_compaction_context(
+    scope = await turn_scope(request, conversation_id, vision=vision)
+    result = await fold_now(
+        run,
+        model=model,
         store=deps.store(request),
         conversation_id=conversation_id,
-        model=utility.model,
-        reasoning_off=utility.reasoning_off,
-        settings=get_settings(),
-        utility_context_window=utility.context_window,
+        categories=scope.categories,
+        dormant=scope.dormant,
+        instruction_providers=scope.instruction_providers,
+        capabilities=scope.capabilities,
+        disabled_tools=scope.disabled_tools,
+        binding=scope.binding,
     )
-    if ctx is None:  # pragma: no cover — a resolved utility model is non-None
-        run.block(_NO_SUMMARIZER)
-        return
-    result = await fold(run, ctx, reason="manual")
     if isinstance(result, NothingToFold):
         run.block(_NOTHING_TO_FOLD)
     elif isinstance(result, FoldFailed):

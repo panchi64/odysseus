@@ -14,7 +14,7 @@ page it fetched may be quoted inside either. So the trusted-channel discipline i
 with a fence rather than dropped — the operator's turns stand in the clear because they are
 the one voice in the thread that is theirs, and everything model-authored goes inside
 :func:`core.untrusted.untrusted_fence` under one shared nonce announced once at the top,
-exactly as the compaction transcript does it and for the same reason: the output is stored
+for the reason a stored summary always needs it: the output is stored
 and shown to the operator as the workspace's own account of the thread, so a fetched page
 must not be able to speak in that voice.
 
@@ -23,11 +23,10 @@ summary's whole job is to say what was asked *and then* what was done about it, 
 transcript that lists every operator turn and then every model turn has thrown away the
 pairing the summary is made of.
 
-**Tool *returns* are excluded outright**, which is the one real difference from the
-compaction transcript. They are simultaneously the bulkiest part of a thread and the most
-injectable, and they are redundant here: each call carries the model's own ``narration`` —
-one sentence saying why it made that call (``tools/describe.py``) — and the answer text
-says what came of it. A fold has to preserve what a tool returned because the thread
+**Tool *returns* are excluded outright.** They are simultaneously the bulkiest part of a
+thread and the most injectable, and they are redundant here: each call carries the model's
+own ``narration`` — one sentence saying why it made that call (``tools/describe.py``) — and
+the answer text says what came of it. A fold has to preserve what a tool returned because the thread
 continues on it; a re-entry band does not.
 
 Best-effort throughout, like the titler: a model error, a timeout or an empty reply degrades

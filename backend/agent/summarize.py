@@ -1,4 +1,5 @@
-"""Conversation compaction — folding a thread's older turns into a utility-model summary.
+"""Conversation compaction — folding a thread's older turns into a summary its own model
+writes.
 
 **The product's only context reduction** (`AE-5.4`, `CHAT-4`), and the only one that ever
 existed for a good reason: it fires on *measured pressure*, when a thread's footprint has
@@ -24,11 +25,12 @@ Three properties make this safe to run automatically:
   with a context notice rather than re-folding a thread down to nothing. Compaction lowers
   the pressure; it never silently drops content to force a fit.
 
-What the summarizer is allowed to read, and how the text it produces is trusted afterwards,
-live next door: :mod:`agent.compaction_transcript` renders the fold (tool output fenced,
-turns chunked to fit rather than elided) and :mod:`agent.compaction_summary` handles what
-comes back (anchors carried across folds verbatim, tool-sourced facts fenced on the way
-into the checkpoint). This module owns *when* a thread folds and *what is recorded*.
+How the summary is written, and how the text it produces is trusted afterwards, live next
+door in :mod:`agent.compaction_summary`: the turn's own agent continues its own
+conversation with one more message asking for the briefing, so the local engine reuses the
+prefix it already holds, and what comes back has its anchors carried across folds verbatim
+and its tool-sourced facts fenced on the way into the checkpoint. This module owns *when* a
+thread folds and *what is recorded*.
 
 **A fold keeps no retained tail.** It summarizes everything since the newest checkpoint —
 that checkpoint's own summary included — and the new summary alone carries the thread
@@ -44,12 +46,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
-from pydantic_ai import ModelMessage, ModelRequest, UserPromptPart
-from pydantic_ai.models import Model
-from pydantic_ai.settings import ModelSettings
+from pydantic_ai import Agent, ModelMessage, ModelRequest, UserPromptPart
 
 from core.config import Settings, get_settings
-from prompts.utility import COMPACT_PREAMBLE
+from prompts.compaction import COMPACT_PREAMBLE
 from runs.events import CompactionReason
 from runs.overhead import TurnOverhead
 from services.conversation_view import estimate_footprint, estimate_tokens
@@ -59,24 +59,19 @@ from services.settings_store import (
     get_auto_compact,
     resolve_compaction_enabled,
 )
+from tools import RunDeps
 
 from .compaction_summary import (
     DeltaSink,
+    SummaryCalledTool,
     carried_anchors,
     fence_tool_facts,
     merge_anchors,
-    summarize_chunks,
+    write_summary,
 )
-from .compaction_transcript import transcript_chunks
 from .history import revealed_tools
 
 logger = logging.getLogger(__name__)
-
-# Output-capped base settings, merged under the caller's reasoning-off settings and
-# per-call `max_tokens` — the same shape `agent/title.py` uses, and for the same reason: a
-# runtime that ignores the reasoning-off lever emits its `<think>` block as response
-# tokens, so the budget has to cover the thinking *and* the summary.
-_BASE_SETTINGS: ModelSettings = {"max_tokens": 2048, "temperature": 0.2}
 
 
 @dataclass(frozen=True)
@@ -102,10 +97,11 @@ class NothingToFold:
 
 
 #: Why a fold that had work to do did not land. ``summarizer_empty`` is a model that
-#: returned nothing (or timed out inside its own deadline); ``leaf_moved`` is the active
-#: leaf shifting under a summary that now describes a path the operator is not on;
-#: ``error`` is anything raised on the way.
-type FoldFailure = Literal["summarizer_empty", "leaf_moved", "error"]
+#: returned no text; ``tool_call`` is one that answered with a tool call it was told not to
+#: make (never executed); ``leaf_moved`` is the active leaf shifting under a summary that
+#: now describes a path the operator is not on; ``error`` is anything raised on the way,
+#: the model's own failure included.
+type FoldFailure = Literal["summarizer_empty", "tool_call", "leaf_moved", "error"]
 
 
 @dataclass(frozen=True)
@@ -215,11 +211,9 @@ async def compact_conversation(
     store: ConversationStore,
     conversation_id: str,
     *,
-    model: Model,
+    agent: Agent,
+    deps: RunDeps,
     reason: CompactionReason,
-    reasoning_off: ModelSettings | None = None,
-    settings: Settings | None = None,
-    max_input_tokens: int | None = None,
     on_plan: Callable[[CompactionPlan], None] | None = None,
     on_delta: DeltaSink | None = None,
 ) -> FoldResult:
@@ -240,37 +234,26 @@ async def compact_conversation(
     that there was nothing to fold. :func:`agent.folding.fold` wraps this so a turn never
     dies for a compaction it only wanted as an optimization.
 
+    ``agent`` and ``deps`` are the turn's own: the summary is written by the model the
+    thread runs on, continuing its own conversation (:mod:`agent.compaction_summary`).
+
     ``on_plan`` is called once the fold is known and *before* the summarizer runs — the one
     moment at which what is about to be folded can be announced, since the summarizer call
     is the seconds-long part. The engine emits ``compaction.started`` from it; a caller with
     nothing to announce passes nothing.
 
-    ``max_input_tokens`` overrides the configured transcript budget, so a turn that has
-    resolved the summarizer's own context window can hold the input inside it.
-
     ``reason`` is required rather than defaulted, and travels all the way onto the stored
     checkpoint. Each of the three callers knows which trigger it is — the threshold, the
     mid-turn overflow recovery, the operator's own button — and a default here would let a
     new one silently record the most common answer instead of its own."""
-    cfg = settings or get_settings()
     plan = await store.compaction_plan(conversation_id)
     if plan is None:
         return NothingToFold()
     if on_plan is not None:
         on_plan(plan)
-    summary = await summarize_history(
-        model,
-        plan.messages,
-        on_delta=on_delta,
-        reasoning_off=reasoning_off,
-        timeout_s=cfg.auto_compact_timeout_s,
-        max_tokens=cfg.auto_compact_max_tokens,
-        max_input_tokens=(
-            cfg.auto_compact_input_max_tokens if max_input_tokens is None else max_input_tokens
-        ),
-    )
-    if not summary:
-        return FoldFailed("summarizer_empty")
+    summary = await summarize_history(agent, deps, plan.messages, on_delta=on_delta)
+    if isinstance(summary, FoldFailed):
+        return summary
     # Labelled on the way in, not on the way out: the stored text is what both the model
     # replays and the operator reads, and it needs to announce itself as a summary in both
     # places. The same framed text rides the event, so the divider a live client draws and
@@ -286,9 +269,9 @@ async def compact_conversation(
         # the only record that the model ever loaded the browser (or the mailbox), and the
         # library reads that record fresh on every request — so what the folded stretch
         # revealed is carried onto the checkpoint, and the thread keeps the tools it was
-        # working with. Read off `plan.messages` rather than the whole thread: the retained
-        # tail still carries its own reveals, and a *previous* checkpoint's carried delta is
-        # inside this fold, so a second fold inherits the first's without special-casing.
+        # working with. Read off `plan.messages` rather than the whole thread: a *previous*
+        # checkpoint's carried delta is inside this fold, so a second fold inherits the
+        # first's without special-casing.
         revealed_tools=revealed_tools(plan.messages),
     )
     if message_id is None:
@@ -312,46 +295,42 @@ async def compact_conversation(
 
 
 async def summarize_history(
-    model: Model,
+    agent: Agent,
+    deps: RunDeps,
     messages: list[ModelMessage],
     *,
-    reasoning_off: ModelSettings | None = None,
-    timeout_s: float | None = None,
-    max_tokens: int | None = None,
-    max_input_tokens: int | None = None,
     on_delta: DeltaSink | None = None,
-) -> str | None:
+) -> str | FoldFailed:
     """Summarize a stretch of conversation into the briefing that will stand in for it, or
-    ``None`` on any failure.
+    say why no briefing was written.
 
-    The history is rendered to a **plain-text transcript** rather than replayed as
-    ``message_history`` (:mod:`agent.compaction_transcript`). Replaying a main-model
-    transcript into a different model means handing it that model's tool calls, thinking
-    parts and provider-specific shapes — a reliable source of 400s — and the summarizer
-    needs to *read* the exchange, not continue it.
+    Written by the turn's own agent, against the replay it would be sent plus one message
+    asking for the briefing (:func:`agent.compaction_summary.write_summary`) — so the model
+    that did the work reads it in its own format, and a local engine serves the request
+    from the prefix it already holds. There is no transcript, no chunking and no merge: a
+    stretch the model could not read whole is a stretch it could not have been replaying
+    either, and the overflow that would signal it fails this fold like any other error.
 
-    **A transcript larger than the summarizer's window is chunked, not cut.** It splits at
-    turn boundaries into pieces that fit ``max_input_tokens``, each is summarized (map) and
-    the partial summaries are merged into one (reduce). The alternative — eliding the
-    middle — throws away whatever happened in the middle of the thread, which is usually
-    where the work was. All of it runs under **one** ``timeout_s`` deadline, so a chunked
-    fold can't outlast the single-call budget the run allowed for it.
+    **No time limit and no output cap.** The call runs until the model finishes, so the
+    briefing is as long as the thread needs; the run's own watchdog is held open for the
+    fold by :func:`agent.folding.fold`.
 
-    Best-effort and isolated, like titling: a model error or timeout leaves the thread
-    uncompacted rather than failing the turn it was about to make room for, and any
-    ``<think>`` block a runtime leaked into the output is stripped from **every** call
-    before it can become the thread's standing memory."""
-    chunks = transcript_chunks(messages, max_input_tokens=max_input_tokens)
-    if not chunks:
-        return None
-    settings: ModelSettings = {**_BASE_SETTINGS, **(reasoning_off or {})}
-    if max_tokens is not None:
-        settings["max_tokens"] = max_tokens
-    summary = await summarize_chunks(
-        model, chunks, settings=settings, timeout_s=timeout_s, on_delta=on_delta
-    )
+    Best-effort and isolated: a model error leaves the thread uncompacted rather than
+    failing the turn it was about to make room for (``error``), a reply with no text is
+    ``summarizer_empty``, and a reply that called a tool despite being told not to is
+    ``tool_call`` — the call is never run."""
+    try:
+        summary = await write_summary(agent, deps, messages, on_delta=on_delta)
+    except SummaryCalledTool:
+        logger.warning("conversation compaction summary failed: the model called a tool")
+        return FoldFailed("tool_call")
+    except Exception as exc:  # noqa: BLE001 — compaction is best-effort, never fails a turn
+        # CancelledError is not an Exception subclass, so a cancelled run still propagates
+        # rather than degrading to "no summary".
+        logger.warning("conversation compaction summary failed: %s", exc)
+        return FoldFailed("error")
     if not summary:
-        return None
+        return FoldFailed("summarizer_empty")
     # Anchors are what a re-summarized summary loses first, so a second fold carries the
     # previous checkpoint's exact paths, ids and numbers across verbatim rather than asking
     # a model to restate them one more time.

@@ -68,6 +68,10 @@ class EndpointSpec:
     # None ⇒ the server doesn't authenticate (a local engine). Never a sentinel.
     api_key: str | None = None
     context_window: int | None = None
+    # The most output tokens one response may ask for, as the provider advertises it —
+    # discovered, never operator-set. None ⇒ unknown, and the model library's own
+    # default stands (`Provider.model_limits` has why that matters for Anthropic).
+    max_output_tokens: int | None = None
     native_tools: bool = True
     vision: bool = False
     thinking: bool = False
@@ -207,7 +211,7 @@ _LMSTUDIO_NATIVE = "/api/v0/models"
 _LLAMA_CPP_PROPS = "/props"
 
 
-def _positive_int(value: object) -> int | None:
+def positive_int(value: object) -> int | None:
     """``value`` if it is a usable token count, else None.
 
     Guards `bool` explicitly: it is an `int` subclass, and a server answering
@@ -225,7 +229,7 @@ def _context_from_row(row: object, keys: Sequence[str]) -> int | None:
     if not isinstance(row, dict):
         return None
     for key in keys:
-        window = _positive_int(row.get(key))
+        window = positive_int(row.get(key))
         if window is not None:
             return window
     return None
@@ -467,7 +471,7 @@ async def _llama_cpp_props(
             continue
         settings = payload.get("default_generation_settings")
         settings = settings if isinstance(settings, dict) else {}
-        window = _positive_int(settings.get("n_ctx"))
+        window = positive_int(settings.get("n_ctx"))
         if window is None:
             continue
         build = payload.get("build_info")
@@ -479,7 +483,7 @@ async def _llama_cpp_props(
         }
         return PromptCachePosture(
             context_window=window,
-            total_slots=_positive_int(payload.get("total_slots")),
+            total_slots=positive_int(payload.get("total_slots")),
             build_info=build if isinstance(build, str) else None,
             cache_settings=stated,
         )

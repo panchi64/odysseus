@@ -201,7 +201,7 @@ class _Node:
     ttft_ms: int | None = None
     tool_ms: int | None = None
     # A conversation-compaction checkpoint (see `record_compaction`): this node's message
-    # is a utility-model summary of everything on the path up to and including
+    # is a summary, written by the thread's own model, of everything on the path up to and including
     # `compacted_through`. The summarized nodes stay in the tree untouched — only what the
     # *model* replays changes (`model_history`).
     compacted: bool = False

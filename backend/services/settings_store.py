@@ -20,8 +20,8 @@ from models.app_setting import AppSetting
 from runs import DEFAULT_CONTEXT_THRESHOLDS, ContextThresholds
 
 # Conversation auto-compaction (agent/summarize.py) — the product's one pressure-driven
-# context reduction: whether to fold a thread's older turns into a utility-model summary
-# once its footprint reaches `threshold` of the model's context window, expressed as a
+# context reduction: whether to fold a thread's older turns into a summary its own model
+# writes once its footprint reaches `threshold` of the model's context window, expressed as a
 # fraction (0.80 = 80%).
 AUTO_COMPACT_ENABLED_KEY = "chat.auto_compact_enabled"
 AUTO_COMPACT_THRESHOLD_KEY = "chat.auto_compact_threshold"

@@ -245,7 +245,7 @@ def _window(provider_id: str, model: str, window: int | None) -> int | None:
 
 
 def test_the_endpoints_own_window_wins_for_every_provider():
-    """The registry funnels every resolution through `_with_context_windows`, which
+    """The registry funnels every resolution through `_with_model_limits`, which
     prefers the operator's figure and otherwise probes the server. Whatever it lands on
     is what the model is built with — a library that resolved a different number from the
     model's name would give the gauge and the fold trigger a second source of truth."""
@@ -264,11 +264,55 @@ def test_an_openai_wire_endpoint_with_no_window_declares_none():
 
 def test_a_hosted_endpoint_with_no_window_keeps_the_librarys_figure():
     """The other side of the same rule. These adapters talk to one lab, so the model name
-    really does name that model — and Anthropic's own models API carries no context length
-    (`AnthropicNativeProvider.context_window` returns None on purpose), so the library's
-    figure is usually the only one there is. Discarding it would leave a hosted thread
-    with no gauge at all."""
+    really does name that model — and where discovery came back empty (an unreachable
+    models API, a proxy that doesn't say) the library's figure is the only one there is.
+    Discarding it would leave a hosted thread with no gauge at all."""
     assert _window("anthropic", "claude-sonnet-4-5", None) is not None
+
+
+# ── The output ceiling on the model's settings ───────────────────────────────────
+
+
+def _anthropic(max_output: int | None):
+    return llm.build_model(
+        llm.EndpointSpec(
+            base_url="https://api.anthropic.com",
+            model="claude-x",
+            provider="anthropic",
+            api_key="k",
+            max_output_tokens=max_output,
+        )
+    )
+
+
+def test_an_anthropic_models_own_output_ceiling_replaces_the_librarys_4096():
+    """`AnthropicModel` sends 4096 whenever no layer supplied `max_tokens`, cutting every
+    unbounded answer and summary short. The discovered ceiling sits on the model's own
+    settings, so it holds through a fallback chain and a parked resume."""
+    assert (_anthropic(128_000).settings or {}).get("max_tokens") == 128_000
+
+
+def test_an_unknown_ceiling_leaves_max_tokens_absent():
+    assert "max_tokens" not in (_anthropic(None).settings or {})
+
+
+def test_a_requests_own_max_tokens_still_wins():
+    from pydantic_ai.settings import merge_model_settings
+
+    merged = merge_model_settings(_anthropic(128_000).settings, {"max_tokens": 512})
+    assert merged is not None and merged["max_tokens"] == 512
+
+
+def test_the_other_wires_carry_no_output_ceiling():
+    for provider_id in ("openai-compatible", "google"):
+        spec = llm.EndpointSpec(
+            base_url="https://api.example.com",
+            model="m",
+            provider=provider_id,
+            api_key="k",
+            max_output_tokens=128_000,
+        )
+        assert "max_tokens" not in (llm.build_model(spec).settings or {}), provider_id
 
 
 def test_the_openai_wire_still_merges_leading_system_messages():

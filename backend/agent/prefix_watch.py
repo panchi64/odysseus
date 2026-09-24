@@ -45,7 +45,7 @@ from runs.prefix import DivergenceKind, HeadChange
 from tools import RunDeps
 
 from .assembled import declared_function_tools
-from .emit import PrefixWatched
+from .emit import PrefixWatched, is_side_run
 
 #: Width of every fingerprint here, in bytes. This decides whether a *diagnostic* reports a
 #: change, never whether anything is trusted or authorized, and 128 bits will not collide
@@ -302,6 +302,11 @@ class WatchPrefix(AbstractCapability[RunDeps]):
     async def before_model_request(
         self, ctx: RunContext[RunDeps], request_context: ModelRequestContext
     ) -> ModelRequestContext:
+        # A side run (the compaction summary) is not one of the turn's requests: its verdict
+        # would reach nobody, and remembering it would make the turn's next request report
+        # against a request the operator never saw sent.
+        if is_side_run(ctx):
+            return request_context
         params = request_context.model_request_parameters
         # The array the provider will render, which is neither of the two lists the request
         # carries — see `agent/assembled.py`. Output tools are appended because they are in

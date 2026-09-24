@@ -27,7 +27,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from pydantic_ai import ModelMessage
+from pydantic_ai import Agent, ModelMessage
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
@@ -56,6 +56,7 @@ from .injections import announce_injection, contributor_id
 from .metrics import turn_metrics
 from .naming import Namer, TitleContext, start_title
 from .summarize import AutoCompactPolicy, build_auto_compact_policy
+from .turn import turn_deps
 
 
 @dataclass
@@ -91,6 +92,7 @@ class TurnSetup:
 async def prepare_turn(
     setup: TurnSetup,
     run: Run,
+    agent: Agent,
     *,
     prompt: str | None,
     store: ConversationStore | None,
@@ -105,9 +107,7 @@ async def prepare_turn(
     binding: ConversationBinding,
     prompt_context_providers: Sequence[PromptContextProvider],
     auto_compact: AutoCompactPolicy | None,
-    utility_model: Model | None,
-    utility_settings: ModelSettings | None,
-    utility_context_window: int | None,
+    disabled_tools: frozenset[str],
     context_window: int | None,
     title_model: Model | None,
     title_settings: ModelSettings | None,
@@ -146,18 +146,27 @@ async def prepare_turn(
         # a gauge and a fold that disagreed about it would disagree about fullness.
         # `MeasureOverhead` replaces it with the live figure on the first request.
         run.context_overhead = await store.get_overhead(conversation_id)
-    # What this turn may fold with. None ⇒ it cannot fold: a stateless run, or no
-    # utility model to summarize with. The policy is resolved either way, because the
-    # verifier's size guard measures against the same threshold on every turn.
+    # What this turn may fold with. None ⇒ it cannot fold: a stateless run. The policy is
+    # resolved either way, because the verifier's size guard measures against the same
+    # threshold on every turn. The summary is written on this turn's own agent, with the
+    # deps the turn will run it with — the same mode, level, disabled set and capability
+    # bag — so the request renders the brief and offers the tools the turn's first request
+    # will, and the engine's cached prefix is the one it reads.
     policy = auto_compact or build_auto_compact_policy(settings)
     compaction = build_compaction_context(
         store=store,
         conversation_id=conversation_id,
         policy=policy,
-        model=utility_model,
-        reasoning_off=utility_settings,
+        agent=agent,
+        deps=turn_deps(
+            run,
+            caps=caps,
+            disabled_tools=disabled_tools,
+            conversation_id=conversation_id,
+            binding=binding,
+            workspace_key=workspace_key,
+        ),
         settings=settings,
-        utility_context_window=utility_context_window,
     )
     setup.policy = policy
     setup.compaction = compaction

@@ -46,15 +46,20 @@ def test_the_compaction_defaults():
     cfg = Settings()
     assert cfg.auto_compact_enabled is True
     assert cfg.auto_compact_threshold == pytest.approx(0.80)
-    assert cfg.auto_compact_input_max_tokens == 32000
 
 
-def test_the_summarizer_timeout_sits_below_the_inactivity_watchdog():
-    """A summarizer allowed to run as long as the watchdog is a summarizer that can get the
-    run it was saving killed mid-fold."""
-    cfg = Settings()
-    assert cfg.run_inactivity_timeout_s is not None
-    assert cfg.auto_compact_timeout_s < cfg.run_inactivity_timeout_s
+def test_the_summary_has_no_time_or_length_setting():
+    """The summary replaces the thread, so nothing may cut it short — not a deadline and
+    not an output budget. A setting for either would be a limit waiting to be set."""
+    fields = Settings.model_fields
+    assert "auto_compact_timeout_s" not in fields
+    assert "auto_compact_max_tokens" not in fields
+
+
+def test_there_is_no_summarizer_input_budget():
+    """The summary is written by the thread's own model over the replay it already serves,
+    so there is no second model's window to chunk a transcript for."""
+    assert "auto_compact_input_max_tokens" not in Settings.model_fields
 
 
 def test_the_overhead_fallback_is_not_zero():

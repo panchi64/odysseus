@@ -18,7 +18,6 @@ that only holds in memory is a shape that breaks on the operator's next page loa
 from __future__ import annotations
 
 from pydantic_ai import ModelRequest, ModelResponse, TextPart, UserPromptPart
-from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RequestUsage
 
 from agent import build_chat_orchestrator
@@ -27,7 +26,7 @@ from core.config import Settings
 from routes.deps import OPERATOR_ID
 from runs import RunStatus
 
-from ._helpers import client_app
+from ._helpers import client_app, fold_aware_model
 
 
 def _turn(prompt: str, answer: str, input_tokens: int = 0) -> list:
@@ -109,9 +108,9 @@ async def test_a_regenerate_at_the_threshold_folds_and_answers_the_same_request(
 
         orch = build_chat_orchestrator(
             None,  # regenerate: no new prompt, the leaf already sits on the request
-            model=TestModel(custom_output_text="a better answer"),
+            # The thread's own model writes the summary as well as the answer.
+            model=fold_aware_model(answer="a better answer", summary="FOLDED AWAY"),
             categories={},
-            utility_model=TestModel(custom_output_text="FOLDED AWAY"),
             store=store,
             conversation_id=cid,
             context_window=10_000,

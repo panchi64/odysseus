@@ -33,7 +33,7 @@ def new_nonce() -> str:
     """A fresh one-time fence token.
 
     Callers that fence several blocks in one message (a batch of search results, a
-    compaction transcript's tool returns) need the *same* token on every marker and one
+    work-summary transcript's turns) need the *same* token on every marker and one
     preamble naming it — so the token has to be minted before the fences, not inside
     them. Random per call, because a fence whose token untrusted content could predict is
     a fence it could forge its way out of."""

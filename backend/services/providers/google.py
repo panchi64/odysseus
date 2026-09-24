@@ -16,7 +16,7 @@ from pydantic_ai.settings import ModelSettings
 
 from core.exceptions import DegradedCapabilityError
 from services.llm import EndpointSpec
-from services.providers.base import ProviderPreset
+from services.providers.base import ModelLimits, ProviderPreset
 from services.reasoning import ModelDescriptor
 
 _DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com"
@@ -107,6 +107,15 @@ class GoogleNativeProvider:
             if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0:
                 return limit
         return None
+
+    async def model_limits(
+        self, base_url: str, api_key: str | None, model: str, *, client=None
+    ) -> ModelLimits:
+        # The window only: `GoogleModel` leaves an absent output cap off the request, so
+        # the server's own limit already applies and there is nothing to replace.
+        return ModelLimits(
+            context_window=await self.context_window(base_url, api_key, model, client=client)
+        )
 
     async def _list_models(
         self, base_url: str, api_key: str | None, *, client: httpx.AsyncClient | None = None

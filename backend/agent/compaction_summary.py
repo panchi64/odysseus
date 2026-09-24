@@ -1,14 +1,34 @@
-"""The summary itself — how it is produced from transcript chunks, and how the text that
-comes back is handled.
+"""The summary itself — how the turn's own model writes it, and how the text that comes
+back is handled.
 
-**Producing it is a map/reduce**, because the stretch being folded is by definition most of
-the *main* model's window and the utility model's is often smaller. Rather than eliding the
-middle of the thread — which is usually where the work was — the transcript is split at
-turn boundaries into pieces that fit (``agent.compaction_transcript``), each is summarized,
-and the partial summaries are merged into one. Every call in a fold runs against a single
-shared deadline, so a chunked fold cannot outlast the budget the run allowed for it, and
-every call's output is stripped of a leaked ``<think>`` block before it can become the
-thread's standing memory.
+**The summary is the conversation continuing.** It is written by the agent the turn runs
+on, against exactly the replay that agent would be sent — the same brief, the same tool
+array, the same messages, normalised the same way — with one user message appended asking
+for the briefing. So the request shares its whole prefix with the one the model last
+served, and a local engine reads the thread from the KV cache it already holds instead of
+prefilling it again for a different model. It is also the model that did the work, reading
+the work in its own format rather than a re-rendered transcript of it.
+
+Three things keep it a *side* run rather than a turn:
+
+- **``tool_choice='none'``**, so the tool definitions stay in the request (the prefix is
+  unchanged) while the model is told to answer in text. Some local servers ignore the
+  setting; a reply that calls a tool anyway is a failed fold, and the call never runs —
+  the node that would execute it is never reached.
+- **It is marked a side run** (``agent.emit.SIDE_RUN``), and its stream goes nowhere but
+  the summary deltas. The capabilities that observe a request each handle that on their
+  own terms: ``MeasureOverhead`` measures and emits into nothing, so ``Run.context_overhead``
+  is untouched; ``AnnounceInjections`` and ``WatchPrefix`` hold state on themselves for the
+  life of the agent, so they step aside rather than mark the brief announced or remember a
+  request the turn never sent; ``ReinjectSystemPrompt`` and the tool-search and code-mode
+  capabilities run as they would on any request, because they shape the prefix that has to
+  match; the harness's ``WarnOnCacheBusts`` keeps its state per run and may usefully warn.
+- **Only the answer text is kept.** The model may think — its normal reasoning settings
+  apply — but a ``ThinkingPart`` is never part of the summary, and a ``<think>`` block
+  inlined into the content is stripped before the text can become the thread's memory.
+
+No call is bounded by time or output length: the summary is the thread's only memory of
+what it replaces.
 
 **Handling what comes back is text-only.** The summary is asked for in fixed sections
 (``prompts/utility.py``'s ``COMPACT_INSTRUCTIONS``) for two reasons that need the text to
@@ -30,14 +50,20 @@ headings degrades to "no carry-forward, nothing fenced" rather than failing the 
 
 from __future__ import annotations
 
-import asyncio
-import logging
-import time
 from collections.abc import Callable
-from dataclasses import dataclass
 
-from pydantic_ai import ModelMessage, ModelRequest, UserPromptPart
-from pydantic_ai.models import Model
+from pydantic_ai import (
+    Agent,
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    PartDeltaEvent,
+    PartStartEvent,
+    TextPart,
+    TextPartDelta,
+    ToolCallPart,
+    UserPromptPart,
+)
 from pydantic_ai.settings import ModelSettings
 
 from core.compaction_sections import (
@@ -48,162 +74,108 @@ from core.compaction_sections import (
 )
 from core.text import strip_think_blocks
 from core.untrusted import new_nonce, untrusted_fence, untrusted_preamble
-from prompts.utility import (
+from prompts.compaction import (
     COMPACT_ANCHORS_SECTION,
     COMPACT_INSTRUCTIONS,
     COMPACT_MARKER,
-    COMPACT_REDUCE_INSTRUCTIONS,
     COMPACT_TOOLS_SECTION,
 )
 from services.conversation_view import flatten_content
+from tools import RunDeps
 
-from .meta import make_utility_agent
-
-logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class SummaryDelta:
-    """A piece of the summary as the model writes it, with where it sits in the fold.
-
-    ``part``/``parts`` exist because a chunked fold is several model calls and a client
-    rendering one stream of text would otherwise show the summary restarting from the top
-    two or three times with no explanation. ``parts`` counts the **merge** as well as the
-    chunks (``len(chunks) + 1``), since it is a pass the operator waits through like any
-    other; a single-chunk fold — the common one — is simply ``1 of 1``."""
-
-    text: str
-    part: int
-    parts: int
-
+from .emit import SIDE_RUN
+from .history import drop_dangling_tool_calls, merge_consecutive_requests
 
 #: Where a fold's summary text goes while it is being written. Synchronous and
 #: fire-and-forget: it is a progress signal, so it must not be able to fail a fold or slow
 #: the model call down, and the caller that supplies one is the caller that owns a stream.
-type DeltaSink = Callable[[SummaryDelta], None]
+type DeltaSink = Callable[[str], None]
 
-#: What a *single call* hands its text to — bare strings, with no idea which pass it is.
-#: Separate from :data:`DeltaSink` because only the layer that knows how many passes there
-#: are can say which one this is, and a single type for both would let a call site pass a
-#: raw string where a stamped delta is expected.
-type TextSink = Callable[[str], None]
+#: The run-level settings a summary is written under, merged over the agent's own. Only
+#: the tool choice: the model's reasoning settings are the session's, and there is
+#: deliberately no ``max_tokens`` — the endpoint's own ceiling is the only one.
+FOLD_SETTINGS: ModelSettings = {"tool_choice": "none"}
 
 
-async def summarize_chunks(
-    model: Model,
-    chunks: list[str],
-    *,
-    settings: ModelSettings,
-    timeout_s: float | None,
-    on_delta: DeltaSink | None = None,
-) -> str | None:
-    """One summary out of one or many transcript chunks, or ``None`` on any failure.
+class SummaryCalledTool(Exception):
+    """The model answered the request for a summary with a tool call.
 
-    The single-chunk case — the common one — is exactly the one call compaction always
-    made. More chunks map to one summary each and then reduce to a single briefing; a
-    failure anywhere gives up the whole fold, because half a memory stored as the thread's
-    memory is worse than no compaction.
+    ``tool_choice='none'`` asks it not to, and some local servers ignore that. The call is
+    never executed — a side run that acted on the world would be a turn nobody asked for —
+    so the fold fails instead."""
 
-    ``on_delta`` is stamped with the pass it came from on the way past, so a client can say
-    which of several it is watching rather than showing the summary appear to restart."""
-    deadline = _Deadline(timeout_s)
 
-    def sink(part: int, parts: int) -> TextSink | None:
-        """This pass's text sink — the caller's delta sink with the pass stamped onto it."""
-        if (emit := on_delta) is None:
-            return None
-        return lambda text: emit(SummaryDelta(text=text, part=part, parts=parts))
+def summary_request(messages: list[ModelMessage]) -> list[ModelMessage]:
+    """The history a summary is written against: ``messages`` normalised exactly as a
+    turn's replay is (``agent/prelude.py``), then the compaction instructions as one more
+    user message.
 
-    if len(chunks) == 1:
-        return await _run(model, COMPACT_INSTRUCTIONS, chunks[0], settings, deadline, sink(1, 1))
-    # The merge is a pass of its own and the operator waits through it, so it is counted.
-    total = len(chunks) + 1
-    parts: list[str] = []
-    for index, chunk in enumerate(chunks, start=1):
-        prompt = f"Part {index} of {len(chunks)} of the earlier conversation.\n\n{chunk}"
-        part = await _run(
-            model, COMPACT_INSTRUCTIONS, prompt, settings, deadline, sink(index, total)
-        )
-        if part is None:
-            return None
-        parts.append(f"--- Part {index} of {len(chunks)} ---\n{part}")
-    return await _run(
-        model,
-        COMPACT_REDUCE_INSTRUCTIONS,
-        "\n\n".join(parts),
-        settings,
-        deadline,
-        sink(total, total),
+    The normalisation is what makes the prefix match. A turn strips a trailing call that
+    never got its result and merges consecutive requests before the model sees them, so a
+    summary request that skipped either would diverge from the replay the engine has
+    cached at the first place they differ. The final merge is for a stretch that ends on a
+    request (a turn recorded before it was answered): the instructions join it, as the
+    library would join them anyway."""
+    replay = merge_consecutive_requests(drop_dangling_tool_calls(messages))
+    return merge_consecutive_requests(
+        [*replay, ModelRequest(parts=[UserPromptPart(COMPACT_INSTRUCTIONS)])]
     )
 
 
-class _Deadline:
-    """The wall clock a whole fold runs against.
-
-    A chunked fold makes several model calls, and giving each of them the caller's full
-    timeout would let one compaction run for a multiple of the budget the run allowed —
-    long enough for the inactivity watchdog to fire on a turn that was only making room for
-    itself. One deadline, shared by every call."""
-
-    def __init__(self, timeout_s: float | None) -> None:
-        self._timeout_s = timeout_s
-        self._started = time.monotonic()
-
-    def remaining(self) -> float | None:
-        """Seconds left, or ``None`` when the caller set no timeout."""
-        if self._timeout_s is None:
-            return None
-        return self._timeout_s - (time.monotonic() - self._started)
-
-
-async def _run(
-    model: Model,
-    instructions: str,
-    prompt: str,
-    settings: ModelSettings,
-    deadline: _Deadline,
-    on_delta: TextSink | None = None,
+async def write_summary(
+    agent: Agent,
+    deps: RunDeps,
+    messages: list[ModelMessage],
+    *,
+    on_delta: DeltaSink | None = None,
 ) -> str | None:
-    """One summarizer call, bounded by the fold's shared deadline.
+    """The briefing the turn's own model writes for ``messages``, or ``None`` when it wrote
+    none. Raises :class:`SummaryCalledTool` for a reply that called a tool, and lets a
+    model error propagate for the caller to report.
 
-    ``on_delta`` receives the output as it arrives. **The deltas are handed over raw** —
-    unstripped, unparsed, not yet merged with carried anchors and not yet fenced — because
-    they are for a human watching a pause go by, and the alternative is showing them
-    nothing until the whole call lands. Everything that makes the text *safe to store* is
-    done to the settled string below and never to a delta: a fence cannot be applied to
-    half a section, and a ``<think>`` block cannot be recognised until it closes.
+    Driven node by node rather than with ``run_stream``: the request node is streamed for
+    its text and the walk stops there, so a tool call in the reply is inspected and never
+    handed to the node that would execute it.
 
-    So a client rendering these is rendering the model's working, not the checkpoint. The
-    checkpoint is what ``conversation.compacted`` carries, and that one has been through
-    all of it."""
-    remaining = deadline.remaining()
-    if remaining is not None and remaining <= 0:
-        logger.warning("conversation compaction summary failed: the fold ran out of time")
+    ``on_delta`` receives the answer text as it arrives. **The deltas are handed over
+    raw** — unstripped, not yet merged with carried anchors and not yet fenced — because
+    they are for a human watching a pause go by. Everything that makes the text *safe to
+    store* is done to the settled string, never to a delta: a fence cannot be applied to
+    half a section, and a ``<think>`` block cannot be recognised until it closes."""
+    async with agent.iter(
+        None,
+        deps=deps,
+        message_history=summary_request(messages),
+        model_settings=FOLD_SETTINGS,
+        metadata={SIDE_RUN: True},
+    ) as agent_run:
+        node = agent_run.next_node
+        while not Agent.is_model_request_node(node):
+            if Agent.is_end_node(node):
+                return None
+            node = await agent_run.next(node)
+        async with node.stream(agent_run.ctx) as stream:
+            async for event in stream:
+                if on_delta is None:
+                    continue
+                if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
+                    if event.part.content:
+                        on_delta(event.part.content)
+                elif isinstance(event, PartDeltaEvent) and isinstance(
+                    event.delta, TextPartDelta
+                ):
+                    on_delta(event.delta.content_delta)
+        response = agent_run.ctx.state.message_history[-1]
+    if not isinstance(response, ModelResponse):
         return None
-    agent = make_utility_agent(model, output_type=str, instructions=instructions)
-    try:
-        # `asyncio.timeout` rather than `wait_for`, because the streaming arm is an async
-        # context manager rather than an awaitable. Both arms are inside it, so the shared
-        # deadline bounds a stalled stream exactly as it bounds a slow single call.
-        # TimeoutError is an Exception subclass (caught below); CancelledError is not, so a
-        # cancelled run still propagates rather than degrading to "no summary".
-        async with asyncio.timeout(remaining):
-            if on_delta is None:
-                output = (await agent.run(prompt, model_settings=settings)).output
-            else:
-                async with agent.run_stream(prompt, model_settings=settings) as stream:
-                    async for delta in stream.stream_text(delta=True):
-                        on_delta(delta)
-                    output = await stream.get_output()
-    except Exception as exc:  # noqa: BLE001 — compaction is best-effort, never fails a turn
-        logger.warning("conversation compaction summary failed: %s", exc)
-        return None
-    # Reasoning was requested off, but the lever is best-effort: a runtime that ignores it
-    # inlines the chain-of-thought as a `<think>…</think>` block in the content. Left in,
-    # that block *becomes* the thread's memory — the model would replay the summarizer's
-    # scratch reasoning as established fact for the rest of the conversation. Same call the
-    # namer makes, and it handles the unclosed block a truncated think emits.
-    return strip_think_blocks(output).strip() or None
+    if any(isinstance(part, ToolCallPart) for part in response.parts):
+        raise SummaryCalledTool
+    # Only the answer. A `ThinkingPart` is the model's reasoning about the summary, not the
+    # summary; and a runtime that inlines its chain-of-thought as a `<think>…</think>` block
+    # in the content would otherwise store that scratch work as the thread's memory, to be
+    # replayed as established fact for the rest of the conversation.
+    text = "".join(part.content for part in response.parts if isinstance(part, TextPart))
+    return strip_think_blocks(text).strip() or None
 
 
 def fence_tool_facts(summary: str) -> str:
@@ -281,5 +253,3 @@ def _checkpoint_texts(messages: list[ModelMessage]) -> list[str]:
                 if text.startswith(COMPACT_MARKER):
                     texts.append(without_fenced(text))
     return texts
-
-
