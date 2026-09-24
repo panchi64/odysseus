@@ -6,6 +6,18 @@ import {
   type PermissionLevel,
 } from "../model";
 
+/** Each level's square, warming as the list gives more rope: grey for the level
+ *  that only reads, cool for the two that ask, amber once the model rules on its
+ *  own calls, red for the one where nothing asks at all. Keyed by the type, so a
+ *  further level fails to compile until it is given one. */
+const SWATCH: Record<PermissionLevel, string> = {
+  plan: "bg-dim",
+  manual: "bg-info",
+  edit: "bg-nominal",
+  auto: "bg-warn",
+  yolo: "bg-alert",
+};
+
 /** **How far the model may go** in this thread — the composer's other axis.
  *
  *  This slot used to hold the mode picker, which was shown only while the thread
@@ -47,6 +59,8 @@ export function PermissionControl(props: {
         options={PERMISSION_LEVELS.map((spec) => ({
           value: spec.id,
           label: spec.label,
+          description: spec.description,
+          swatch: SWATCH[spec.id],
         }))}
         aria-label="Permission level"
       />
