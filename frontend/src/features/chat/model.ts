@@ -440,10 +440,6 @@ export interface CompactionProgress {
    *  what the operator keeps is the parsed summary on the compaction turn, which has been
    *  through all the handling this text has not. */
   summary?: string;
-  /** Which pass of a chunked fold is writing, and how many there are. A single-pass fold
-   *  — the common one — is `1 of 1` and says nothing. */
-  part?: number;
-  parts?: number;
   done?: boolean;
 }
 

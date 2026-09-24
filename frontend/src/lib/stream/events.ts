@@ -321,17 +321,11 @@ export interface CompactionStarted extends Base {
  *  `<think>` block is not stripped from it, carried-forward anchors are not merged in, and
  *  the tool-facts section is not yet fenced, because none of those can be done to a
  *  fragment. So render it live and replace it wholesale when `conversation.compacted`
- *  lands; never store one, and never treat one as the summary the model will read.
- *
- *  `part`/`parts` locate it in a chunked fold, where the transcript is summarized in
- *  pieces and then merged — without them the summary appears to restart from the top with
- *  nothing saying why. The merge counts as one of the parts; an ordinary fold is `1 of 1`. */
+ *  lands; never store one, and never treat one as the summary the model will read. */
 export interface CompactionDelta extends Base {
   type: "compaction.delta";
   conversation_id: string;
   text: string;
-  part: number;
-  parts: number;
 }
 
 /** The thread's earlier turns were folded into a summary before this turn ran,

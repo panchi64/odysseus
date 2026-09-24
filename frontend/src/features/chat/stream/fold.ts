@@ -360,8 +360,6 @@ export function createFolder(
               if (live.role !== "compaction" || !live.compaction) continue;
               live.compaction.summary =
                 (live.compaction.summary ?? "") + ev.text;
-              live.compaction.part = ev.part;
-              live.compaction.parts = ev.parts;
               return;
             }
           }),

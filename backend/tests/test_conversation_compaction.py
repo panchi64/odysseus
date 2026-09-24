@@ -1164,5 +1164,3 @@ async def test_the_fold_streams_the_summary_as_it_is_written(monkeypatch):
 
         deltas = [e.body for e in run.stream.replay(0) if e.body.type == "compaction.delta"]
         assert "".join(d.text for d in deltas) == "the story so far"
-        # A fold is one pass by the thread's own model, and says so.
-        assert {(d.part, d.parts) for d in deltas} == {(1, 1)}

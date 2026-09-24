@@ -93,15 +93,13 @@ function live(messages: ChatMessage[]): CompactionProgress[] {
     .map((m) => m.compaction!);
 }
 
-const delta = (text: string, part = 1, parts = 1): RunEvent =>
+const delta = (text: string): RunEvent =>
   ({
     type: "compaction.delta",
     seq: ++seq,
     ts: "",
     conversation_id: "c1",
     text,
-    part,
-    parts,
   }) as RunEvent;
 
 describe("a fold in flight is a turn in the transcript", () => {
@@ -129,13 +127,6 @@ describe("a fold in flight is a turn in the transcript", () => {
     h.fold(delta("what "));
     h.fold(delta("happened"));
     expect(live(h.messages)[0].summary).toBe("what happened");
-  });
-
-  test("a chunked fold says which pass is writing", () => {
-    const h = harness(turn());
-    h.fold(started("threshold"));
-    h.fold(delta("part one", 1, 3));
-    expect(live(h.messages)[0]).toMatchObject({ part: 1, parts: 3 });
   });
 
   test("the summary landing replaces the live turn with the settled one", () => {

@@ -644,17 +644,11 @@ class CompactionDelta(_Body):
     forward, and not fenced. Those are done to the settled summary, and two of them cannot
     be done to a fragment at all. So a client renders these as a live view that is replaced
     when ``conversation.compacted`` lands with the real thing — never stores one, and never
-    treats one as the summary the model will actually read.
-
-    ``part``/``parts`` once located the delta in a chunked fold. A fold is now always one
-    pass by the thread's own model, so every delta is ``1 of 1``; the fields stay because
-    they are on the v1 wire and a client may still read them. Additive to v1; no bump."""
+    treats one as the summary the model will actually read."""
 
     type: Literal["compaction.delta"] = "compaction.delta"
     conversation_id: str
     text: str
-    part: int = 1
-    parts: int = 1
 
 
 class ConversationCompacted(_Body):

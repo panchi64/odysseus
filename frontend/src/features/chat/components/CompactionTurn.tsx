@@ -40,18 +40,7 @@ export function CompactionTurn(props: { message: ChatMessage }): JSX.Element {
           <ConsoleGroup
             label="Compacting context"
             flush
-            right={
-              <div class="flex items-center gap-2">
-                {/* Only a chunked fold has a pass to name. "PASS 1/1" on the ordinary
-                    one is a readout reporting its own machinery. */}
-                <Show when={(c().parts ?? 1) > 1}>
-                  <Text variant="meta" tone="dim" class="tabular-nums">
-                    PASS {c().part}/{c().parts}
-                  </Text>
-                </Show>
-                <Frames class="text-micro text-info shrink-0" />
-              </div>
-            }
+            right={<Frames class="text-micro text-info shrink-0" />}
           >
             <div class="divide-line divide-y">
               <Row legend="Folding">
