@@ -74,7 +74,12 @@ export function taskSummary(items: TaskItem[]): {
  *  deliberately no edit affordance — the list is the agent's account of its own work, and
  *  an operator edit would silently disagree with what the model reads back.
  */
-export function TaskRows(props: { items: () => TaskItem[] }): JSX.Element {
+export function TaskRows(props: {
+  items: () => TaskItem[];
+  /** List every row, with no window and no +N MORE — for a list that has the room
+   *  to scroll the whole of itself. */
+  all?: boolean;
+}): JSX.Element {
   const [expanded, setExpanded] = createSignal(false);
 
   const items = () => props.items();
@@ -95,7 +100,8 @@ export function TaskRows(props: { items: () => TaskItem[] }): JSX.Element {
   // before the frontier (two done behind it, the frontier itself, up to two ahead).
   const visible = createMemo(() => {
     const list = items();
-    if (expanded()) return list.map((item, index) => ({ item, index }));
+    if (props.all || expanded())
+      return list.map((item, index) => ({ item, index }));
     const start = Math.max(0, frontier() - 2);
     return list
       .slice(start, start + WINDOW)

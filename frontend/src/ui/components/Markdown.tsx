@@ -31,6 +31,10 @@ export interface MarkdownProps {
    *  what causes KaTeX/markdown flicker mid-stream). Default false — the
    *  default path is unchanged. */
   streamStable?: boolean;
+  /** Headings one step down the reading scale (`.ody-prose-dense`), for a document
+   *  read in a narrow pane where full-size headings outshout the pane's own title.
+   *  Body text keeps the reading size. Default false. */
+  dense?: boolean;
 }
 
 marked.setOptions({ gfm: true, breaks: true });
@@ -138,7 +142,10 @@ export function Markdown(props: MarkdownProps): JSX.Element {
     "class",
     "copyCode",
     "streamStable",
+    "dense",
   ]);
+  const proseClass = (): string =>
+    cx("ody-prose", local.dense && "ody-prose-dense", local.class);
   // Gated on the path that actually renders it. Solid memos are eager, so an
   // ungated one re-parsed the *whole* answer on every delta while streaming — the
   // one mode where the result is thrown away, since the block path below renders
@@ -261,7 +268,7 @@ export function Markdown(props: MarkdownProps): JSX.Element {
             el.addEventListener("click", onClick);
             queueMicrotask(enhance);
           }}
-          class={cx("ody-prose", local.class)}
+          class={proseClass()}
           innerHTML={html()}
         />
       }
@@ -272,7 +279,7 @@ export function Markdown(props: MarkdownProps): JSX.Element {
           el.addEventListener("click", onClick);
           queueMicrotask(enhance);
         }}
-        class={cx("ody-prose", local.class)}
+        class={proseClass()}
       >
         <For each={blockRaws()}>
           {(raw, i) => (

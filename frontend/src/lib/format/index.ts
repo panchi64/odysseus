@@ -108,6 +108,12 @@ export function compactCount(n: number, precise = false): string {
   return `${n}`;
 }
 
+/** A count and its noun, agreeing: `1 source`, `4 sources`, `0 topics`. `many` for the
+ *  nouns that do not take an `s`. */
+export function plural(n: number, one: string, many = `${one}s`): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
 /** Byte size in IEC units (e.g. 11.2 GB). */
 export function bytes(n: number): string {
   const units = ["B", "KB", "MB", "GB", "TB"];

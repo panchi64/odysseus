@@ -7,25 +7,23 @@
  */
 
 import { Show, type JSX } from "solid-js";
-import { Chip, Collapse, StatusFlag, Text, type Status } from "~/ui";
+import { Chip, StatusFlag, Text, type Status } from "~/ui";
 import { hostLabel, relativeTime } from "~/lib/format";
 import {
   BUCKET_LABEL,
   type SourceBucket,
   type SourceItem,
 } from "../viewport/sourceItems";
-import { ProcessRow, Sep, createAdoptedOpen } from "./ProcessRow";
+import { Sep, createAdoptedOpen } from "./ProcessRow";
+import { SurfaceCard } from "./surfaceChrome";
 
-/** The shelf's own flag, in one word plus a tone. **Contradicted is the only one that
- *  raises its voice**, and it earns it: every other shelf reports how thoroughly a
- *  source was read, which is process, while this one reports that the sources disagree,
- *  which is a finding. The word carries it as well as the tone, so it still says which
- *  kind it is where the colour does not reach the reader. */
-const bucketFlag: Record<SourceBucket, Status> = {
+/** The shelves whose rows repeat the shelf's name as a flag. **Only contradicted does**:
+ *  every other shelf reports how thoroughly a source was read, which is process and is
+ *  already said once by the heading above the rows — on every row it was the same words
+ *  ten times over, eating the width the title needed. A contradiction is a finding about
+ *  *this* source, so it keeps its word and tone on the row itself. */
+const rowFlag: Partial<Record<SourceBucket, Status>> = {
   contradicted: "warn",
-  cited: "nominal",
-  read: "info",
-  listed: "idle",
 };
 
 /** One source: what it is, where it came from, and — opened — the passage the run
@@ -46,56 +44,48 @@ export function SourceRow(props: {
     "Untitled";
 
   return (
-    <div class="overflow-hidden rounded-panel bg-surface shadow-1">
-      <ProcessRow
-        open={open()}
-        onToggle={toggle}
-        icon={s().kind === "corpus" ? "library" : "link"}
-        iconClass="text-dim"
-        label={s().kind === "corpus" ? "Passage" : "Page"}
-        title={name()}
-        class="hover:bg-raised"
-        trailing={
-          <>
-            {/* **How many times this thread came back to it.** A source seen once and a
-                source seen four times are different things, and the count is the only
-                evidence of that the fold leaves behind — everything else about the
-                repeat sightings has been merged away. */}
-            <Show when={s().sightings > 1}>
-              <Text variant="micro" tone="dim" class="tabular-nums">
-                ×{s().sightings}
-              </Text>
-            </Show>
-            <StatusFlag status={bucketFlag[props.bucket]} dot>
-              {BUCKET_LABEL[props.bucket]}
-            </StatusFlag>
-          </>
-        }
-      >
-        <Sep />
-        <Text variant="micro" tone="default" class="min-w-0 truncate">
-          {name()}
-        </Text>
-      </ProcessRow>
-      {/* `Collapse`, the same disclosure the command log uses — one animation vocabulary
-          for "a row opening in a panel", not two. `hasBody` guards the content rather
-          than the disclosure, so a row with nothing behind it still toggles without
-          revealing an empty band. */}
-      <Collapse open={open() && hasBody()}>
-        <div class="flex flex-col gap-1.5 bg-bg px-2 py-1.5">
-          <SourceDates item={s()} />
-          <Show when={s().snippet}>
-            {/* Reading scale, not `micro`. This is the one thing on the panel written
-                by a human for humans — everything around it is the machine's record
-                of what it did with it. */}
-            <Text as="p" variant="body" tone="default" class="break-words">
-              {s().snippet}
+    <SurfaceCard
+      open={open()}
+      onToggle={toggle}
+      icon={s().kind === "corpus" ? "library" : "link"}
+      label={s().kind === "corpus" ? "Passage" : "Page"}
+      title={name()}
+      detail={name()}
+      /* Guards the content rather than the disclosure, so a row with nothing behind
+         it still toggles without revealing an empty band. */
+      hasBody={hasBody()}
+      trailing={
+        <>
+          {/* **How many times this thread came back to it.** A source seen once and a
+              source seen four times are different things, and the count is the only
+              evidence of that the fold leaves behind — everything else about the
+              repeat sightings has been merged away. */}
+          <Show when={s().sightings > 1}>
+            <Text variant="micro" tone="dim" class="tabular-nums">
+              ×{s().sightings}
             </Text>
           </Show>
-          <SourceAddress item={s()} />
-        </div>
-      </Collapse>
-    </div>
+          <Show when={rowFlag[props.bucket]}>
+            {(status) => (
+              <StatusFlag status={status()} dot>
+                {BUCKET_LABEL[props.bucket]}
+              </StatusFlag>
+            )}
+          </Show>
+        </>
+      }
+    >
+      <SourceDates item={s()} />
+      <Show when={s().snippet}>
+        {/* Reading scale, not `micro`. This is the one thing on the panel written
+            by a human for humans — everything around it is the machine's record
+            of what it did with it. */}
+        <Text as="p" variant="body" tone="default" class="break-words">
+          {s().snippet}
+        </Text>
+      </Show>
+      <SourceAddress item={s()} />
+    </SurfaceCard>
   );
 }
 

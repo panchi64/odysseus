@@ -19,14 +19,15 @@
  */
 
 import { createMemo, Show, type JSX } from "solid-js";
-import { Text } from "~/ui";
+import { StatusFlag, Text } from "~/ui";
+import { plural } from "~/lib/format";
 import { SubagentsSurface } from "../components/SubagentsSurface";
 import { CommandsSurface } from "../components/CommandsSurface";
 import { CoverageSurface } from "../components/CoverageSurface";
 import { SourcesSurface } from "../components/SourcesSurface";
 import { DiffSurface } from "../components/DiffSurface";
 import { FilesSurface } from "../components/FilesSurface";
-import { PlanSurface } from "../components/PlanSurface";
+import { PlanSurface, planStatusOf } from "../components/PlanSurface";
 import { TasksSurface } from "../components/TasksSurface";
 import { ViewportPanel } from "../components/ViewportPanel";
 import { taskSummary } from "../components/TaskRows";
@@ -142,10 +143,30 @@ export const SURFACE_META: Partial<
         ),
       ),
     );
+    // An empty list has no progress to report, and "0/0" read as one.
     return (
-      <Text variant="micro" tone="dim">
-        {`${summary().done}/${summary().total}`}
-      </Text>
+      <Show when={summary().total > 0}>
+        <Text variant="micro" tone="dim" class="tabular-nums">
+          {`${summary().done}/${summary().total}`}
+        </Text>
+      </Show>
+    );
+  },
+  plan: (ctx) => {
+    // The status is the pane's, like every other surface's figure — the body is the
+    // document, and a flag above its title read as the document's first line.
+    const status = createMemo(() => {
+      const plan = ctx.viewport.plan();
+      return plan ? planStatusOf(plan.status) : null;
+    });
+    return (
+      <Show when={status()}>
+        {(s) => (
+          <StatusFlag status={s().tone} dot>
+            {s().label}
+          </StatusFlag>
+        )}
+      </Show>
     );
   },
   agents: (ctx) => {
@@ -178,7 +199,7 @@ export const SURFACE_META: Partial<
     return (
       <Show when={count().total > 0}>
         <Text variant="micro" tone="dim" class="tabular-nums">
-          {`${count().total} · ${count().origins} orig`}
+          {`${plural(count().total, "source")} · ${plural(count().origins, "origin")}`}
         </Text>
       </Show>
     );
@@ -204,10 +225,10 @@ export const SURFACE_META: Partial<
           class="tabular-nums"
         >
           {count().gaps > 0
-            ? `${count().gaps} ${count().gaps === 1 ? "gap" : "gaps"}`
+            ? plural(count().gaps, "gap")
             : count().conflicts > 0
               ? `${count().conflicts} contested`
-              : `${count().topics}`}
+              : plural(count().topics, "topic")}
         </Text>
       </Show>
     );
@@ -224,7 +245,11 @@ export const SURFACE_META: Partial<
     });
     return (
       <Show when={count().total > 0}>
-        <Text variant="micro" tone={count().failed > 0 ? "alert" : "dim"}>
+        <Text
+          variant="micro"
+          tone={count().failed > 0 ? "alert" : "dim"}
+          class="tabular-nums"
+        >
           {count().failed > 0 ? `${count().failed} failed` : `${count().total}`}
         </Text>
       </Show>

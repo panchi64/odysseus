@@ -56,7 +56,7 @@ export function ViewTimelineRail(props: {
                 role="option"
                 aria-selected={active()}
                 class={cx(
-                  "flex shrink-0 flex-col items-start gap-0.5 border-r border-line px-2 py-1.5 text-left transition-colors",
+                  "flex shrink-0 flex-col items-start gap-0.5 border-r border-line px-3 py-1.5 text-left transition-colors",
                   active() ? "bg-raised" : "hover:bg-raised",
                 )}
               >

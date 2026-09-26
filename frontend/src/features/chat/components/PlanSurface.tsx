@@ -1,6 +1,7 @@
 import { For, Show, type JSX } from "solid-js";
-import { Markdown, Stack, StatusFlag, Text } from "~/ui";
+import { EmptyState, Markdown, Text } from "~/ui";
 import type { PlanDocument, PlanStatus } from "../model";
+import { SurfaceBody, SurfaceSection } from "./surfaceChrome";
 
 /** How each state reads, and how loudly. `pending` is the only one that is a question;
  *  the rest are a record of one already answered, and record-shaped states stay quiet. */
@@ -16,8 +17,11 @@ const STATUS: Record<
 
 /** The status as this build can word it. A backend that adds a fifth reads as a plain
  *  state name rather than throwing on the lookup — the document beneath it is the point
- *  of the panel, and losing all of it to an unrecognised flag would be the wrong trade. */
-const statusOf = (status: PlanStatus): (typeof STATUS)[PlanStatus] =>
+ *  of the panel, and losing all of it to an unrecognised flag would be the wrong trade.
+ *
+ *  Exported for the pane header, which is where the status is printed: it is a fact
+ *  about the pane, like every other surface's meta, not a line of the document. */
+export const planStatusOf = (status: PlanStatus): (typeof STATUS)[PlanStatus] =>
   STATUS[status] ?? { label: String(status).toUpperCase(), tone: "idle" };
 
 /**
@@ -35,32 +39,34 @@ const statusOf = (status: PlanStatus): (typeof STATUS)[PlanStatus] =>
  * every other approval, and the dock carries a button that opens this panel — so the
  * reading and the deciding are one gesture apart instead of one of them being homeless.
  *
- * What this owes the operator instead is **saying where the plan is up to**. `revising`
- * is a wait on a whole model turn: the agent is writing the next draft, and a panel that
- * only dimmed its status flag left that looking like the interface had lost the buttons.
+ * What this owes the operator instead is **saying where the plan is up to**. The status
+ * flag rides the pane header (`SURFACE_META`); `revising` is a wait on a whole model
+ * turn, so it is also written out here, where a dimmed flag alone left it looking like
+ * the interface had lost the buttons.
+ *
+ * **Dense prose, on a measure.** The pane is a column beside the transcript, so the
+ * headings step down one rung (a 28px h1 was as loud as the pane's own title at 320px)
+ * and the text holds a readable measure when the pane is dragged wide.
  */
 export function PlanSurface(props: {
   plan: () => PlanDocument | null;
 }): JSX.Element {
   return (
-    <Show
-      when={props.plan()}
-      keyed
-      fallback={
-        <div class="flex h-full items-center justify-center p-4">
-          <Text variant="micro" tone="dim">
-            No plan for this conversation.
-          </Text>
-        </div>
-      }
-    >
-      {(plan) => (
-        <div class="flex h-full flex-col overflow-y-auto">
-          <Stack gap={3} class="p-4">
-            <Stack gap={2}>
-              <StatusFlag status={statusOf(plan.status).tone} dot>
-                {statusOf(plan.status).label}
-              </StatusFlag>
+    <SurfaceBody>
+      <Show
+        when={props.plan()}
+        keyed
+        fallback={
+          <EmptyState
+            icon="note"
+            message="No plan yet"
+            hint="In plan mode, the plan the agent proposes lands here for you to read before approving."
+          />
+        }
+      >
+        {(plan) => (
+          <div class="flex max-w-prose flex-col gap-3">
+            <div class="flex flex-col gap-1">
               <Text variant="readout" tone="bright">
                 {plan.title}
               </Text>
@@ -73,15 +79,12 @@ export function PlanSurface(props: {
                   again when it is ready.
                 </Text>
               </Show>
-            </Stack>
+            </div>
 
-            <Markdown>{plan.body}</Markdown>
+            <Markdown dense>{plan.body}</Markdown>
 
             <Show when={plan.steps.length > 0}>
-              <Stack gap={2}>
-                <Text variant="label" tone="dim">
-                  STEPS
-                </Text>
+              <SurfaceSection label="Steps" count={plan.steps.length}>
                 {/* Numbered, because the order is part of what is being agreed — and
                     because on approval these become the thread's task list in exactly
                     this order. */}
@@ -94,11 +97,11 @@ export function PlanSurface(props: {
                     )}
                   </For>
                 </ol>
-              </Stack>
+              </SurfaceSection>
             </Show>
-          </Stack>
-        </div>
-      )}
-    </Show>
+          </div>
+        )}
+      </Show>
+    </SurfaceBody>
   );
 }

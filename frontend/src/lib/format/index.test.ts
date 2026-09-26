@@ -11,7 +11,7 @@
 process.env.TZ = "America/New_York";
 
 import { describe, expect, it } from "bun:test";
-import { longTimestamp, met, parseInstant } from "./index";
+import { longTimestamp, met, parseInstant, plural } from "./index";
 
 /** Built from local-time parts on purpose. `longTimestamp` reads the operator's clock
  *  (see its docstring), so a fixture written as a UTC string would shift the expected
@@ -153,5 +153,18 @@ describe("parseInstant", () => {
   it("hands back NaN for junk rather than a wrong instant", () => {
     expect(Number.isNaN(parseInstant("not a date"))).toBe(true);
     expect(Number.isNaN(parseInstant(""))).toBe(true);
+  });
+});
+
+describe("plural", () => {
+  it("agrees the noun with the count, zero included", () => {
+    expect(plural(1, "source")).toBe("1 source");
+    expect(plural(0, "topic")).toBe("0 topics");
+    expect(plural(4, "origin")).toBe("4 origins");
+  });
+
+  it("takes an irregular plural when given one", () => {
+    expect(plural(2, "match", "matches")).toBe("2 matches");
+    expect(plural(1, "match", "matches")).toBe("1 match");
   });
 });

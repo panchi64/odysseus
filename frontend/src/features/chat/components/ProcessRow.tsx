@@ -95,10 +95,15 @@ export function Sep(): JSX.Element {
  *  read `R… · backend/ap… · 412 li…`, and the *label* is the one segment that must
  *  not go — glyph plus label is how a column of rows is parsed before a word of
  *  detail is read. So it takes `shrink-0` to opt out of the squeeze, and
- *  `max-w-[45%]` so a long label ("Host command", a humanized `external_*` name)
+ *  `max-w-2/5` so a long label ("Host command", a humanized `external_*` name)
  *  still cannot run past its share and out of the box. The detail beside it absorbs
  *  the loss instead, which is the right place for it: a truncated path is still
- *  recognizable, a truncated verb is not. */
+ *  recognizable, a truncated verb is not.
+ *
+ *  **The trailing cluster is capped at half the row and wraps inside that half.** It
+ *  used to be `shrink-0`, so in a narrow pane three flags took the whole row and the
+ *  detail — the command, the topic — truncated to nothing. The flags wrap onto a second
+ *  line instead, and the half they leave is the floor the label and detail read in. */
 export function ProcessRow(props: {
   open: boolean;
   /** Whether there is anything behind the chevron. Defaults to true.
@@ -193,7 +198,7 @@ export function ProcessRow(props: {
              the sentence it serves (the work log's reason, a call's narration) is
              what should be read first, and a bright uppercase word would win that. */
           tone={schematic ? "dim" : "bright"}
-          class="max-w-[45%] shrink-0 truncate"
+          class="max-w-2/5 shrink-0 truncate"
         >
           {props.label}
         </Text>
@@ -210,7 +215,9 @@ export function ProcessRow(props: {
           read while being built, it does it again on every `status`/`elapsedMs`
           change. This resolves it once and hands the same nodes to both. */}
       <Show when={trailing()}>
-        <span class="flex shrink-0 items-center gap-2">{trailing()}</span>
+        <span class="flex max-w-1/2 min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-0.5">
+          {trailing()}
+        </span>
       </Show>
     </div>
   );

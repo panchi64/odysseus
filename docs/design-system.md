@@ -187,6 +187,12 @@ sentence around it; 14/16 is the ~0.875em every prose stylesheet on the web
 converges on. Its line-height stays on the prose 24px so an inline span never
 opens up the line it sits in.
 
+**`Markdown dense` (`.ody-prose-dense`) steps headings down one rung** (`h1` at
+`prose-h2`, `h2` at `prose-h3`, `h3` at `prose-h4`) and leaves body text at the
+reading size. It is for prose read inside a narrow pane, where full-size headings
+outshout the pane's own name; the reading floor is not negotiable, so only the
+headings give.
+
 **Never reach for `--type-*` inside `.ody-prose`, or `--prose-*` outside it.**
 That is precisely what re-couples the two scales, and the next time one moves the
 other follows silently.
@@ -550,6 +556,8 @@ A `bare` panel also keeps its **state** shadow (`active`/`alert`) while dropping
 This is for regions that should read as *behind* the interface rather than as objects on it: the home page's recent-threads and in-flight lists, the system strip. They are things the operator glances past on the way to the composer, and giving each one a card turned the launchpad into a wall of boxes competing with the single surface that matters. Structure still comes from the label and the spacing — it just stops being a container.
 
 The rule generalizes: **a card is a claim on attention.** Anything ambient — telemetry, recent items, background activity — should be bare, so the operator can look past it to what is live.
+
+**A region whose width the operator controls lays out by container query, not viewport breakpoint.** A resizable pane (the chat viewport's surfaces) can be 320px or 1200px on the same screen, so `sm:`/`md:` answer a question about the window that the content never asked. The pane is the container (`@container`, named where its header needs its own query); what sits in it responds with `@md:`/`@3xl:`. Viewport breakpoints stay for the page shell, whose width *is* the window's.
 
 ### 10.3 Instrument band
 

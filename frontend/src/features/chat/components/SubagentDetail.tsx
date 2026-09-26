@@ -46,7 +46,7 @@ export function SubagentDetail(props: {
   return (
     <div class="flex h-full min-h-0 flex-col gap-2">
       <div class="flex shrink-0 flex-col gap-1">
-        <Row gap={2} align="center">
+        <Row gap={2} align="center" wrap>
           <Button
             variant="ghost"
             size="sm"

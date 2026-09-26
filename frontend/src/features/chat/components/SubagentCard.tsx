@@ -1,7 +1,8 @@
 import { Show, type JSX } from "solid-js";
-import { Frames, ProgressRing, StatusDot, Text } from "~/ui";
+import { Frames, ProgressRing, StatusDot, Text, cx } from "~/ui";
 import { duration, parseInstant } from "~/lib/format";
 import { isLive, type Subagent, type SubagentStatus } from "../data";
+import { SURFACE_CARD } from "./surfaceChrome";
 
 /** How a sub-agent's state reads at a glance.
  *
@@ -96,7 +97,12 @@ export function SubagentCard(props: {
     <button
       type="button"
       onClick={() => props.onOpen()}
-      class="border-line hover:bg-raised flex w-full flex-col gap-1 rounded border px-2 py-1.5 text-left"
+      /* The surface card its neighbours sit on, so a sub-agent reads as a sibling of a
+         command or a topic rather than as a second, outlined kind of thing. */
+      class={cx(
+        SURFACE_CARD,
+        "flex w-full flex-col gap-1 px-2 py-1.5 text-left hover:bg-raised",
+      )}
     >
       <div class="flex min-w-0 items-center gap-2">
         <Show
@@ -121,12 +127,9 @@ export function SubagentCard(props: {
 
             Capped and truncated, which the roster name never needed to be: a handle is
             whatever the launching model typed and nothing holds it to a few words, so an
-            unbounded one would overflow the row and squeeze the task beside it away. */}
-        <Text
-          variant="label"
-          tone="bright"
-          class="max-w-[45%] shrink-0 truncate"
-        >
+            unbounded one would overflow the row and squeeze the task beside it away. The
+            cap is the same share `ProcessRow` gives its label. */}
+        <Text variant="label" tone="bright" class="max-w-2/5 shrink-0 truncate">
           {props.subagent.handle}
         </Text>
         <Text variant="micro" tone="dim" class="min-w-0 flex-1 truncate">
@@ -144,7 +147,10 @@ export function SubagentCard(props: {
           />
         </Show>
       </div>
-      <div class="flex min-w-0 items-baseline gap-1.5">
+      {/* The summary takes its own line in a narrow pane and joins the row once there is
+          room: it is what the sub-agent actually said, and at 320px a one-line slot
+          beside the name and state would truncate it to a word. */}
+      <div class="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
         <Text variant="micro" tone="dim" class="shrink-0">
           {props.subagent.name}
         </Text>
@@ -164,7 +170,11 @@ export function SubagentCard(props: {
             </Text>
           )}
         </Show>
-        <Text variant="micro" tone="dim" class="min-w-0 truncate">
+        <Text
+          variant="micro"
+          tone="dim"
+          class="line-clamp-2 min-w-0 basis-full break-words @sm:flex-1 @sm:basis-0"
+        >
           {line()}
         </Text>
       </div>

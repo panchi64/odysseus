@@ -1,12 +1,5 @@
 import { Show, type JSX } from "solid-js";
-import {
-  Button,
-  ConstructionReveal,
-  ResizeHandle,
-  Reveal,
-  Text,
-  cx,
-} from "~/ui";
+import { Button, ConstructionReveal, ResizeHandle, Reveal, cx } from "~/ui";
 import { emptyLayout } from "../viewport/layout";
 import { surfaceSpec } from "../viewport/surfaces";
 import type { ChatViewport } from "../useChatViewport";
@@ -108,8 +101,12 @@ export function ChatViewportMounts(
           panel stayed in the flex flow and squeezed the transcript into a
           gutter. A wrapper that is either `contents` or `fixed` has nothing to
           conflict with, and `display: contents` keeps the reveal a direct flex
-          child of the row in the aside case. */}
-      <div class={cx(sheet() ? "fixed inset-0 z-50" : "contents")}>
+          child of the row in the aside case.
+
+          Covering the screen, the wrapper is also what makes the sheet opaque. The
+          frame's surface is glass with a padding ring of its own, so a fill set any
+          deeper still let the transcript show through that ring. */}
+      <div class={cx(sheet() ? "fixed inset-0 z-50 bg-bg" : "contents")}>
         <ConstructionReveal
           when={props.viewport.shown()}
           class="h-full shrink-0"
@@ -132,7 +129,7 @@ export function ChatViewportMounts(
             }
             /* No fill of its own — the frosted surface is the framed region
                `ConstructionReveal` draws, and a second glass layer here would
-               stack with it and paint the transcript out. */
+               stack with it. The sheet's opacity is the wrapper's, above. */
             class={cx(
               "flex h-full min-w-0 flex-col",
               // Covering the screen, it fills the wrapper; in the row, its width
@@ -141,7 +138,7 @@ export function ChatViewportMounts(
             )}
           >
             <Show when={sheet()}>
-              <header class="flex shrink-0 items-center gap-3 px-4 py-3">
+              <header class="flex shrink-0 items-center gap-3 px-3 py-2">
                 <Button
                   variant="ghost"
                   size="sm"
@@ -153,11 +150,11 @@ export function ChatViewportMounts(
                 {/* Named after the surface being worked in, not after the one
                     the panel used to only ever hold — a sheet showing the patch
                     that calls itself "View" is a screen reader being told the
-                    wrong thing about the whole dialog. */}
-                <span id="view-sheet-title">
-                  <Text variant="label" tone="bright">
-                    {sheetTitle()}
-                  </Text>
+                    wrong thing about the whole dialog. Spoken, not shown: every
+                    pane below already names itself, and a visible copy was a
+                    second title an inch above the first. */}
+                <span id="view-sheet-title" class="sr-only">
+                  {sheetTitle()}
                 </span>
               </header>
             </Show>

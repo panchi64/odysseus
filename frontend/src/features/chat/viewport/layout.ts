@@ -90,6 +90,8 @@ export const hasSurface = (layout: ViewportLayout, id: SurfaceId): boolean =>
   tree.hasSurface(layout, id);
 export const isEmpty = (layout: ViewportLayout): boolean =>
   tree.isEmpty(layout);
+export const fillingStrip = (layout: ViewportLayout): SurfaceId | null =>
+  tree.fillingStrip(layout);
 
 /** Whether the registry still has a surface by this id. Narrows, so a persisted
  *  string can be treated as an id once it has passed. */

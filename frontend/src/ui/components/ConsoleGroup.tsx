@@ -51,8 +51,11 @@ export function ConsoleGroup(props: ConsoleGroupProps): JSX.Element {
         <Text variant="plate" tone="dim" class="min-w-0 truncate">
           {local.label}
         </Text>
+        {/* `min-w-0`, not `shrink-0`: a readout that truncates (a sub-agent's handle)
+            can only do so if its slot is allowed to give way. A short count gives
+            way least — flex shrinks each side in proportion to its content. */}
         <Show when={local.right}>
-          <div class="ml-auto flex shrink-0 items-center gap-2">
+          <div class="ml-auto flex min-w-0 items-center gap-2">
             {local.right}
           </div>
         </Show>

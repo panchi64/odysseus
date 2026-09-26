@@ -158,10 +158,10 @@ export function ViewSnapshotCode(props: {
   });
 
   return (
-    <div class="flex h-full min-h-0">
+    <div class="flex h-full min-h-0 flex-col @xl:flex-row">
       {/* File tree — pick a file; its change status reads through tone. Shared
           with the Files surface, which shows the same list for a different
-          reason. */}
+          reason. Stacked above the file on a narrow pane, beside it from `@xl`. */}
       <SnapshotFileTree
         inline
         files={toId() === id() ? props.files : toFiles}
@@ -172,7 +172,7 @@ export function ViewSnapshotCode(props: {
       />
 
       {/* Content — full code or a diff against the chosen FROM. */}
-      <div class="flex min-w-0 flex-1 flex-col">
+      <div class="flex min-h-0 min-w-0 flex-1 flex-col">
         <div class="flex items-center gap-2 px-3 py-2">
           <Text variant="micro" tone="dim" class="shrink-0">
             To

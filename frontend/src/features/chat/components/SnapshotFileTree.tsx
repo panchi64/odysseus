@@ -37,9 +37,9 @@ const isEdited = (f: SnapshotFile): boolean => f.status !== "unchanged";
  *
  * **It is not always a fixed column.** At `w-56` beside a content pane it leaves ~96px
  * for the file itself once the panel is at its 320px minimum, which is not a file
- * viewer. `inline` keeps the old side-by-side column for callers with room; without it
- * the list fills whatever it is given, which is what lets a narrow pane show the tree
- * *or* the file rather than an unreadable pair.
+ * viewer. `inline` is a capped band above the file below the pane's `@xl` and a side
+ * column from there; without it the list fills whatever it is given, which is what
+ * lets a narrow pane show the tree *or* the file rather than an unreadable pair.
  */
 export function SnapshotFileTree(props: {
   files: Resource<SnapshotFile[]>;
@@ -60,7 +60,11 @@ export function SnapshotFileTree(props: {
     <div
       class={cx(
         "flex min-h-0 flex-col",
-        props.inline ? "w-56 shrink-0 border-r border-line" : "h-full flex-1",
+        // Inline, it is a capped band over the file on a narrow pane and a side
+        // column once the pane can spare one — the caller flips its own row to match.
+        props.inline
+          ? "max-h-48 shrink-0 border-b border-line @xl:max-h-none @xl:w-56 @xl:border-r @xl:border-b-0 @4xl:w-72"
+          : "h-full flex-1",
       )}
     >
       <Show when={props.summary}>

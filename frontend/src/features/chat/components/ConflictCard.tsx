@@ -54,10 +54,11 @@ export function ConflictCard(props: { row: ConflictRow }): JSX.Element {
           {/* **Columns where there is room, stacked where there is not.** The whole
               value of the layout is reading two claims against each other, which needs
               them beside each other — and a 340px pane cannot give two columns without
-              breaking every line in both. `sm` is where the pane stops being a strip of
-              text. Three or more positions wrap into the same grid rather than
-              compressing further. */}
-          <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              breaking every line in both. `@xl` is where the *pane* stops being a strip
+              of text — a container query, because a 340px pane on a wide monitor is
+              still a strip. Three or more positions wrap into the same grid rather
+              than compressing further. */}
+          <div class="grid grid-cols-1 gap-2 @xl:grid-cols-2">
             <For each={c().positions}>
               {(position) => (
                 <div class="flex min-w-0 flex-col gap-1 rounded-panel bg-raised p-2">

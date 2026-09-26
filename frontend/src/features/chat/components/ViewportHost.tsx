@@ -8,6 +8,7 @@ import {
   onMount,
   type Accessor,
   type JSX,
+  type Signal,
 } from "solid-js";
 import {
   ContextMenu,
@@ -24,6 +25,7 @@ import {
 } from "../viewport/surfaceRenderers";
 import { PaneCloseButton, PaneFrame } from "./PaneFrame";
 import {
+  fillingStrip,
   isSurfaceId,
   surfacesOf,
   type ViewportLayout,
@@ -156,7 +158,11 @@ export function ViewportHost(props: {
    */
   const renderSurface = (
     id: Accessor<SurfaceId>,
-    opts?: { header?: boolean },
+    opts?: {
+      header?: boolean;
+      toolbarMount?: Accessor<HTMLElement | undefined>;
+      fill?: Accessor<boolean>;
+    },
   ): JSX.Element => {
     // Whether this pane draws its own header is fixed by the call site, not reactive —
     // and where it does not, the meta is left unbuilt rather than built and dropped:
@@ -175,6 +181,8 @@ export function ViewportHost(props: {
         <PaneFrame
           id={id()}
           header={framed}
+          toolbarMount={opts?.toolbarMount}
+          fill={opts?.fill?.()}
           meta={framed ? SURFACE_META[id()]?.(props.ctx) : undefined}
           onClose={() => closePane(id())}
         >
@@ -184,48 +192,79 @@ export function ViewportHost(props: {
     );
   };
 
-  const renderStack = (node: Accessor<StackPane>): JSX.Element => (
-    <div class="flex min-h-0 min-w-0 flex-1 flex-col">
-      {/* The strip is this pane's header, so it carries what a leaf's header would:
-          the active surface's own figures, and the close for that surface. Not an
-          `×` per tab — three hit targets in a two-tab strip, on a strip that already
-          scrolls when the labels outgrow it. */}
-      <Tabs
-        fill
-        items={node().surfaces.map((s) => ({
-          value: s,
-          label: surfaceSpec(s).label,
-        }))}
-        value={node().active}
-        onChange={(v) => vp().revealSurface(v as SurfaceId)}
-        trailing={
-          <>
-            {SURFACE_META[node().active]?.(props.ctx)}
-            <PaneCloseButton
-              label={surfaceSpec(node().active).label}
-              onClose={() => closePane(node().active)}
-            />
-          </>
-        }
-      />
-      {/* Every member stays mounted; only the active one is shown. */}
-      <div class="relative min-h-0 flex-1">
-        <For each={node().surfaces}>
-          {(s) => (
-            <div
-              class={cx(
-                "absolute inset-0 flex",
-                s !== node().active && "invisible",
-              )}
-              aria-hidden={s !== node().active}
-            >
-              {renderSurface(() => s, { header: false })}
-            </div>
-          )}
-        </For>
+  const renderStack = (node: Accessor<StackPane>): JSX.Element => {
+    // One toolbar mount per member, all mounted and all but the active one hidden —
+    // the members themselves stay mounted, so each keeps rendering its controls, and
+    // only the front one's should be in the strip.
+    const mounts = new Map<SurfaceId, Signal<HTMLElement | undefined>>();
+    const mountOf = (s: SurfaceId): Signal<HTMLElement | undefined> => {
+      let m = mounts.get(s);
+      if (!m) {
+        m = createSignal<HTMLElement>();
+        mounts.set(s, m);
+      }
+      return m;
+    };
+    return (
+      // `@container/pane` here too: the strip is this pane's header, so a member's
+      // toolbar in it must size against the stack's width, as it would a leaf's.
+      <div class="@container/pane flex min-h-0 min-w-0 flex-1 flex-col">
+        {/* The strip is this pane's header, so it carries what a leaf's header would:
+          the active surface's own figures and controls, and the close for that
+          surface. Not an `×` per tab — three hit targets in a two-tab strip, on a
+          strip that already scrolls when the labels outgrow it. */}
+        <Tabs
+          fill
+          gutter="md"
+          items={node().surfaces.map((s) => ({
+            value: s,
+            label: surfaceSpec(s).label,
+          }))}
+          value={node().active}
+          onChange={(v) => vp().revealSurface(v as SurfaceId)}
+          trailing={
+            <>
+              {SURFACE_META[node().active]?.(props.ctx)}
+              <For each={node().surfaces}>
+                {(s) => (
+                  <div
+                    ref={mountOf(s)[1]}
+                    class={cx(
+                      "flex items-center gap-1",
+                      s !== node().active && "hidden",
+                    )}
+                  />
+                )}
+              </For>
+              <PaneCloseButton
+                label={surfaceSpec(node().active).label}
+                onClose={() => closePane(node().active)}
+              />
+            </>
+          }
+        />
+        {/* Every member stays mounted; only the active one is shown. */}
+        <div class="relative min-h-0 flex-1">
+          <For each={node().surfaces}>
+            {(s) => (
+              <div
+                class={cx(
+                  "absolute inset-0 flex",
+                  s !== node().active && "invisible",
+                )}
+                aria-hidden={s !== node().active}
+              >
+                {renderSurface(() => s, {
+                  header: false,
+                  toolbarMount: mountOf(s)[0],
+                })}
+              </div>
+            )}
+          </For>
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   const renderSplit = (
     node: Accessor<SplitPane>,
@@ -340,19 +379,25 @@ export function ViewportHost(props: {
           is two surfaces with nothing between them. The rule is suppressed on
           the last thing in the host — a line under the bottom-most strip when
           no panels follow brackets the frame rather than dividing anything. */}
+      {/* The bottom strip with no panels after it grows into the rest of the host
+          and scrolls inside itself, rather than stopping at its row cap above an
+          empty frame (`fillingStrip`). */}
       <For each={props.layout.strips}>
-        {(id, i) => (
-          <div
-            class={cx(
-              "shrink-0",
-              (i() < props.layout.strips.length - 1 ||
-                props.layout.panels !== null) &&
-                "border-b border-line",
-            )}
-          >
-            {renderSurface(() => id)}
-          </div>
-        )}
+        {(id, i) => {
+          const fills = (): boolean => fillingStrip(props.layout) === id;
+          return (
+            <div
+              class={cx(
+                fills() ? "flex min-h-0 flex-1 flex-col" : "shrink-0",
+                (i() < props.layout.strips.length - 1 ||
+                  props.layout.panels !== null) &&
+                  "border-b border-line",
+              )}
+            >
+              {renderSurface(() => id, { fill: fills })}
+            </div>
+          );
+        }}
       </For>
       <Show when={props.layout.panels}>
         {(panels) => (

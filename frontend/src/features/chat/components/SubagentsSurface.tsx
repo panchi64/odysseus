@@ -3,6 +3,7 @@ import { Disclosure, EmptyState } from "~/ui";
 import { isLive, type Subagent } from "../data";
 import { SubagentCard } from "./SubagentCard";
 import { SubagentDetail } from "./SubagentDetail";
+import { SurfaceBody, SurfaceColumns } from "./surfaceChrome";
 
 /** Waiting on the operator first, then working, then whatever went wrong.
  *
@@ -76,7 +77,9 @@ export function SubagentsSurface(props: {
   );
 
   return (
-    <div class="flex h-full min-h-0 w-full flex-col gap-2 px-3 pb-2">
+    // Not the body's own scroll: the list scrolls inside, and a sub-agent's view pins
+    // its header while only its transcript scrolls.
+    <SurfaceBody scroll={false}>
       {/* One sub-agent, or all of them — never both. A sub-agent that is closed out
           while its view is open (a thread switch, a cancel) resolves to nothing and
           drops back to the list rather than holding a stale card on screen.
@@ -111,20 +114,22 @@ export function SubagentsSurface(props: {
               />
             }
           >
-            <div class="flex flex-col gap-1.5">
+            <SurfaceColumns>
               <For each={showing()}>{card}</For>
-            </div>
+            </SurfaceColumns>
           </Show>
 
           <Show when={finished().length > 0}>
             <Disclosure label={`Finished (${finished().length})`}>
-              <div class="flex flex-col gap-1.5 pt-1">
-                <For each={finished()}>{card}</For>
+              <div class="pt-1">
+                <SurfaceColumns>
+                  <For each={finished()}>{card}</For>
+                </SurfaceColumns>
               </div>
             </Disclosure>
           </Show>
         </div>
       </Show>
-    </div>
+    </SurfaceBody>
   );
 }

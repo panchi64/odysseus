@@ -1,25 +1,25 @@
 import { Show, createMemo, createSignal, type JSX } from "solid-js";
 import {
   EmptyState,
-  Panel,
+  Segmented,
   Select,
-  Tabs,
   Text,
+  type SegmentedOption,
   type SelectOption,
-  type TabItem,
 } from "~/ui";
 import {
   priorSnapshots,
   type PriorVersion,
   type ViewItem,
 } from "../viewport/viewItems";
+import { PaneToolbar } from "./PaneFrame";
 import { ViewActionRow } from "./ViewActionRow";
 import { ViewStage } from "./ViewStage";
 import { ViewTimelineRail } from "./ViewTimelineRail";
 
 type Mode = "preview" | "code";
 
-const MODE_TABS: TabItem[] = [
+const MODE_OPTIONS: SegmentedOption<Mode>[] = [
   { value: "preview", label: "Preview" },
   { value: "code", label: "Code" },
 ];
@@ -28,11 +28,11 @@ const MODE_TABS: TabItem[] = [
  *  transcript (or, below `lg` / in fullscreen, in a full-screen sheet — the caller
  *  mounts this same component in either slot). One consolidated list of
  *  **versions**: a dropdown + a horizontal timeline rail, a PREVIEW / CODE toggle,
- *  and an action row (download, keeper, font size, wrap, refresh, fullscreen,
- *  collapse). The newest version is followed by default and shows its HTML preview
- *  first. The frontend only renders what the run's events describe; it decides
- *  nothing — all state (pin, tab, font, wrap, fullscreen) is the operator's own
- *  view preference, owned by the caller via `useViewerPersistence`. */
+ *  and an action row (download, keeper, font size, wrap, refresh, fullscreen) lent
+ *  to the pane header. The newest version is followed by default and shows its HTML
+ *  preview first. The frontend only renders what the run's events describe; it
+ *  decides nothing — all state (pin, tab, font, wrap, fullscreen) is the operator's
+ *  own view preference, owned by the caller via `useViewerPersistence`. */
 export function ViewportPanel(props: {
   items: ViewItem[];
   selectedKey: string | null;
@@ -81,129 +81,97 @@ export function ViewportPanel(props: {
   const keeperEligible = (): boolean => Boolean(selected()?.snapshot);
 
   return (
-    <div
-      /* `p-2` keeps the header and the stage off the frame's rules — the
-         surface is the framed box now, not a card with its own padding, so the
-         breathing room has to come from here.
-
-         No `tabindex` and no focus ring: the focusable container is the panel
-         itself (`ChatViewportMounts`), which is what "focus is in the panel"
-         has to mean once the panel can hold more than this one surface. */
-      class="h-full p-2"
-    >
-      {/* `bare`: the frosted surface belongs to the framed region that
-          `ConstructionReveal` draws, so the panel adds no fill, no shadow and
-          no ring of its own. A card here was the parent container with rounded
-          corners — a second box wrapped *around* the frame, when the frame is
-          meant to be the edge of the thing itself. */}
-      {/* No `label`: the pane frame around this surface already names it, and a
-          second "View" an inch below the first is chrome arguing with itself. What
-          is left in the header is the action row, which is a toolbar rather than a
-          title — the frame's own `meta` slot is for a surface's *figures*, and these
-          controls read the panel's local stage state (the selected version, the
-          reload nonce) that only this component holds. */}
-      <Panel
-        meta={
-          <ViewActionRow
-            keeper={selected()?.keeper}
-            onKeeper={
-              props.onKeeper && keeperEligible()
-                ? () => props.onKeeper!(selected()!)
-                : undefined
-            }
-            fontStep={props.fontStep}
-            onFontStep={props.onFontStep}
-            softWrap={props.softWrap}
-            onToggleWrap={props.onToggleWrap}
-            onRefresh={
-              refreshVisible() ? () => setReloadKey((k) => k + 1) : undefined
-            }
-            fullscreen={props.fullscreen}
-            onToggleFullscreen={props.onToggleFullscreen}
+    // No `tabindex` and no focus ring: the focusable container is the panel itself
+    // (`ChatViewportMounts`), which is what "focus is in the panel" has to mean once
+    // the panel can hold more than this one surface.
+    <div class="flex h-full min-h-0 flex-col">
+      {/* The actions are a toolbar, not a title, so they ride the pane's own header
+          rather than a row of their own under it — while staying here, since they
+          read stage state (the selected version, the reload nonce) only this
+          component holds. */}
+      <PaneToolbar>
+        <ViewActionRow
+          keeper={selected()?.keeper}
+          onKeeper={
+            props.onKeeper && keeperEligible()
+              ? () => props.onKeeper!(selected()!)
+              : undefined
+          }
+          fontStep={props.fontStep}
+          onFontStep={props.onFontStep}
+          softWrap={props.softWrap}
+          onToggleWrap={props.onToggleWrap}
+          onRefresh={
+            refreshVisible() ? () => setReloadKey((k) => k + 1) : undefined
+          }
+          fullscreen={props.fullscreen}
+          onToggleFullscreen={props.onToggleFullscreen}
+        />
+      </PaneToolbar>
+      <Show
+        when={props.items.length > 0}
+        fallback={
+          <EmptyState
+            icon="eye"
+            message="Nothing to show yet"
+            hint="Pages, charts, files, and live servers from this conversation appear here."
           />
         }
-        bare
-        flush
-        fill
-        class="h-full"
       >
-        <Show
-          when={props.items.length > 0}
-          fallback={
-            <EmptyState
-              icon="eye"
-              message="Nothing to show yet"
-              hint="Pages, charts, files, and live servers from this conversation appear here."
+        {/* Which version, and which face of it — one row, wrapping when the pane is
+            too narrow for both. With a single version the dropdown collapses to its
+            label. */}
+        <div class="flex shrink-0 flex-wrap items-center gap-2 px-3 py-2">
+          <Show
+            when={props.items.length > 1}
+            fallback={
+              <Text variant="micro" tone="dim" class="min-w-0 flex-1 truncate">
+                {selected()?.label}
+              </Text>
+            }
+          >
+            <Select
+              aria-label="Select version"
+              class="min-w-0 flex-1"
+              options={versionOptions()}
+              value={selected()?.key}
+              onChange={props.onSelect}
             />
-          }
-        >
-          <div class="flex h-full min-h-0 flex-col">
-            {/* Which version. With a single one the dropdown collapses to its
-                label — it now has the row to itself, so it takes the full width
-                instead of sharing it with the mode toggle. */}
-            <div class="flex items-center gap-2 px-3 py-2">
-              <Show
-                when={props.items.length > 1}
-                fallback={
-                  <Text
-                    variant="micro"
-                    tone="dim"
-                    class="min-w-0 flex-1 truncate"
-                  >
-                    {selected()?.label}
-                  </Text>
-                }
-              >
-                <Select
-                  aria-label="Select version"
-                  class="min-w-0 flex-1"
-                  options={versionOptions()}
-                  value={selected()?.key}
-                  onChange={props.onSelect}
-                />
-              </Show>
-            </div>
+          </Show>
+          <Segmented
+            aria-label="Preview or code"
+            fill={false}
+            options={MODE_OPTIONS}
+            value={props.activeTab}
+            onChange={props.onSelectTab}
+          />
+        </div>
 
-            <ViewTimelineRail
-              items={props.items}
-              selectedKey={selected()?.key ?? null}
-              followingLatest={props.selectedKey === null}
-              onSelect={props.onSelect}
-            />
+        <ViewTimelineRail
+          items={props.items}
+          selectedKey={selected()?.key ?? null}
+          followingLatest={props.selectedKey === null}
+          onSelect={props.onSelect}
+        />
 
-            {/* PREVIEW / CODE, and it is the panel's waist rather than another
-                control in its header. Sized to its labels and tucked beside the
-                version dropdown, the pair read as two buttons that happened to
-                be there; across the full width, with the header above it and the
-                stage starting immediately below, the strip *is* the line between
-                what the panel is showing and the controls for choosing it. */}
-            <Tabs
-              fill
-              items={MODE_TABS}
-              value={props.activeTab}
-              onChange={(v) => props.onSelectTab(v as Mode)}
-            />
-
-            <div class="min-h-0 flex-1">
-              {/* The stage stays mounted and reacts to the selected version in place
-                  (the live head's iframe survives a relabel when a newer version is
-                  minted on the same server); only the refresh nonce reloads the iframe. */}
-              <Show when={selected()}>
-                {(entry) => (
-                  <ViewStage
-                    entry={entry()}
-                    mode={props.activeTab}
-                    reloadKey={reloadKey()}
-                    priorVersions={priorVersions()}
-                    fontStep={props.fontStep}
-                    softWrap={props.softWrap}
-                  />
-                )}
-              </Show>
-            </div>
-          </div>
-        </Show>
-      </Panel>
+        <div class="min-h-0 flex-1">
+          {/* The stage stays mounted and reacts to the selected version in place
+              (the live head's iframe survives a relabel when a newer version is
+              minted on the same server); only the refresh nonce reloads the iframe. */}
+          <Show when={selected()}>
+            {(entry) => (
+              <ViewStage
+                entry={entry()}
+                mode={props.activeTab}
+                reloadKey={reloadKey()}
+                priorVersions={priorVersions()}
+                fontStep={props.fontStep}
+                softWrap={props.softWrap}
+              />
+            )}
+          </Show>
+        </div>
+      </Show>
     </div>
   );
 }

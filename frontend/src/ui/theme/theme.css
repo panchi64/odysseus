@@ -1315,6 +1315,24 @@ body {
   line-height: var(--prose-h4-lh);
   color: var(--text);
 }
+/* Dense prose (`Markdown dense`): the top three headings step down one rung, for a
+   document read in a pane rather than a column — a 28px h1 in a 320px pane is as
+   loud as the pane's own title. The scale itself is untouched; each level borrows
+   the next one's pair. Set per heading rather than by redefining `--prose-h*` on
+   the element, because a variable defined in terms of its neighbour on the same
+   element resolves the whole chain (h1 → h2 → h3) instead of one step. */
+.ody-prose.ody-prose-dense h1 {
+  font-size: var(--prose-h2-size);
+  line-height: var(--prose-h2-lh);
+}
+.ody-prose.ody-prose-dense h2 {
+  font-size: var(--prose-h3-size);
+  line-height: var(--prose-h3-lh);
+}
+.ody-prose.ody-prose-dense h3 {
+  font-size: var(--prose-h4-size);
+  line-height: var(--prose-h4-lh);
+}
 /* Headings are section breaks: extra space above, tight to the content below.
    Space above scales with the level, so the eye reads the gap as depth. */
 .ody-prose :is(h1, h2, h3, h4, h5, h6) + * {

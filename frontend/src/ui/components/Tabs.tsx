@@ -25,6 +25,10 @@ export interface TabsProps {
    *  on the same rule as the tabs, and a row of their own under it would be a
    *  second band of chrome for one button. */
   trailing?: JSX.Element;
+  /** A filling strip's side inset. `md` matches a region whose other rows sit at
+   *  12px — a strip standing in for a pane header should start where the header
+   *  would. A prop rather than a `class`, since `cx` does not resolve two paddings. */
+  gutter?: "sm" | "md";
   class?: string;
 }
 
@@ -37,6 +41,7 @@ export function Tabs(props: TabsProps): JSX.Element {
     "onChange",
     "fill",
     "trailing",
+    "gutter",
     "class",
   ]);
   const trailing = children(() => local.trailing);
@@ -52,7 +57,8 @@ export function Tabs(props: TabsProps): JSX.Element {
         // A filling strip draws the one rule §7 sanctions: it is not decoration
         // between two regions that space already separates, it is the edge of
         // the header itself, and the content below starts against it.
-        local.fill && "border-b border-line px-2 py-1.5",
+        local.fill && "border-b border-line py-1.5",
+        local.fill && (local.gutter === "md" ? "px-3" : "px-2"),
         local.class,
       )}
     >

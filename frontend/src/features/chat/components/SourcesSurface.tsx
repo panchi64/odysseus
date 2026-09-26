@@ -33,9 +33,9 @@ import {
   BUCKET_LABEL,
   type SourceInventory,
 } from "../viewport/sourceItems";
-import { Sep } from "./ProcessRow";
 import { SourceRow } from "./SourceRow";
 import { ClaimsSection } from "./ClaimsSection";
+import { SurfaceBody, SurfaceSection, SurfaceSummary } from "./surfaceChrome";
 import type { ClaimInventory } from "../viewport/claimItems";
 
 export function SourcesSurface(props: {
@@ -49,7 +49,7 @@ export function SourcesSurface(props: {
 }): JSX.Element {
   const inv = () => props.inventory();
   return (
-    <div class="flex h-full min-h-0 w-full flex-col gap-2 overflow-y-auto px-3 pb-2">
+    <SurfaceBody>
       <Show
         when={inv().items.length}
         fallback={
@@ -72,54 +72,40 @@ export function SourcesSurface(props: {
         />
         <For each={inv().groups}>
           {(group) => (
-            <div class="flex flex-col gap-1">
-              <div class="flex items-baseline gap-2 pt-1">
-                <Text variant="plate" tone="dim">
-                  {BUCKET_LABEL[group.bucket]}
-                </Text>
-                <Text variant="micro" tone="dim" class="tabular-nums">
-                  {group.items.length}
-                </Text>
-              </div>
-              <Text variant="micro" tone="dim">
-                {BUCKET_HINT[group.bucket]}
-              </Text>
+            <SurfaceSection
+              label={BUCKET_LABEL[group.bucket]}
+              count={group.items.length}
+              hint={BUCKET_HINT[group.bucket]}
+              gap={1}
+              columns
+            >
               <For each={group.items}>
                 {(item) => <SourceRow item={item} bucket={group.bucket} />}
               </For>
-            </div>
+            </SurfaceSection>
           )}
         </For>
       </Show>
-    </div>
+    </SurfaceBody>
   );
 }
 
-/** The two figures the whole inventory is read against, and when it was last added to.
+/** When the inventory was last added to.
  *
- *  `origins` is the independent-source count at the **thread** level: distinct publishers
- *  behind everything this thread read. Per-*claim* independence is a different figure and
- *  it now exists — the claims section above carries it, counted the same way over the
- *  sources one assertion rests on. Both are printed because they answer different
- *  questions, and neither stands in for the other. */
+ *  The two figures it is read against — sources, and the independent origins behind
+ *  them — ride the pane header (`SURFACE_META.sources`), which is there whether the pane
+ *  is a leaf or a tab. Printing them here as well put the same count twice in one inch.
+ *  Per-*claim* independence is a different figure, carried by the claims section. */
 function InventoryHead(props: { inventory: SourceInventory }): JSX.Element {
-  const inv = () => props.inventory;
   return (
-    <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1 border-b border-line pb-2">
-      <Text variant="micro" tone="bright" class="tabular-nums">
-        {inv().items.length} {inv().items.length === 1 ? "source" : "sources"}
-      </Text>
-      <Sep />
-      <Text variant="micro" tone="dim" class="tabular-nums">
-        {inv().originCount}{" "}
-        {inv().originCount === 1 ? "origin" : "independent origins"}
-      </Text>
-      <Show when={inv().newestRetrieval}>
-        <Sep />
-        <Text variant="micro" tone="dim">
-          last read {relativeTime(inv().newestRetrieval!)}
-        </Text>
-      </Show>
-    </div>
+    <Show when={props.inventory.newestRetrieval}>
+      {(at) => (
+        <SurfaceSummary>
+          <Text variant="micro" tone="dim">
+            last read {relativeTime(at())}
+          </Text>
+        </SurfaceSummary>
+      )}
+    </Show>
   );
 }

@@ -1,9 +1,15 @@
 import { For, Show, type JSX } from "solid-js";
-import { Collapse, EmptyState, StatusFlag, Text, type Status } from "~/ui";
+import { EmptyState, StatusFlag, Text, type Status } from "~/ui";
 import { duration } from "~/lib/format";
 import type { HostCommand, HostCommandPhase } from "../model";
 import { CommandBoundary, FenceNote } from "./CommandBoundary";
-import { ProcessRow, Sep, createAdoptedOpen } from "./ProcessRow";
+import { createAdoptedOpen } from "./ProcessRow";
+import { SurfaceBody, SurfaceCard } from "./surfaceChrome";
+
+/** One stream of output, whichever it is. Capped so a chatty build's log scrolls inside
+ *  its own row rather than pushing every command after it off the pane; wrapped hard
+ *  because a long unbroken token (a path, a hash) must not widen the pane. */
+const OUTPUT = "max-h-72 overflow-y-auto whitespace-pre-wrap break-all";
 
 /** The row's state as one word, in the same vocabulary the inline terminal uses — the
  *  panel and the transcript are two views of one command and must not name it
@@ -52,7 +58,7 @@ export function CommandsSurface(props: {
   commands: () => HostCommand[];
 }): JSX.Element {
   return (
-    <div class="flex h-full min-h-0 w-full flex-col gap-1 overflow-y-auto px-3 pb-2">
+    <SurfaceBody gap={1}>
       <Show
         when={props.commands().length}
         fallback={
@@ -67,7 +73,7 @@ export function CommandsSurface(props: {
           {(command) => <CommandRow command={command} />}
         </For>
       </Show>
-    </div>
+    </SurfaceBody>
   );
 }
 
@@ -99,89 +105,70 @@ function CommandRow(props: { command: HostCommand }): JSX.Element {
     c().reach != null;
 
   return (
-    <div class="overflow-hidden rounded-panel bg-surface shadow-1">
-      <ProcessRow
-        open={open()}
-        onToggle={toggle}
-        icon="terminal"
-        iconClass={iconTone[c().phase] ?? "text-dim"}
-        label="Command"
-        title={c().name}
-        class="hover:bg-raised"
-        trailing={
-          <>
-            {/* An unfenced command is the exception worth seeing without opening the
-                row — the fence is what the declaration is worth, and a thread where it
-                did not apply is a thread the operator should know about at rest. The
-                rest of the boundary reads inside, where there is room for the reason. */}
-            <Show when={c().fenced === false}>
-              <StatusFlag status="warn">Unfenced</StatusFlag>
-            </Show>
-            <Show when={c().elapsedMs !== undefined}>
-              <Text variant="micro" tone="dim" class="tabular-nums">
-                {duration(c().elapsedMs!)}
-              </Text>
-            </Show>
-            <StatusFlag status={flag().status} dot>
-              {flag().label}
-            </StatusFlag>
-          </>
+    <SurfaceCard
+      open={open()}
+      onToggle={toggle}
+      icon="terminal"
+      iconClass={iconTone[c().phase] ?? "text-dim"}
+      label="Command"
+      title={c().name}
+      /* The command line IS the row — no label reads it better than itself. */
+      detail={c().command}
+      gap={1}
+      trailing={
+        <>
+          {/* An unfenced command is the exception worth seeing without opening the
+              row — the fence is what the declaration is worth, and a thread where it
+              did not apply is a thread the operator should know about at rest. The
+              rest of the boundary reads inside, where there is room for the reason. */}
+          <Show when={c().fenced === false}>
+            <StatusFlag status="warn">Unfenced</StatusFlag>
+          </Show>
+          <Show when={c().elapsedMs !== undefined}>
+            <Text variant="micro" tone="dim" class="tabular-nums">
+              {duration(c().elapsedMs!)}
+            </Text>
+          </Show>
+          <StatusFlag status={flag().status} dot>
+            {flag().label}
+          </StatusFlag>
+        </>
+      }
+    >
+      <Show
+        when={hasBody()}
+        fallback={
+          <Text variant="micro" tone="dim">
+            Nothing to show yet.
+          </Text>
         }
       >
-        <Sep />
-        {/* The command line IS the row — no label reads it better than itself. */}
-        <Text variant="micro" tone="default" class="min-w-0 truncate">
-          {c().command}
-        </Text>
-      </ProcessRow>
-      <Collapse open={open()}>
-        <div class="flex flex-col gap-1 bg-bg px-2 py-1.5">
-          <Show
-            when={hasBody()}
-            fallback={
-              <Text variant="micro" tone="dim">
-                Nothing to show yet.
-              </Text>
-            }
-          >
-            <CommandBoundary command={c()} />
-            <Show when={settled()} fallback={<StreamedText command={c()} />}>
-              <Show when={c().stdout}>
-                <Text
-                  as="div"
-                  variant="micro"
-                  tone="default"
-                  class="max-h-72 overflow-y-auto whitespace-pre-wrap break-all"
-                >
-                  {c().stdout}
-                </Text>
-              </Show>
-              <Show when={c().stderr}>
-                <Text
-                  as="div"
-                  variant="micro"
-                  tone="alert"
-                  class="max-h-72 overflow-y-auto whitespace-pre-wrap break-all"
-                >
-                  {c().stderr}
-                </Text>
-              </Show>
-            </Show>
-            <Show when={c().error}>
-              <Text variant="micro" tone="warn" class="break-words">
-                {c().error}
-              </Text>
-            </Show>
-            <FenceNote command={c()} />
-            <Show when={c().timedOut || c().exitCode != null}>
-              <Text variant="micro" tone={c().exitCode === 0 ? "dim" : "alert"}>
-                {c().timedOut ? "TIMED OUT" : `EXIT ${c().exitCode}`}
-              </Text>
-            </Show>
+        <CommandBoundary command={c()} />
+        <Show when={settled()} fallback={<StreamedText command={c()} />}>
+          <Show when={c().stdout}>
+            <Text as="div" variant="micro" tone="default" class={OUTPUT}>
+              {c().stdout}
+            </Text>
           </Show>
-        </div>
-      </Collapse>
-    </div>
+          <Show when={c().stderr}>
+            <Text as="div" variant="micro" tone="alert" class={OUTPUT}>
+              {c().stderr}
+            </Text>
+          </Show>
+        </Show>
+        <Show when={c().error}>
+          <Text variant="micro" tone="warn" class="break-words">
+            {c().error}
+          </Text>
+        </Show>
+        <FenceNote command={c()} />
+        <Show when={c().timedOut || c().exitCode != null}>
+          <Text variant="micro" tone={c().exitCode === 0 ? "dim" : "alert"}>
+            {c().timedOut ? "TIMED OUT" : `EXIT ${c().exitCode}`}
+          </Text>
+        </Show>
+      </Show>
+    </SurfaceCard>
   );
 }
 
@@ -190,12 +177,7 @@ function CommandRow(props: { command: HostCommand }): JSX.Element {
 function StreamedText(props: { command: HostCommand }): JSX.Element {
   return (
     <Show when={props.command.streamed}>
-      <Text
-        as="div"
-        variant="micro"
-        tone="default"
-        class="max-h-72 overflow-y-auto whitespace-pre-wrap break-all"
-      >
+      <Text as="div" variant="micro" tone="default" class={OUTPUT}>
         {props.command.streamed}
       </Text>
     </Show>

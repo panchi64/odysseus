@@ -1,12 +1,13 @@
 import { For, Show, type JSX } from "solid-js";
-import { Button, Chip, Collapse, StatusFlag, Text } from "~/ui";
+import { Button, Chip, StatusFlag, Text } from "~/ui";
 import { hostLabel, relativeTime } from "~/lib/format";
 import type {
   ClaimInventory,
   ClaimRow,
   ClaimSource,
 } from "../viewport/claimItems";
-import { ProcessRow, Sep, createAdoptedOpen } from "./ProcessRow";
+import { Sep, createAdoptedOpen } from "./ProcessRow";
+import { SurfaceCard, SurfaceSection } from "./surfaceChrome";
 
 /**
  * What a second reader found when it read the answer against its own sources.
@@ -36,13 +37,11 @@ export function ClaimsSection(props: {
       when={c().items.length > 0}
       fallback={
         <Show when={props.canExtract}>
-          <div class="flex flex-col gap-1.5 border-b border-line pb-2">
-            <Text variant="plate" tone="dim">
-              Claims
-            </Text>
-            <Text variant="micro" tone="dim">
-              Nothing has read this answer against its sources yet.
-            </Text>
+          <SurfaceSection
+            label="Claims"
+            hint="Nothing has read this answer against its sources yet."
+            ruled
+          >
             <div>
               <Button
                 variant="ghost"
@@ -54,38 +53,40 @@ export function ClaimsSection(props: {
                 {props.extracting ? "Reading…" : "Check the claims"}
               </Button>
             </div>
-          </div>
+          </SurfaceSection>
         </Show>
       }
     >
-      <div class="flex flex-col gap-1.5 border-b border-line pb-2">
-        <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-          <Text variant="plate" tone="dim">
-            Claims
-          </Text>
-          <Text variant="micro" tone="bright" class="tabular-nums">
-            {c().items.length}
-          </Text>
-          {/* Printed whenever there is a reading at all, including as a zero — "none
-              ungrounded" is a result the operator came for, and hiding it would make
-              the absence of the line indistinguishable from the absence of the check. */}
-          <Sep />
-          <Text
-            variant="micro"
-            tone={c().ungroundedCount > 0 ? "warn" : "dim"}
-            class="tabular-nums"
-          >
-            {c().ungroundedCount} unsupported
-          </Text>
-          <Show when={c().newestExtraction}>
+      <SurfaceSection
+        label="Claims"
+        count={c().items.length}
+        countTone="bright"
+        ruled
+        columns
+        extra={
+          <>
+            {/* Printed whenever there is a reading at all, including as a zero — "none
+                ungrounded" is a result the operator came for, and hiding it would make
+                the absence of the line indistinguishable from the absence of the check. */}
             <Sep />
-            <Text variant="micro" tone="dim">
-              read {relativeTime(c().newestExtraction!)}
+            <Text
+              variant="micro"
+              tone={c().ungroundedCount > 0 ? "warn" : "dim"}
+              class="tabular-nums"
+            >
+              {c().ungroundedCount} unsupported
             </Text>
-          </Show>
-        </div>
+            <Show when={c().newestExtraction}>
+              <Sep />
+              <Text variant="micro" tone="dim">
+                read {relativeTime(c().newestExtraction!)}
+              </Text>
+            </Show>
+          </>
+        }
+      >
         <For each={c().items}>{(row) => <ClaimCard row={row} />}</For>
-      </div>
+      </SurfaceSection>
     </Show>
   );
 }
@@ -95,67 +96,57 @@ function ClaimCard(props: { row: ClaimRow }): JSX.Element {
   const r = () => props.row;
   const { open, toggle } = createAdoptedOpen({});
   return (
-    <div class="overflow-hidden rounded-panel bg-surface shadow-1">
-      <ProcessRow
-        open={open()}
-        onToggle={toggle}
-        icon={r().grounded ? "check" : "warning"}
-        iconClass={r().grounded ? "text-dim" : "text-warn"}
-        label={r().grounded ? "Claim" : "Unsupported"}
-        title={r().claim}
-        class="hover:bg-raised"
-        trailing={
-          <>
-            {/* The per-claim independent-source count — corroboration for *this*
-                assertion, which the thread-wide origin figure cannot give. Counted in
-                origins, so four pages off one site do not read as four. */}
-            <Show when={r().origins > 1}>
-              <Text variant="micro" tone="dim" class="tabular-nums">
-                {r().origins} origins
-              </Text>
-            </Show>
-            <Show when={!r().grounded}>
-              <StatusFlag status="warn" dot>
-                No passage
-              </StatusFlag>
-            </Show>
-          </>
-        }
-      >
-        <Sep />
-        <Text variant="micro" tone="default" class="min-w-0 truncate">
-          {r().claim}
-        </Text>
-      </ProcessRow>
-      <Collapse open={open()}>
-        <div class="flex flex-col gap-1.5 bg-bg px-2 py-1.5">
-          {/* Reading scale: the claim is prose, and it is the thing being judged. */}
-          <Text as="p" variant="body" tone="default" class="break-words">
-            {r().claim}
-          </Text>
-          <Show
-            when={r().sources.length > 0}
-            fallback={
-              <Text variant="micro" tone="dim">
-                The reader could not name a source for this.
-              </Text>
-            }
-          >
-            <For each={r().sources}>{(s) => <ClaimSourceRow source={s} />}</For>
-          </Show>
-          <Show when={!r().grounded}>
-            {/* Said plainly, and said as what it is: a second reader's failure to find
-                the assertion, not a verdict that the answer is wrong. */}
-            <Text variant="micro" tone="warn">
-              A second reader did not find this in the source above.
+    <SurfaceCard
+      open={open()}
+      onToggle={toggle}
+      icon={r().grounded ? "check" : "warning"}
+      iconClass={r().grounded ? "text-dim" : "text-warn"}
+      label={r().grounded ? "Claim" : "Unsupported"}
+      title={r().claim}
+      detail={r().claim}
+      trailing={
+        <>
+          {/* The per-claim independent-source count — corroboration for *this*
+              assertion, which the thread-wide origin figure cannot give. Counted in
+              origins, so four pages off one site do not read as four. */}
+          <Show when={r().origins > 1}>
+            <Text variant="micro" tone="dim" class="tabular-nums">
+              {r().origins} origins
             </Text>
           </Show>
+          <Show when={!r().grounded}>
+            <StatusFlag status="warn" dot>
+              No passage
+            </StatusFlag>
+          </Show>
+        </>
+      }
+    >
+      {/* Reading scale: the claim is prose, and it is the thing being judged. */}
+      <Text as="p" variant="body" tone="default" class="break-words">
+        {r().claim}
+      </Text>
+      <Show
+        when={r().sources.length > 0}
+        fallback={
           <Text variant="micro" tone="dim">
-            confidence {r().confidence}
+            The reader could not name a source for this.
           </Text>
-        </div>
-      </Collapse>
-    </div>
+        }
+      >
+        <For each={r().sources}>{(s) => <ClaimSourceRow source={s} />}</For>
+      </Show>
+      <Show when={!r().grounded}>
+        {/* Said plainly, and said as what it is: a second reader's failure to find
+            the assertion, not a verdict that the answer is wrong. */}
+        <Text variant="micro" tone="warn">
+          A second reader did not find this in the source above.
+        </Text>
+      </Show>
+      <Text variant="micro" tone="dim">
+        confidence {r().confidence}
+      </Text>
+    </SurfaceCard>
   );
 }
 

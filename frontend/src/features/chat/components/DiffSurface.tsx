@@ -20,6 +20,7 @@ import {
   type BranchState,
   type FileChange,
 } from "../data";
+import { PaneToolbar } from "./PaneFrame";
 
 /**
  * What a code thread has changed, and the two ways it ends.
@@ -157,13 +158,17 @@ function FileRow(props: {
             and nothing else on the row carries it. */}
         <Show when={props.file.oldPath}>
           {(from) => (
-            <Text variant="micro" tone="dim" class="min-w-0 truncate pl-12">
+            <Text
+              variant="micro"
+              tone="dim"
+              class="min-w-0 truncate pl-6 @md:pl-12"
+            >
               was {from()}
             </Text>
           )}
         </Show>
 
-        <div class="flex min-w-0 flex-wrap items-baseline gap-x-2 pl-12">
+        <div class="flex min-w-0 flex-wrap items-baseline gap-x-2 pl-6 @md:pl-12">
           <Text variant="plate" tone="dim" class="shrink-0">
             {props.file.category}
           </Text>
@@ -366,12 +371,16 @@ export function DiffSurface(props: {
                 </Text>
               )}
             </Show>
+          </div>
 
-            <Show when={files(b()).length}>
+          {/* Which view of the change is a control over this pane, so it rides
+              the pane's header; the figures above stay with the body they
+              describe. */}
+          <Show when={files(b()).length}>
+            <PaneToolbar>
               <Segmented
                 aria-label="What to read"
                 fill={false}
-                class="ml-auto"
                 value={tab()}
                 onChange={setTab}
                 options={[
@@ -387,8 +396,8 @@ export function DiffSurface(props: {
                   },
                 ]}
               />
-            </Show>
-          </div>
+            </PaneToolbar>
+          </Show>
 
           <div class="min-h-0 flex-1">
             <Show

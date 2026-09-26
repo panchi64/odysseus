@@ -26,7 +26,8 @@
  */
 
 import { For, Show, type JSX } from "solid-js";
-import { Collapse, EmptyState, StatusFlag, Text, type Status } from "~/ui";
+import { EmptyState, StatusFlag, Text, cx, type Status } from "~/ui";
+import { plural } from "~/lib/format";
 import type { Depth } from "../data";
 import {
   byConfidence,
@@ -35,7 +36,14 @@ import {
 } from "../viewport/coverageItems";
 import { ConflictCard } from "./ConflictCard";
 import { FindingRow } from "./ResearchFindings";
-import { ProcessRow, Sep, createAdoptedOpen } from "./ProcessRow";
+import { Sep, createAdoptedOpen } from "./ProcessRow";
+import {
+  SURFACE_CARD,
+  SurfaceBody,
+  SurfaceCard,
+  SurfaceSection,
+  SurfaceSummary,
+} from "./surfaceChrome";
 
 /** Depth as a flag. **`none` is alert, not idle** — a topic a sub-agent looked at and
  *  got nowhere on is the single most actionable row a coverage map can carry, and the
@@ -58,7 +66,7 @@ export function CoverageSurface(props: {
     c().unresolved.length === 0;
 
   return (
-    <div class="flex h-full min-h-0 w-full flex-col gap-2 overflow-y-auto px-3 pb-2">
+    <SurfaceBody>
       <ArrivalBand coverage={c()} />
       <Show
         when={!empty()}
@@ -70,21 +78,21 @@ export function CoverageSurface(props: {
           />
         }
       >
-        <Section label="Topics" count={c().topics.length}>
+        <Section label="Topics" count={c().topics.length} columns>
           <For each={c().topics}>{(row) => <TopicCard row={row} />}</For>
         </Section>
         <Section label="Disagreements" count={c().conflicts.length}>
           <For each={c().conflicts}>{(row) => <ConflictCard row={row} />}</For>
         </Section>
         <Section label="Findings without a topic" count={c().untopiced.length}>
-          <div class="rounded-panel bg-surface px-2 shadow-1">
+          <div class={cx(SURFACE_CARD, "px-2")}>
             <For each={byConfidence(c().untopiced)}>
               {(finding) => <FindingRow finding={finding} />}
             </For>
           </div>
         </Section>
         <Section label="Still unresolved" count={c().unresolved.length}>
-          <div class="flex flex-col gap-1 rounded-panel bg-surface p-2 shadow-1">
+          <div class={cx(SURFACE_CARD, "flex flex-col gap-1 p-2")}>
             <For each={c().unresolved}>
               {(row) => (
                 <div class="flex flex-col gap-0.5">
@@ -105,7 +113,7 @@ export function CoverageSurface(props: {
           </div>
         </Section>
       </Show>
-    </div>
+    </SurfaceBody>
   );
 }
 
@@ -114,21 +122,18 @@ export function CoverageSurface(props: {
 function Section(props: {
   label: string;
   count: number;
+  columns?: boolean;
   children: JSX.Element;
 }): JSX.Element {
   return (
     <Show when={props.count > 0}>
-      <div class="flex flex-col gap-1.5">
-        <div class="flex items-baseline gap-2 pt-1">
-          <Text variant="plate" tone="dim">
-            {props.label}
-          </Text>
-          <Text variant="micro" tone="dim" class="tabular-nums">
-            {props.count}
-          </Text>
-        </div>
+      <SurfaceSection
+        label={props.label}
+        count={props.count}
+        columns={props.columns}
+      >
         {props.children}
-      </div>
+      </SurfaceSection>
     </Show>
   );
 }
@@ -147,7 +152,7 @@ function ArrivalBand(props: { coverage: CoverageReport }): JSX.Element {
   const a = () => props.coverage.arrival;
   const waiting = () => a().outstanding.length > 0;
   return (
-    <div class="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-line pb-2">
+    <SurfaceSummary align="center">
       <StatusFlag status={waiting() ? "info" : "nominal"} dot>
         {waiting() ? "In flight" : "All reported"}
       </StatusFlag>
@@ -156,7 +161,9 @@ function ArrivalBand(props: { coverage: CoverageReport }): JSX.Element {
       </Text>
       <Show when={waiting()}>
         <Sep />
-        <Text variant="micro" tone="info" class="min-w-0 truncate">
+        {/* Wraps rather than truncates: the names are the point of the line, and a
+            truncated list hides exactly the ones the operator is waiting on. */}
+        <Text variant="micro" tone="info" class="min-w-0 break-words">
           waiting on {a().outstanding.join(", ")}
         </Text>
       </Show>
@@ -166,7 +173,7 @@ function ArrivalBand(props: { coverage: CoverageReport }): JSX.Element {
           {a().proseOnly} reported in prose only — read those in Agents
         </Text>
       </Show>
-    </div>
+    </SurfaceSummary>
   );
 }
 
@@ -181,93 +188,77 @@ function TopicCard(props: { row: TopicRow }): JSX.Element {
   const findings = () => byConfidence(t().findings);
 
   return (
-    <div class="overflow-hidden rounded-panel bg-surface shadow-1">
-      <ProcessRow
-        open={open()}
-        onToggle={toggle}
-        icon="layers"
-        iconClass="text-dim"
-        label="Topic"
-        title={t().topic}
-        class="hover:bg-raised"
-        trailing={
-          <>
-            <Show when={t().gaps.length > 0}>
-              <Text variant="micro" tone="warn" class="tabular-nums">
-                {t().gaps.length} {t().gaps.length === 1 ? "gap" : "gaps"}
-              </Text>
-            </Show>
-            {/* A topic that arrived only as a finding's label has made no depth claim,
-                and `none` would be the report saying it got nowhere — which is a
-                different and much stronger statement than saying nothing. */}
-            <Show
-              when={t().depthReported}
-              fallback={
-                <StatusFlag status="idle" dot>
-                  depth not stated
-                </StatusFlag>
-              }
-            >
-              <StatusFlag status={depthFlag[t().depth]} dot>
-                {t().depth}
-              </StatusFlag>
-            </Show>
-          </>
-        }
-      >
-        <Sep />
-        <Text variant="micro" tone="default" class="min-w-0 truncate">
-          {t().topic}
-        </Text>
-      </ProcessRow>
-      <Collapse open={open()}>
-        <div class="flex flex-col gap-1.5 bg-bg px-2 py-1.5">
-          <div class="flex flex-wrap items-baseline gap-x-2">
-            <Text variant="micro" tone="dim" class="tabular-nums">
-              {t().sourceCount} {t().sourceCount === 1 ? "source" : "sources"}
-            </Text>
-            <Show when={t().reporters.length > 0}>
-              <Sep />
-              {/* Which sub-agents covered it — the per-topic arrival state, as far as
-                  it goes. A topic nobody has reported on yet simply has no row here;
-                  guessing which of the outstanding ones will cover it would be the
-                  frontend deciding something. */}
-              <Text variant="micro" tone="dim" class="min-w-0 truncate">
-                {t().reporters.join(", ")}
-              </Text>
-            </Show>
-          </div>
+    <SurfaceCard
+      open={open()}
+      onToggle={toggle}
+      icon="layers"
+      label="Topic"
+      title={t().topic}
+      detail={t().topic}
+      trailing={
+        <>
           <Show when={t().gaps.length > 0}>
-            <div class="flex flex-col gap-0.5">
-              <Text variant="plate" tone="warn">
-                Gaps
-              </Text>
-              <For each={t().gaps}>
-                {(gap) => (
-                  <Text
-                    as="p"
-                    variant="body"
-                    tone="default"
-                    class="break-words"
-                  >
-                    {gap}
-                  </Text>
-                )}
-              </For>
-            </div>
+            <Text variant="micro" tone="warn" class="tabular-nums">
+              {plural(t().gaps.length, "gap")}
+            </Text>
           </Show>
-          <Show when={findings().length > 0}>
-            <div class="flex flex-col">
-              <Text variant="plate" tone="dim">
-                Established
-              </Text>
-              <For each={findings()}>
-                {(finding) => <FindingRow finding={finding} />}
-              </For>
-            </div>
+          {/* A topic that arrived only as a finding's label has made no depth claim,
+              and `none` would be the report saying it got nowhere — which is a
+              different and much stronger statement than saying nothing. */}
+          <Show
+            when={t().depthReported}
+            fallback={
+              <StatusFlag status="idle" dot>
+                depth not stated
+              </StatusFlag>
+            }
+          >
+            <StatusFlag status={depthFlag[t().depth]} dot>
+              {t().depth}
+            </StatusFlag>
           </Show>
+        </>
+      }
+    >
+      <div class="flex flex-wrap items-baseline gap-x-2">
+        <Text variant="micro" tone="dim" class="tabular-nums">
+          {plural(t().sourceCount, "source")}
+        </Text>
+        <Show when={t().reporters.length > 0}>
+          <Sep />
+          {/* Which sub-agents covered it — the per-topic arrival state, as far as
+              it goes. A topic nobody has reported on yet simply has no row here;
+              guessing which of the outstanding ones will cover it would be the
+              frontend deciding something. Wraps, like the arrival band's names. */}
+          <Text variant="micro" tone="dim" class="min-w-0 break-words">
+            {t().reporters.join(", ")}
+          </Text>
+        </Show>
+      </div>
+      <Show when={t().gaps.length > 0}>
+        <div class="flex flex-col gap-0.5">
+          <Text variant="plate" tone="warn">
+            Gaps
+          </Text>
+          <For each={t().gaps}>
+            {(gap) => (
+              <Text as="p" variant="body" tone="default" class="break-words">
+                {gap}
+              </Text>
+            )}
+          </For>
         </div>
-      </Collapse>
-    </div>
+      </Show>
+      <Show when={findings().length > 0}>
+        <div class="flex flex-col">
+          <Text variant="plate" tone="dim">
+            Established
+          </Text>
+          <For each={findings()}>
+            {(finding) => <FindingRow finding={finding} />}
+          </For>
+        </div>
+      </Show>
+    </SurfaceCard>
   );
 }

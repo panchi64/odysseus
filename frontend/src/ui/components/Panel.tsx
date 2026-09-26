@@ -89,16 +89,21 @@ export function Panel(props: PanelProps): JSX.Element {
       <Show when={local.label || local.meta}>
         <header
           class={cx(
-            "flex items-center justify-between gap-2 pb-2",
+            "flex items-center gap-2 pb-2",
+            local.label ? "justify-between" : "justify-end",
             // Card padding is the surface's, so a bare panel doesn't pay it —
             // its label sits flush with the content it names.
             !local.bare && "px-4 pt-3",
             local.bordered && "border-b border-line pb-3",
           )}
         >
-          <Text variant="label" tone="dim">
-            {local.label}
-          </Text>
+          {/* No empty label beside a lone meta — `justify-end` keeps the meta
+              on the right without a blank element holding the left. */}
+          <Show when={local.label}>
+            <Text variant="label" tone="dim">
+              {local.label}
+            </Text>
+          </Show>
           <Show when={local.meta}>{local.meta}</Show>
         </header>
       </Show>

@@ -105,6 +105,16 @@ export function isEmpty<Id extends string>(layout: Layout<Id>): boolean {
   return layout.strips.length === 0 && layout.panels === null;
 }
 
+/**
+ * The strip that grows into the rest of the host, if any: the bottom-most one, and only
+ * when no panels follow it. A strip keeps its natural height so it cannot push panels
+ * off the bottom — with none below, that cap only leaves an empty frame under it.
+ */
+export function fillingStrip<Id extends string>(layout: Layout<Id>): Id | null {
+  if (layout.panels !== null) return null;
+  return layout.strips.at(-1) ?? null;
+}
+
 /** A box to lay a pane out in. Pixels; only the ratios matter to the rules. */
 export interface Box {
   width: number;

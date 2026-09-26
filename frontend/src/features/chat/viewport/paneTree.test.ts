@@ -14,6 +14,7 @@ import { describe, expect, test } from "bun:test";
 import {
   closeSurface,
   emptyLayout,
+  fillingStrip,
   fits,
   focusInStack,
   insertPanel,
@@ -84,6 +85,22 @@ describe("opening", () => {
     expect(panelSurfacesOf(layout)).toEqual(["view"]);
     // Strips read first, matching how the panel stacks them.
     expect(surfacesOf(layout)).toEqual(["plan", "view"]);
+  });
+});
+
+describe("a strip filling the host", () => {
+  test("the bottom-most strip grows when no panels follow", () => {
+    // Opened in reverse registry order, so "last opened" and "bottom-most" disagree.
+    const layout = open(open(empty(), "agents"), "plan");
+    expect(fillingStrip(layout)).toBe("agents");
+  });
+
+  test("no strip grows while a panel is below it", () => {
+    expect(fillingStrip(open(open(empty(), "plan"), "view"))).toBeNull();
+  });
+
+  test("an empty layout has nothing to grow", () => {
+    expect(fillingStrip(empty())).toBeNull();
   });
 });
 

@@ -65,7 +65,9 @@ export const SURFACES = [
     id: "tasks",
     shape: "strip",
     label: "Tasks",
-    icon: "note",
+    // Not `note`, which is the Plan's: the two sat side by side in the surface bar as
+    // identical buttons. A task list is a column of things ticked off.
+    icon: "check",
     // Eight rows before it stops growing. A list longer than that is one the operator
     // scrolls, not one that pushes the panels off the bottom.
     maxRows: 8,

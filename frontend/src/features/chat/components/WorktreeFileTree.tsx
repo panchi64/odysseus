@@ -114,7 +114,9 @@ export function WorktreeFileTree(props: {
     <div
       class={cx(
         "flex min-h-0 flex-col",
-        props.inline ? "w-56 shrink-0 border-r border-line" : "h-full flex-1",
+        props.inline
+          ? "w-56 shrink-0 border-r border-line @4xl:w-72"
+          : "h-full flex-1",
       )}
     >
       <div class="min-h-0 flex-1 overflow-y-auto">

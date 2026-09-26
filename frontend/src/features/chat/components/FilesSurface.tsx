@@ -18,11 +18,16 @@ import {
 } from "../data/worktreeFiles";
 import { extensionOf } from "../viewport/viewItems";
 import { createDownloadSlot } from "../viewport/downloadRegistry";
+import { PaneToolbar } from "./PaneFrame";
 import { WorktreeFileTree } from "./WorktreeFileTree";
 import { settled } from "~/lib/resource";
 
 /** Below this the tree and a file cannot share a row, so the pane shows one at a
- *  time. `w-56` of tree against a 320px pane leaves ~96px for the file. */
+ *  time. `w-56` of tree against a 320px pane leaves ~96px for the file.
+ *
+ *  Measured rather than a container class, because the width decides behaviour and
+ *  not only layout: whether a file is auto-selected, and whether picking one replaces
+ *  the tree. CSS can hide a box; it cannot tell the effect below which arm is on. */
 const SIDE_BY_SIDE = 560;
 
 /**
@@ -157,7 +162,7 @@ export function FilesSurface(props: {
   const viewer = (): JSX.Element => (
     <div class="flex min-h-0 min-w-0 flex-1 flex-col">
       <Show when={!sideBySide()}>
-        <div class="flex shrink-0 items-center gap-2 px-2 py-1.5">
+        <div class="flex shrink-0 items-center gap-2 px-3 py-1.5">
           <Button
             variant="ghost"
             size="sm"
@@ -234,9 +239,10 @@ export function FilesSurface(props: {
           />
         }
       >
-        {/* The name is the pane frame's; what stays here are controls over this
-            surface's own state rather than figures about it. */}
-        <div class="flex shrink-0 items-center justify-end gap-2 px-3 pb-2">
+        {/* The name is the pane frame's; these are controls over this surface's
+            own state rather than figures about it, lent to the frame's header
+            instead of spending a row of their own. */}
+        <PaneToolbar>
           <Button
             variant="ghost"
             size="sm"
@@ -255,7 +261,7 @@ export function FilesSurface(props: {
             onClick={() => void refetch()}
             aria-label="Re-read the workspace"
           />
-        </div>
+        </PaneToolbar>
         <div class="flex min-h-0 flex-1">
           <Show
             when={sideBySide()}
