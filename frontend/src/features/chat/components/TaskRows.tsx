@@ -67,8 +67,8 @@ export function taskSummary(items: TaskItem[]): {
  *  lists every row.
  *
  *  The done/total count and the ACTIVE flag are *not* here — they live in the
- *  conversation status strip, which is also what opens these rows. This renders only
- *  what the strip's one-line summary can't say.
+ *  `Tasks` toggle on the row under the composer, which is also what opens these rows.
+ *  This renders only what that one-word summary can't say.
  *
  *  Presentation only: the backend owns the list and nothing here can change it. There is
  *  deliberately no edit affordance — the list is the agent's account of its own work, and

@@ -190,11 +190,18 @@ function toAttachmentStatus(
   return "extracting";
 }
 
+/** The backend's own words for a failure, when an error carries any. */
+function failureReason(err: unknown): string | undefined {
+  return err instanceof Error && err.message ? err.message : undefined;
+}
+
 /**
  * Build a Composer attachment controller. `attach` uploads each file immediately
  * and tracks it as a chip; a single interval polls any still-extracting upload
  * until it settles. Toggling KB membership and removing are relayed to the seam.
- * Bind once per composer; the poll cleans itself up with the owning component.
+ * `snapshot`/`restore` let the Composer put a message's files back when its send
+ * is refused, and `retry` re-runs a failed chip. Bind once per composer; the poll
+ * cleans itself up with the owning component.
  */
 export function createComposerAttachments(): ComposerAttachmentsApi {
   const [items, setItems] = createStore<ComposerAttachment[]>([]);
@@ -234,6 +241,9 @@ export function createComposerAttachments(): ComposerAttachmentsApi {
           patch(a.id, (x) => {
             x.status = toAttachmentStatus(row.status);
             x.kbExcluded = row.kbExcluded ?? false;
+            // A failed extraction explains itself in `note` ("could not read the
+            // file"); the chip shows it rather than a bare "Failed".
+            x.error = x.status === "error" ? row.note : undefined;
           });
       }
     });
@@ -261,6 +271,33 @@ export function createComposerAttachments(): ComposerAttachmentsApi {
   };
   onCleanup(stopPolling);
 
+  // A chip whose POST never landed has no server row to retry, so the file itself is
+  // kept against its provisional id until the upload succeeds.
+  const unsent = new Map<string, File>();
+
+  const startUpload = (tempId: string, file: File): void => {
+    unsent.set(tempId, file);
+    void uploadFile(file)
+      .then((u) => {
+        unsent.delete(tempId);
+        patch(tempId, (x) => {
+          x.id = u.id;
+          x.name = u.name;
+          x.status = toAttachmentStatus(u.status);
+          x.kbExcluded = u.kbExcluded ?? false;
+          x.error = x.status === "error" ? u.note : undefined;
+        });
+        // A still-extracting upload needs the list poll running to settle it.
+        ensurePolling();
+      })
+      .catch((err: unknown) =>
+        patch(tempId, (x) => {
+          x.status = "error";
+          x.error = failureReason(err);
+        }),
+      );
+  };
+
   const attach = (files: File[]): void => {
     for (const file of files) {
       // A provisional chip id keyed off the uploading file, swapped for the real
@@ -276,23 +313,52 @@ export function createComposerAttachments(): ComposerAttachmentsApi {
           }),
         ),
       );
-      void uploadFile(file)
-        .then((u) => {
-          patch(tempId, (x) => {
-            x.id = u.id;
-            x.name = u.name;
-            x.status = toAttachmentStatus(u.status);
-            x.kbExcluded = u.kbExcluded ?? false;
-          });
-          // A still-extracting upload needs the list poll running to settle it.
-          ensurePolling();
-        })
-        .catch(() => patch(tempId, (x) => (x.status = "error")));
+      startUpload(tempId, file);
     }
   };
 
+  const retry = (id: string): void => {
+    const current = items.find((a) => a.id === id);
+    if (current?.status !== "error") return;
+    const file = unsent.get(id);
+    if (file) {
+      // The POST itself failed: there is nothing server-side to retry, so upload
+      // the same file again under the same chip.
+      patch(id, (x) => {
+        x.status = "uploading";
+        x.error = undefined;
+      });
+      startUpload(id, file);
+      return;
+    }
+    // The file landed but extraction failed: the backend re-runs it, and the list
+    // poll carries the chip from extracting to wherever it ends up.
+    patch(id, (x) => {
+      x.status = "extracting";
+      x.error = undefined;
+    });
+    ensurePolling();
+    void retryUpload(id).catch((err: unknown) =>
+      patch(id, (x) => {
+        x.status = "error";
+        x.error = failureReason(err);
+      }),
+    );
+  };
+
   const remove = (id: string): void => {
+    unsent.delete(id);
     setItems((list) => list.filter((a) => a.id !== id));
+  };
+
+  // The Composer only snapshots a message whose files have all settled — a send with
+  // any still in flight is held until they land — so a restore puts back finished
+  // chips, and nothing in it needs an upload's outcome replayed.
+  const snapshot = (): ComposerAttachment[] => items.map((a) => ({ ...a }));
+
+  const restore = (saved: ComposerAttachment[]): void => {
+    setItems(saved.map((a) => ({ ...a })));
+    ensurePolling();
   };
 
   const toggleKbExcluded = (id: string): void => {
@@ -306,8 +372,19 @@ export function createComposerAttachments(): ComposerAttachmentsApi {
   };
 
   const clear = (): void => {
+    // The failed files kept for a retry go with their chips.
+    unsent.clear();
     setItems([]);
   };
 
-  return { items: accessor, attach, remove, toggleKbExcluded, clear };
+  return {
+    items: accessor,
+    attach,
+    remove,
+    toggleKbExcluded,
+    clear,
+    snapshot,
+    restore,
+    retry,
+  };
 }

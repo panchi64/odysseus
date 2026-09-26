@@ -26,7 +26,12 @@ import type { SessionMode } from "~/lib/modes";
 import { settled } from "~/lib/resource";
 import { useCommands } from "./data";
 import type { Command, CommandActionId, CommandInvocation } from "./model";
-import { groupCommands, invocationName, rankCommands } from "./rank";
+import {
+  groupCommands,
+  invocationName,
+  rankCommands,
+  resolveTyped,
+} from "./rank";
 
 /** The relays the room already has. Each is the *same* handler its existing control
  *  calls — a command is a second way to reach one, never a second implementation. */
@@ -52,10 +57,17 @@ export interface ComposerCommands {
   groups: () => ComposerMenuGroup[];
   /** The Composer reports the token here; `null` closes the menu. */
   onQuery: (token: { trigger: ComposerTrigger; query: string } | null) => void;
-  /** Completion text for a command, or null when the row acted immediately. */
-  onPick: (item: ComposerMenuItem) => string | null;
+  /** Completion text for a command, null when the row acted immediately, or undefined
+   *  when the row is no longer in the list (the catalog refetched under the menu) — the
+   *  Composer then only dismisses, rather than clearing a draft nothing acted on. */
+  onPick: (item: ComposerMenuItem) => string | null | undefined;
+  /** The command a draft names by typing it rather than picking it — an exact `/name`
+   *  at its head — resolved to what a pick would have staged, or null. */
+  resolveTyped: (text: string) => { command: Command; name: string } | null;
   /** Read the staged command against what is about to be sent, and say what this send
-   *  actually is. Clears the staging either way. */
+   *  actually is. Nothing staged by a pick falls back to `resolveTyped`, so a command
+   *  the operator typed in full means the same as one they picked. Clears the staging
+   *  either way. */
   consume: (text: string) => SendIntent;
   /** Drop a staged command — the operator edited the token away. */
   clear: () => void;
@@ -146,6 +158,13 @@ export function createComposerCommands(
     }
   };
 
+  /** Against the whole catalog, not the menu's ranked rows: a typed command is sent
+   *  with the menu shut, and a name the menu is not showing is still a name. */
+  const typed = (text: string) => {
+    const loaded = settled(catalog);
+    return loaded ? resolveTyped(text, loaded.commands) : null;
+  };
+
   return {
     groups,
     onQuery: (token) => {
@@ -153,9 +172,13 @@ export function createComposerCommands(
       // ignoring it keeps one menu open at a time.
       setQuery(token?.trigger === "/" ? token.query : null);
     },
+    resolveTyped: typed,
     onPick: (item) => {
       const command = find(item.id);
-      if (!command) return null;
+      // Undefined, not null: null means "the row acted", and the Composer clears the
+      // field on it. A row that vanished under the pointer did nothing, and the draft
+      // it was about to complete is still the operator's.
+      if (!command) return undefined;
       const name = invocationName(command);
       if (command.kind === "action") {
         const run = relay(command.actionId);
@@ -174,26 +197,33 @@ export function createComposerCommands(
       return name;
     },
     consume: (text) => {
-      const staged = pending();
+      const picked = pending();
       setPending(null);
-      const typed = text.trimStart();
+      const typedText = text.trimStart();
       // The operator may have edited the token away between picking and sending, and
       // the **text is the turn of record** — so a staged command only counts while the
-      // message still names it.
+      // message still names it. When it doesn't, the text is read on its own terms: a
+      // pick later retyped as a different command is that other command.
       //
       // As a **whole token**, not a prefix: `/review` is the head of `/reviewer`, and a
       // bare `startsWith` would both keep the wrong command and slice its argument at the
       // wrong place, sending `reviewer the auth` as `review` carrying `er the auth`. The
       // backend applies the same rule when carrying a command through an edit
-      // (`routes/chat._opens_with`).
-      if (!staged || !opensWith(typed, `/${staged.name}`)) {
-        return { kind: "message", command: null };
-      }
-      const argument = typed.slice(staged.name.length + 1).trim();
+      // (`routes/chat._opens_with`), and `resolveTyped` applies it too.
+      const staged =
+        picked && opensWith(typedText, `/${picked.name}`)
+          ? picked
+          : typed(text);
+      if (!staged) return { kind: "message", command: null };
+      const argument = typedText.slice(staged.name.length + 1).trim();
       if (staged.command.kind === "action") {
         if (staged.command.actionId === "permission-level" && argument) {
           actions.setPermissionLevel(argument);
         }
+        // Only a *typed* `/compact` reaches here with a relay of its own — a picked one
+        // ran on the pick and was never staged. Sending it is the operator's way of
+        // pressing the row they didn't open the menu for.
+        relay(staged.command.actionId)?.();
         // Swallowed either way: an action is never a message, and one sent without its
         // argument has nothing to do — the field clears and the operator tries again.
         return { kind: "acted" };

@@ -70,6 +70,10 @@ export interface LedEdgeProps extends JSX.HTMLAttributes<HTMLDivElement> {
    *  together, so the falloff keeps its shape instead of just getting brighter
    *  near the strip. Default `1` (~90px). */
   reach?: number;
+  /** Fade the strip and its glow out toward both ends, brightest at the centre —
+   *  a fixture hung over a wide surface rather than a rule along a structure.
+   *  Outward spill only. */
+  taper?: boolean;
   /** Layout glue — padding, spacing, flex. The component owns only the edge. */
   class?: string;
   children: JSX.Element;
@@ -114,6 +118,7 @@ export function LedEdge(props: LedEdgeProps): JSX.Element {
     "spill",
     "intensity",
     "reach",
+    "taper",
     "class",
     "style",
     "children",
@@ -157,6 +162,7 @@ export function LedEdge(props: LedEdgeProps): JSX.Element {
         sideClass[side()],
         spillClass[local.spill ?? "out"],
         toneClass[tone()],
+        local.taper && "ody-led-taper",
         !local.lit && "ody-led-off",
         local.class,
       )}

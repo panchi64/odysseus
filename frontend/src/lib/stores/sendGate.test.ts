@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { sendBlocker } from "./sendGate";
+import { attachmentGate, sendBlocker } from "./sendGate";
 
 /* The frontend half of the backend's send gate. Without a context window every
    mechanism that keeps a thread inside its limit is inert, so the backend refuses the
@@ -39,5 +39,34 @@ describe("sendBlocker", () => {
     // The operator is the only one who can clear this, and only if the message names
     // the place — a bare "cannot send" leaves them hunting through settings.
     expect(sendBlocker(true, null)).toContain("Settings");
+  });
+});
+
+/* The hold-then-send decision. Fixtures put the failed file *after* the in-flight one,
+   so a rule that returned on the first non-ready chip would answer "pending" and the
+   composer would wait on a message that can never go. */
+describe("attachmentGate", () => {
+  test("nothing attached, or everything settled, is ready", () => {
+    expect(attachmentGate([])).toBe("ready");
+    expect(attachmentGate([{ status: "ready" }, { status: "ready" }])).toBe(
+      "ready",
+    );
+  });
+
+  test("any upload or extraction still running holds the send", () => {
+    expect(attachmentGate([{ status: "ready" }, { status: "uploading" }])).toBe(
+      "pending",
+    );
+    expect(attachmentGate([{ status: "extracting" }])).toBe("pending");
+  });
+
+  test("a failure outranks anything still in flight", () => {
+    expect(
+      attachmentGate([
+        { status: "uploading" },
+        { status: "ready" },
+        { status: "error" },
+      ]),
+    ).toBe("failed");
   });
 });

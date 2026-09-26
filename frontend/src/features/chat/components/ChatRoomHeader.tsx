@@ -1,11 +1,9 @@
-import { Show, createMemo, type JSX } from "solid-js";
+import { Show, type JSX } from "solid-js";
 import {
   Button,
   Frames,
   Icon,
   Menu,
-  MetClock,
-  StatusFlag,
   Text,
   TypewriterText,
   type MenuItem,
@@ -13,8 +11,6 @@ import {
 import { REVEAL_SPEED_MS } from "../data";
 import type { ChatViewport } from "../useChatViewport";
 import type { BranchState } from "../data";
-import type { ChatActivity, ChatOutcome } from "../model";
-import { resolveRunState, runStateSpec } from "../runState";
 import { BranchChip } from "./BranchChip";
 import { ViewportSurfaceBar } from "./ViewportSurfaceBar";
 
@@ -43,23 +39,11 @@ export interface ChatRoomHeaderProps {
   workspaceHint: () => string | undefined;
   /** True while the thread is being named — the auto-title or a manual retitle. */
   working: () => boolean;
-  /** What this thread is running on, or null when there is nothing to name. */
-  model: () => string | null;
-  /** When the thread was opened, ISO-8601 — the session clock (§10.16). Absent for a
-   *  staged thread, which has not been created yet and so has nothing to count from. */
-  createdAt: () => string | undefined;
   conversationId: () => string | null;
-  streaming: () => boolean;
-  /** The backend's status for this thread's live run, when it has one. */
-  activity: () => ChatActivity | undefined;
-  /** How this thread's last terminal run ended, when the backend still remembers.
-   *  Rendered only at rest — `activity` is the live truth. */
-  lastOutcome: () => ChatOutcome | undefined;
   /** Length of the transcript, which is what makes compact and copy available. */
   messageCount: () => number;
-  /** True while a hand-started fold is running on this thread. A fold has a summarizer
-   *  inside it and changes nothing until it lands, so the room has to say it is working
-   *  — the menu that started it has already closed by then. */
+  /** True while a hand-started fold is running on this thread — the menu row's own
+   *  throbber. The room says so out loud in the composer's header line. */
   compacting: () => boolean;
   viewport: ChatViewport;
   /** The thread's branch, fetched by the room and shared with the Diff surface. */
@@ -68,13 +52,14 @@ export interface ChatRoomHeaderProps {
 }
 
 /**
- * The thread's identity: what it is called, and what it is running on.
+ * The thread's identity: what it is called — and nothing else on that side.
  *
- * The model used to be stamped above every assistant turn instead. That wrote the same
- * name down the whole transcript and still left "what is this thread on?" unanswered,
- * because a turn only speaks for itself — so it is asked once, here, where it stays true
- * as the transcript scrolls. Everything else that stood in this row is in the status
- * strip under the composer.
+ * An eyebrow above the name used to carry the model, the thread's age and its run state.
+ * Each found a better home: the model is picked in the composer's status bar, where it is
+ * a control rather than a second read-only copy of one, and the run state rides the
+ * composer's header line beside the run clock, where the operator is looking while it
+ * matters. The thread's age answered a question nobody was asking. What is left is a
+ * title that floats over the transcript scrolling beneath it.
  *
  * **The other end of the row is what the thread can show you**, and that is a different
  * kind of thing from a name: the branch chip reads out what this thread has changed and
@@ -82,106 +67,17 @@ export interface ChatRoomHeaderProps {
  * to put in. Identity on the left, ways in on the right — so the row reads as one
  * question answered and one set of doors, rather than six controls in a line.
  *
- * **The subtitle spends no colour.** Hierarchy runs size → weight → brightness (§4), and
- * the resting palette is grey (§5) — an accent here would take the one the screen is
- * allowed, for a label that is orientation rather than focus. The separation is made the
- * way the system makes it: `micro` mono against a sans `readout`, which is the two-voice
- * split (§2) doing the work colour would otherwise be asked to do. A model name is
- * emitted by a process, so mono is also simply what it is.
- *
- * **The header now says what the thread is doing, which it never did.** The rail could
- * report a run three threads away while the room you were reading reported nothing at
- * all — the operator watching a long turn had the transcript's own throbber and no
- * answer to "is this still going, and did the last one even finish". The flag rides in
- * the eyebrow beside the model and the clock because those three answer the same class
- * of question: what is true of this *thread*, rather than of any turn in it. It is a
- * `StatusFlag`, so the hue lives in a 6px dot and only a warn or an alert reaches the
- * word — the thing worth interrupting for is interrupting, and a finished run is not.
- *
- * It reads the same `runState.ts` table the rail does. Two surfaces wording one fact
- * differently is how a header comes to call a run finished while the row for it is lit
- * amber three inches to the left.
+ * **It carries no fill.** The room lays it over the top of the transcript, which
+ * scrolls beneath it into a `ScrollFade` — so the header is a line of type over the
+ * conversation rather than a band taking its own height above it.
  */
 export function ChatRoomHeader(props: ChatRoomHeaderProps): JSX.Element {
-  const runState = createMemo(() => {
-    const s = resolveRunState(props.activity(), props.lastOutcome());
-    return s ? runStateSpec(s) : undefined;
-  });
-
   return (
-    // Still `items-center`, against the title block as a whole rather than its first
-    // line. With the eyebrow present that block is two lines tall, and top-aligning
-    // would hang the session controls level with a 10px label, leaving a gap beneath.
-    <header class="flex items-center justify-between gap-3 pb-3">
+    // `items-center` against the title block as a whole: with the workspace hint under
+    // the name that block is two lines tall, and top-aligning would hang the session
+    // controls level with the title alone, leaving a gap beneath them.
+    <header class="flex items-center justify-between gap-3 pb-1">
       <span class="flex min-w-0 flex-col">
-        {/* WHAT IT RUNS ON, above the name. Reserves no space when there is nothing
-            to name — an empty eyebrow would push the title down a line and leave two
-            adjacent threads sitting at different heights.
-
-            It reads above while the workspace hint reads below, and the split is what
-            each answers. The hint is context for a name the thread does not have yet,
-            so it follows the title; the model is true of the whole thread whether or
-            not it has been named, so it leads. The two are near-exclusive anyway —
-            the hint appears only for a staged worktree thread. */}
-        <Show
-          when={
-            props.model() ??
-            props.createdAt() ??
-            runState() ??
-            (props.compacting() || undefined)
-          }
-        >
-          {/* The mission clock rides the eyebrow beside the model because the two
-              answer the same kind of question — what is true of this thread as a
-              whole, rather than of any turn in it — and because §11 wants its one
-              diegetic detail at a region's edge rather than in the reading path.
-              It is the thread's own clock: how long this conversation has been
-              open, not how recently it spoke. */}
-          <span class="flex min-w-0 items-center gap-2">
-            {/* First in the row, because it is the only thing here that changes while
-                the operator is looking at it — and because a state that has to be
-                found after a model name is a state read second. `pulse` only while
-                work is genuinely in flight: a dot that blinks on a finished thread is
-                the interface reporting motion where there is none. */}
-            <Show when={runState()}>
-              {(s) => (
-                <StatusFlag
-                  status={s().status}
-                  dot
-                  pulse={s().live}
-                  class="shrink-0"
-                >
-                  {s().readout}
-                </StatusFlag>
-              )}
-            </Show>
-            {/* Beside the run state, because it is the same kind of fact — work in
-                flight on this thread — and because the operator who just picked
-                "Compact now" is looking at the header, not at the transcript, which
-                a fold leaves untouched until it lands. */}
-            <Show when={props.compacting()}>
-              <StatusFlag status="info" dot pulse class="shrink-0">
-                FOLDING
-              </StatusFlag>
-            </Show>
-            <Show when={props.model()}>
-              {(model) => (
-                <Text variant="micro" tone="dim" class="truncate">
-                  {model()}
-                </Text>
-              )}
-            </Show>
-            <Show when={props.createdAt()}>
-              {(createdAt) => (
-                <MetClock
-                  startedAt={createdAt()}
-                  variant="micro"
-                  class="shrink-0"
-                />
-              )}
-            </Show>
-          </span>
-        </Show>
         <span class="flex min-w-0 items-center gap-1.5">
           <Show
             when={props.reveal()}

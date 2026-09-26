@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { groupCommands, invocationName, rankCommands } from "./rank";
+import {
+  groupCommands,
+  invocationName,
+  rankCommands,
+  resolveTyped,
+} from "./rank";
 import type { Command, CommandGroup } from "./model";
 
 function cmd(over: Partial<Command> & { name: string }): Command {
@@ -142,5 +147,42 @@ describe("invocationName", () => {
     // Otherwise picking the row that was *shown* would run the one that won the name.
     const shadowed = cmd({ name: "reviewer", shadowedBy: "skill:reviewer" });
     expect(invocationName(shadowed)).toBe("agent:reviewer");
+  });
+});
+
+describe("resolveTyped — a command written without the menu", () => {
+  const level = cmd({
+    name: "level",
+    kind: "action",
+    actionId: "permission-level",
+  });
+  const winner = cmd({ name: "reviewer", qualifiedName: "skill:reviewer" });
+  const loser = cmd({ name: "reviewer", shadowedBy: "skill:reviewer" });
+  const rows = [level, loser, winner];
+
+  test("an exact name at the head of the message resolves, argument and all", () => {
+    expect(resolveTyped("/level auto", rows)).toEqual({
+      command: level,
+      name: "level",
+    });
+    expect(resolveTyped("  /level", rows)?.command).toBe(level);
+  });
+
+  test("a bare name belongs to the row that won it", () => {
+    expect(resolveTyped("/reviewer the auth", rows)?.command).toBe(winner);
+  });
+
+  test("a qualified name reaches the shadowed row on purpose", () => {
+    expect(resolveTyped("/agent:reviewer x", rows)).toEqual({
+      command: loser,
+      name: "agent:reviewer",
+    });
+  });
+
+  test("a prefix, an unknown name, or a slash mid-text resolves to nothing", () => {
+    expect(resolveTyped("/lev auto", rows)).toBeNull();
+    expect(resolveTyped("/foo bar", rows)).toBeNull();
+    expect(resolveTyped("set /level auto", rows)).toBeNull();
+    expect(resolveTyped("/", rows)).toBeNull();
   });
 });

@@ -125,6 +125,19 @@ export interface FoldDeps {
    *  it false. The drive's teardown still clears it for a turn that ended without a
    *  name — this is the other exit. */
   setTitlePending: (pending: boolean) => void;
+  /** The live run's clock, for the composer's header: when the backend started it and
+   *  which model round-trip it is on. Optional — a caller with no header to put it in
+   *  (the compare pane) leaves it out, and the fold then drops both facts. */
+  setRunClock?: (next: (prev: RunClock | null) => RunClock | null) => void;
+}
+
+/** When the streaming run began and how far it has got, both straight off the wire:
+ *  `startedAt` is `run.started`'s own `ts` — the backend's instant, never a client
+ *  stopwatch — and `step` the index of the newest `step.started`, which the backend
+ *  counts from 1 within the run. Null until the first step opens. */
+export interface RunClock {
+  startedAt: string;
+  step: number | null;
 }
 
 /** The transcript id of the fold a `compaction.started` at ``seq`` opened.
@@ -900,12 +913,19 @@ export function createFolder(
         // Spent: the next run announces its own kind, and one attached past its
         // `run.started` must not inherit this one's.
         deps.state.runKind = null;
+        deps.setRunClock?.(() => null);
         break;
       }
       case "run.started":
         deps.state.runKind = ev.kind;
+        deps.setRunClock?.(() => ({ startedAt: ev.ts, step: null }));
         break;
-      // step.*: no store change
+      case "step.started":
+        // Only onto a clock this run started: a reattach past `run.started` has no
+        // start instant to pair the step with, and a step alone is not a clock.
+        deps.setRunClock?.((prev) => prev && { ...prev, step: ev.index });
+        break;
+      // step.completed: no store change
     }
   };
 }

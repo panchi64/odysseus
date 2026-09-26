@@ -107,7 +107,7 @@ function createComparePane(
   // backend conversation id is only adopted in the run's `finally`; tearing down
   // before that resolves would either miss the id (orphan) or fight the late
   // re-bind, so reset/cleanup await this first.
-  let inflight: Promise<void> | null = null;
+  let inflight: Promise<unknown> | null = null;
   const send = (text: string, attachmentIds?: string[]) => {
     committed = true; // sending locks the pane's model for this comparison
     inflight = stream.send(text, attachmentIds).finally(() => {

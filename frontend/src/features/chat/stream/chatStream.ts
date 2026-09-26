@@ -49,7 +49,7 @@ import {
   type TranscriptStore,
 } from "./branching";
 import { createRunDrive } from "./drive";
-import { createFolder, type FoldState } from "./fold";
+import { createFolder, type FoldState, type RunClock } from "./fold";
 import { createPatchById, nextId } from "./patch";
 import { createResumeOps } from "./resume";
 import { createSteeringOps } from "./steering";
@@ -121,7 +121,7 @@ export function createChatStream(
   // a run reports it against a known window (loaded history carries none), which
   // is when the context meter first appears.
   const [usage, setUsage] = createSignal<ContextUsage | null>(null);
-  // What the thread has cost — the composer's readout line. One signal, because the
+  // What the thread has cost — the composer's stats panel. One signal, because the
   // backend sends one shape: the live `run.metrics` frame and the conversation load's
   // `stats` are the same payload, so a reload continues the same numbers rather than
   // blanking them. (This was three signals off one event; the counts and the token
@@ -137,6 +137,9 @@ export function createChatStream(
   // replaced on every revision, so — like the list above — it is a signal rather than
   // anything pinned to a message.
   const [plan, setPlan] = createSignal<PlanDocument | null>(null);
+  // The streaming run's start instant and step, for the composer's header — read off
+  // the run's own events, so the clock it drives measures the backend's run.
+  const [runClock, setRunClock] = createSignal<RunClock | null>(null);
   // The run-scoped bookkeeping the fold advances and the drive resets: the high-water
   // seq, the bubble events land on, the two backfill-race counters, and the run
   // currently streaming. One object, shared by reference with the folder.
@@ -201,6 +204,7 @@ export function createChatStream(
     setStats,
     setErrored,
     setTitlePending,
+    setRunClock,
   });
 
   // Steering: a message sent into a run that is already going, and the text handed
@@ -282,6 +286,9 @@ export function createChatStream(
       // for a superseded run, deliberately) — so without this the first turn's
       // throbber follows the operator onto every thread they open next.
       setTitlePending(false);
+      // The clock is the run's, and the run is the thread's: a switch supersedes the
+      // drive whose `run.ended` would have cleared it.
+      setRunClock(null);
     },
     supersede: drive.supersede,
     setSending,
@@ -297,6 +304,11 @@ export function createChatStream(
     initialSnapshots: options.initialSnapshots,
   });
 
+  /** Start a turn, or queue one into the live run. Resolves **false** as soon as the
+   *  send is known not to have been taken — refused here or by the backend — so the
+   *  composer can put the text back; **true** once an accepted turn's run has been
+   *  driven to its end (callers such as Compare await the whole run through this). A
+   *  caller that only wants the refusal reads the `false` and ignores the timing. */
   async function send(
     text: string,
     attachmentIds: string[] = [],
@@ -316,10 +328,10 @@ export function createChatStream(
        *  the backend names them to the model, which reads what it wants. */
       fileRefs?: string[];
     } = {},
-  ): Promise<void> {
+  ): Promise<boolean> {
     const { continuesMessageId, command, fileRefs } = extras;
     // A turn needs either prompt text or at least one attachment to send.
-    if (!text.trim() && attachmentIds.length === 0) return;
+    if (!text.trim() && attachmentIds.length === 0) return false;
     if (sending()) {
       // Mid-run steering is text-only — an attachment can't ride an existing
       // run's request (and the composer disables attach while streaming).
@@ -327,7 +339,7 @@ export function createChatStream(
         toast.error(
           "Attachments can't be added while a response is in progress.",
         );
-        return;
+        return false;
       }
       // Nor can a command. A queued message is injected verbatim, with no prelude
       // around it to resolve one through — so `/deploy prod` would reach the model
@@ -338,11 +350,10 @@ export function createChatStream(
         toast.error(
           "A command or file reference can't be sent while a response is in progress.",
         );
-        return;
+        return false;
       }
-      if (!text.trim()) return;
-      await steering.sendWhileStreaming(text);
-      return;
+      if (!text.trim()) return false;
+      return steering.sendWhileStreaming(text);
     }
     setSending(true);
 
@@ -402,30 +413,32 @@ export function createChatStream(
         file_refs: fileRefs?.length ? fileRefs : undefined,
       });
     } catch (err) {
+      // Not accepted, for either reason — so the optimistic turn comes back out of the
+      // transcript, and the `false` hands its text back to the composer. **One rule
+      // for both failures**: a send the backend did not take is not a turn, and it
+      // goes back where it was written. The generic arm used to leave the bubble
+      // standing under a dead assistant reply, which read as a turn that happened and
+      // failed — and the words were gone from the field, so retrying meant retyping.
+      setMessages(
+        reconcile(
+          messages.filter((m) => m.id !== userMsg.id && m.id !== assistantId),
+        ),
+      );
+      setSending(false);
+      setTitlePending(false);
       if (isApiError(err) && err.status === 409) {
-        // A run is already active on this conversation — drop the optimistic
-        // turn we just queued (it was never accepted) and surface the one
-        // that's actually in flight instead of silently discarding this send.
-        setMessages(
-          reconcile(
-            messages.filter((m) => m.id !== userMsg.id && m.id !== assistantId),
-          ),
-        );
+        // A run is already active on this conversation — surface the one that's
+        // actually in flight instead of silently discarding this send.
         toast.error("A response is still in progress in this conversation.");
-        setSending(false);
-        setTitlePending(false);
         if (activeConversationId)
           void resume.reattachToLiveRun(activeConversationId);
-        return;
+        return false;
       }
       toast.error(
         (err as { detail?: string })?.detail ??
           "Unable to reach the assistant.",
       );
-      patchById(assistantId, (m) => (m.streaming = false));
-      setSending(false);
-      setTitlePending(false);
-      return;
+      return false;
     }
     bindConversation(created.conversation_id);
     // Accepted — so the backend has retired the stop marker this turn resumes.
@@ -438,6 +451,7 @@ export function createChatStream(
         m.blockedDetail = undefined;
       });
     await drive.driveRun(created.run_id, assistantId, wasNew);
+    return true;
   }
 
   /** Resume a turn a bound stopped (inactivity/wall-clock timeout or cancel) by
@@ -600,6 +614,8 @@ export function createChatStream(
     /** The written plan it is working to, when there is one — the document the operator
      *  approves, which is a different thing from the list above. */
     plan,
+    /** When the streaming run started and which step it is on, or null between runs. */
+    runClock,
     /** The run currently streaming into this store, or null. */
     activeRunId: () => foldState.activeRunId,
     /** Highest event seq folded so far — the resume point for a reattach. */
@@ -619,6 +635,9 @@ export function createChatStream(
      *  the screen prefills the composer with it, then clears it. */
     undeliveredDraft: steering.undeliveredDraft,
     clearUndeliveredDraft: steering.clearUndeliveredDraft,
+    /** Hand text back to the composer through the same prefill — for a send made on
+     *  the operator's behalf, outside the composer, that the backend refused. */
+    stashDraft: steering.stash,
     reattachRun: drive.reattachRun,
     resolvePark: approvals.resolvePark,
     /** What the operator has entered into the dock but not yet submitted — held here

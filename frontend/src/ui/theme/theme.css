@@ -913,6 +913,64 @@ body {
   backdrop-filter: var(--glass-filter);
 }
 
+/* SCROLL FADE — where a scroll region dissolves under an edge laid over it.
+
+   The box fills its positioned parent (the overlaid header, the docked
+   composer) and reaches one `--scroll-fade-band` PAST the edge that faces the
+   content, so text scrolling under the overlay softens before it reaches the
+   words on top of it instead of being cut at a line.
+
+   Two effects, stacked, because either alone fails. A colour gradient alone is
+   a smear: text scrolled under the title is still crisp, just greyer, and reads
+   as two lines printed over each other. A blur alone leaves the title's contrast
+   at the mercy of whatever scrolls under it. So: a PROGRESSIVE blur — three
+   layers, each masked to a shorter reach from the edge and each blurring harder
+   than the last, so the blur is strongest at the edge and exactly nothing at
+   the band's far end, with no seam where one layer stops — and over it a tint
+   of the ground colour on the same falloff.
+
+   `backdrop-filter` blurs only what is painted inside its backdrop root, so the
+   backdrop-root trap on `.ody-glass` applies in full: nothing between the
+   scroller and this box may carry `opacity`, `filter`, `mask`, `isolation` or a
+   `will-change` of them, or the layers blur nothing and only the tint shows.
+   `pointer-events: none` — the band lies over live transcript. */
+.ody-scroll-fade {
+  --fade-dir: to bottom;
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
+  bottom: calc(-1 * var(--scroll-fade-band));
+  pointer-events: none;
+}
+.ody-scroll-fade[data-edge="bottom"] {
+  --fade-dir: to top;
+  top: calc(-1 * var(--scroll-fade-band));
+  bottom: 0;
+}
+.ody-scroll-fade > * {
+  position: absolute;
+  inset: 0;
+}
+.ody-scroll-fade-blur-1 {
+  backdrop-filter: blur(calc(var(--scroll-fade-blur) / 4));
+  mask-image: linear-gradient(var(--fade-dir), black, transparent);
+}
+.ody-scroll-fade-blur-2 {
+  backdrop-filter: blur(calc(var(--scroll-fade-blur) / 2));
+  mask-image: linear-gradient(var(--fade-dir), black, transparent 66%);
+}
+.ody-scroll-fade-blur-3 {
+  backdrop-filter: blur(var(--scroll-fade-blur));
+  mask-image: linear-gradient(var(--fade-dir), black, transparent 33%);
+}
+.ody-scroll-fade-tint {
+  background: linear-gradient(
+    var(--fade-dir),
+    color-mix(in oklab, var(--bg) var(--scroll-fade-tint), transparent),
+    transparent
+  );
+}
+
 /* ==========================================================================
    THE LIVE RAIL — an LED, not a border.
 
@@ -1097,6 +1155,67 @@ body {
   --led-a2: 22%;
   --led-a3: 13%;
   --led-a4: 6%;
+}
+
+/* Taper modifier — a strip that is brightest at its centre and fades to nothing
+   at both ends, with a glow that fades the same way. A box-shadow cannot do that:
+   it is the shape of its box, equally strong along the whole length. So a tapered
+   strip draws its light as gradients instead, in a box that IS the lit region —
+   the emitter's line along the edge it sits on, and an elliptical wash thrown
+   away from it. Outward spill only; the inward case has no tapered consumer.
+
+   The colour still fades between tones because `--led` is registered as a
+   `<color>` (below): an unregistered custom property changes discretely, and a
+   gradient built from it would snap from white to blue as a run starts. */
+@property --led {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+.ody-led-taper {
+  transition: --led var(--motion-slow) var(--ease);
+}
+.ody-led-taper.ody-led-top::before {
+  /* The box's bottom row is the edge's own hairline — the same pixels the
+     untapered strip occupies — and the rest of it is the space the glow falls
+     into above. */
+  inset: auto 0 100% 0;
+  width: auto;
+  /* Short and faint on purpose. The line carries the look; the wash only says
+     it is a light rather than a stroke. A filled ellipse at the box-shadow
+     curve's own mid alpha read as a dome of white over the transcript. */
+  height: calc(var(--line-w) + 20px * var(--led-reach));
+  box-shadow: none;
+  background:
+    linear-gradient(90deg, transparent, var(--led) 50%, transparent) bottom /
+      100% var(--line-w) no-repeat,
+    radial-gradient(
+      50% 100% at 50% 100%,
+      color-mix(
+        in oklab,
+        var(--led) calc(var(--led-a4) * var(--led-gain)),
+        transparent
+      ),
+      transparent
+    );
+}
+.ody-led-taper:not(.ody-led-top)::before {
+  inset: 0 100% 0 auto;
+  height: auto;
+  width: calc(var(--line-w) + 20px * var(--led-reach));
+  box-shadow: none;
+  background:
+    linear-gradient(180deg, transparent, var(--led) 50%, transparent) right /
+      var(--line-w) 100% no-repeat,
+    radial-gradient(
+      100% 50% at 100% 50%,
+      color-mix(
+        in oklab,
+        var(--led) calc(var(--led-a4) * var(--led-gain)),
+        transparent
+      ),
+      transparent
+    );
 }
 
 /* ==========================================================================

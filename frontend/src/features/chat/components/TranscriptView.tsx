@@ -15,6 +15,9 @@ export interface TranscriptViewProps {
   conversationId: () => string | null;
   /** The reading measure, shared with the composer dock so the two agree. */
   measure: string;
+  /** Height of what the room lays over the top of this scroll region (the title
+   *  block), in px — the first turn starts beneath it and its fade. */
+  insetTop: () => number;
 }
 
 /**
@@ -81,12 +84,21 @@ export function TranscriptView(props: TranscriptViewProps): JSX.Element {
            covers this, and a white rule around the transcript was exactly
            the kind of border the system dropped.
 
-           PADDING IS TOP-ONLY. A bottom pad here is a band of bare page
-           between the last turn and the composer's LED strip, which is the
-           one thing the dock below is built not to have — see its comment.
-           The last turn's own `py-4` is the breathing room down there; this
-           was stacking a second gap on top of it. */
-        class="min-h-0 flex-1 overflow-y-auto px-4 pt-2 outline-none transition-colors"
+           THE VERTICAL INSETS ARE THE OVERLAYS', and nothing more. Both ends of
+           this region sit under something — the title laid over the top, the
+           composer dock's fade reaching up over the bottom — and each inset is
+           exactly what clears it: the title block's measured height plus one
+           fade band at the top, one band at the bottom. The last turn's own
+           `py-3` is the breathing room; a pad beyond the band would be a strip
+           of bare page between the conversation and the composer. The scroll
+           padding matches the top so a turn scrolled into view (a settled
+           fold) lands below the title rather than under it. */
+        class="min-h-0 flex-1 overflow-y-auto px-4 outline-none transition-colors"
+        style={{
+          "padding-top": `calc(${props.insetTop()}px + var(--scroll-fade-band))`,
+          "scroll-padding-top": `calc(${props.insetTop()}px + var(--scroll-fade-band))`,
+          "padding-bottom": "var(--scroll-fade-band)",
+        }}
       >
         {/* The measure goes on the CONTENT, not on the scroll container:
             the container has to keep its full width so its scrollbar sits
@@ -183,7 +195,9 @@ export function TranscriptView(props: TranscriptViewProps): JSX.Element {
           size="sm"
           leading="chevron-down"
           onClick={props.scroll.jumpToLatest}
-          class="absolute bottom-4 left-1/2 -translate-x-1/2 bg-surface"
+          // `bottom-8` clears the dock's fade band, which reaches up over this
+          // region's last 28px and would otherwise frost the button's lower half.
+          class="absolute bottom-8 left-1/2 -translate-x-1/2 bg-surface"
         >
           Jump to latest
         </Button>

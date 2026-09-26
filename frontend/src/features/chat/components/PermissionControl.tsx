@@ -51,6 +51,8 @@ export function PermissionControl(props: {
   return (
     <Tooltip delay={600} side="top" label={description()}>
       <Select
+        // A cell of the composer's status bar; the bar lowercases the label.
+        cell
         // No value matches while pending, so the placeholder is what shows.
         value={props.pending ? "" : props.level}
         placeholder="LEVEL…"

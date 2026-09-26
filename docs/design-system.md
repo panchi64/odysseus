@@ -453,20 +453,24 @@ between them; both drop down the sides as the sides close; and the glass surface
 resolves inside the frame that has just been described. Closing runs the gesture
 in reverse, so the region is taken apart rather than switched off.
 
-Four surfaces use it, and the list is meant to stay short: the chat **View**,
-the **settings dialog**, the **⌘K palette**, and the composer's **context
-breakdown** (the panel behind the context ring). It is the arrival of a place, so
+Five surfaces use it, and the list is meant to stay short: the chat **View**,
+the **settings dialog**, the **⌘K palette**, and the two panels behind the
+composer's status bar — the **context breakdown** (behind the context bar) and the
+conversation's **stats panel** (behind `stats`). Both of those go through one
+shell, `RevealPopover`, so the frame, the glass and the padding inside it cannot
+drift between them. It is the arrival of a place, so
 it belongs to things that are places. A menu, a toast, a confirm and a form
 dialog all keep the ordinary reveal — being *built* would be theatre at that
 size, and the gesture stops meaning anything if everything performs it.
 
-The context breakdown is the one that looks like a popover, and what puts it on
-the list is what it's *for*, not its size. The operator opens it to read at their
+The two composer panels are the ones that look like popovers, and what puts them on
+the list is what they're *for*, not their size. The operator opens one to read at their
 own pace — what the context window is full of, and which of those answers calls for
-which action — and points at it while they do. That is a place they went to.
+which action; what the thread has spent and what each figure means — and points at
+it while they do. That is a place they went to.
 A menu is the opposite act: a choice made on the way to something else, dismissed
-the moment it's made. So the composer's level picker and model picker, which sit
-beside the ring, stay menus. Two things side by side arriving differently is the
+the moment it's made. So the composer's level picker and model picker, which share
+the bar with the context gauge, stay menus. Two things side by side arriving differently is the
 distinction doing its job, not an inconsistency.
 
 It runs at the **stage budget (320ms)**, which is not a new exception to the
@@ -646,25 +650,42 @@ Below the answer, the **Sources row** lists the pages the turn's tools actually 
 
 ### 10.12 The composer
 
-**One component, one layout, two sizes.** The docked input bar and the home page's hero field are the same card — `size` changes padding and the field's resting height, and nothing else. They used to be separate branches (a bordered field nested inside a bordered bar; a 2px box) and that fork was the clearest case of the box-in-a-box §7 exists to stop.
+**One component, one layout, two sizes.** The docked input bar and the home page's hero field are the same unit — `size` changes padding (and the hero keeps its bloom and width), and nothing else. They used to be separate branches (a bordered field nested inside a bordered bar; a 2px box), then a rounded card with a loose row of controls floating under it.
 
-Anatomy, top to bottom, inside one `surface` card on `radius-2` with `shadow-1`:
+**One bordered unit, square.** A single `line-strong` frame at `radius-0` holds two parts joined by one rule: the **card** on top, and the **status bar** welded to its underside. Four registration ticks (8px L-shaped, 6px outside each corner; `RegistrationFrame marks="tick"`) frame the unit — `dim` at rest, `info` while a run streams. `bare` (a composer nested inside another surface, the approval dock) keeps the frame and drops the fill and the ticks.
 
-1. an optional sans `label` title,
-2. attachment chips,
-3. the field — **transparent, borderless, no focus ring of its own**,
-4. an action row: attach and inline controls left, send/stop right.
+The card — `surface`, **only the writing**, top to bottom:
+
+1. **the header line** — one line of `plate` mono (10px, engraved tracking, dim): what the input is doing on the left, what is waiting on the operator on the right. The caller fills both (`headerStart`/`headerEnd`); `title` is the left's fallback (the hero's "New conversation"). In chat: `INPUT` at rest; while a run streams `● RUN` in info (`● FOLDING` for a hand-started fold), then `T+` the run's `MetClock` from `run.started`'s own `ts`, then `STEP n` from the newest `step.started` — each only once the stream has reported it. It is also where the thread's state is said now that the title carries none: `DISCONNECTED` in alert outranks everything (a detached run's clock would go on ticking over nothing), and at rest a run state other than `DONE` — `FAILED`, `BLOCKED`, `CANCELLED`, or a run the backend reports live that this room isn't driving — replaces `INPUT` as `● STATE` in the `runState.ts` table's own status tone, the same table the rail reads. On the right, `QUEUED n · ↑ TO EDIT` in warn while operator messages wait in the run; otherwise `DRAFT SAVED` while the field holds a draft persisted under `storageKey` (only on a composer that already has a header, so the first keystroke never grows a line);
+2. attachment chips;
+3. one row: the field — **transparent, borderless, no focus ring of its own** — with the commit keys at its right, bottom-aligned so they stay by the last line as the field grows.
+
+**The commit keys are the machine's.** `Button size="console"`: mono, uppercase, 11px semibold, 28px tall, the chord after the word at half opacity. At rest `TRANSMIT ⌘↵` (primary slab). While a run streams `QUEUE ⌘↵` (the same key — the message waits for the run's next step) beside `STOP ESC`, which reads `STOP & CORRECT ESC` once the field holds text, in the `danger` outline: it is the one key on the unit with a consequence the operator can't take back. While recalling, `SAVE ⌘↵`.
+
+**The status bar** (`StatusBar`, `joined`) is a 24px ruled row of fixed cells: `line` hairlines between them, mono 11px lowercase in the `text` tone, hover raising a cell to `surface-raised`/`bright`. Left, what the message *is*: `+ file` (line-strong and inert while a run streams or a message is recalled — present, so nothing reflows), the level picker (`Select cell`, its colour square kept), the model (`Combobox cell`, capped and truncating first). Right, the state of the thread: `tasks 3/5 · active` (only when there are tasks), `stats`, and the **context bar** — `ctx`, an 80×6px track filled to the window fraction, and the figure. The figure takes the backend's `level`: text, then warn, then alert. A 1px warn tick crosses the track at this thread's fold point (`usage.fold`, the operator's threshold with the conversation's override applied) while folding is armed; with it off or unreported there is no tick. Clicking the gauge opens the context breakdown. The bar wraps at narrow widths — the end group drops to its own line still right-aligned — and draws nothing at all when both groups are empty (the compare bench, the dock's own composer).
+
+**The card is for writing; the bar is for everything about the writing.** The controls used to sit inside the card in an action row, which made the resting card three lines tall for one line of text and put a toolbar between the operator and the field. Joined under it as a ruled strip they read as what they are — settings of the message and state of the thread — while staying part of the one object, rather than page furniture that happened to sit below it.
+
+**One row at rest, grows with its content.** The field rests at a single text row in both sizes; the card is the header, that line and the commit key. It grows as the operator writes, up to about 40% of the viewport, then scrolls — recomputed on resize, so a short window never loses the key off its bottom edge.
+
+**Enter is a newline; ⌘↵ (Ctrl↵ elsewhere) sends.** A multi-line field that sends on Enter punishes the operator for writing a paragraph; the commit key carries the chord as its hint, so the rule is on screen rather than remembered. Enter during IME composition is never a send.
+
+**↑ in an empty field recalls; the header says so.** With a `recall` controller wired (chat, for its queued messages), ArrowUp on an empty field lends the field to the newest recalled message, caret at its end; ↑ at the caret's very start walks older, ↓ at its very end walks newer and steps back out past the newest. Anywhere else the arrows move the caret as always. While recalling, the header line is taken over — never stacked under — by the pen glyph and what is being edited on the left and `⌘↵ SAVE · ESC CANCEL` on the right; the key reads **Save**, attaching is off, chips and `/`/`@` accents stand down, and the entry is announced in the composer's live region. The operator's own draft is never touched — it is not persisted over and comes back the moment the recall ends. Dim rather than accented: a mode of the input is a state, not a signal (§5).
 
 **The card is the control.** The field carries no chrome because the card around it already is the input; a bordered box inside a bordered box is two lines where one object exists.
 
-**The composer is always marked, at rest.** It *is* the operator's point of action, so "start typing" must be the obvious move the moment the screen appears — never gated on focus or hover (§6), because a cue that only arrives once you have committed to typing is telling you something you no longer need. The mark is neutral, not accented: luminance, not hue.
+**The composer is always marked, at rest.** It *is* the operator's point of action, so "start typing" must be the obvious move the moment the screen appears — never gated on focus or hover (§6), because a cue that only arrives once you have committed to typing is telling you something you no longer need. The mark is neutral at rest, not accented: luminance, not hue. The ticks and the edge light turn `info` only while a run streams, which is state, not attention.
 
-It takes one of two forms, and the difference is what sits above it (`edge`):
+The edge light takes one of two forms, and the difference is what sits above it (`edge`):
 
-- **`bloom` — the wide ambient aura (§6.2).** For a composer that is the screen: the home launchpad. Nothing is behind it for the light to fall on, and the aura reads as the field floating in space.
-- **`led` — a strip light on the top edge (§10.9, `side="top"`, `tone="neutral"`).** For the composer docked under a live transcript. The bloom's ~90px of upward reach lands squarely on the last thing the model said and washes it out; a rule of light does the same job in one line and separates the input from the conversation instead of bleeding into it. The card squares its top corners to meet the strip, and keeps `shadow-1` — the bloom's hairline ring goes with the bloom, and in Paper that ring is the only thing between a white card and a white page.
+- **`bloom` — the wide ambient aura (§6.2).** For a composer that is the screen: the home launchpad. Nothing is behind it for the light to fall on, and the aura reads as the unit floating in space.
+- **`led` — a strip light along the unit's top edge (§10.9, `side="top"`, `tone="neutral"`, `info` while streaming).** For the composer docked under a live transcript. The bloom's ~90px of upward reach lands squarely on the last thing the model said and washes it out; a rule of light does the same job in one line and separates the input from the conversation instead of bleeding into it. The frame's other three sides carry `line-strong` per side, so they never contend with the strip's own rule for the border colour.
 
-**Docked, it floats.** No rule welded to the bottom edge — the sticky wrapper carries the page background so the transcript scrolls out of sight behind a card that sits above it. No gradient scrim: the ground colour does the job.
+**Docked, it floats.** No rule welded to the bottom edge — the sticky wrapper carries the page background, and the transcript dissolves into it through a bottom `ScrollFade` (§10.17) reaching one band up over the conversation; the transcript keeps exactly that band as its bottom inset, so the last turn at rest clears the fade. Below the unit, only the 8px its bottom ticks need — the shell gives the chat route its bottom edge flush. **While the approval dock holds the slot**, the bar's trailing cells stand on their own under it as the same `StatusBar`, boxed on all four sides (`edge="box"`), with `DISCONNECTED` as its leading cell — the header line that says it the rest of the time has gone with the composer.
+
+### 10.12a The chat room's title
+
+The thread's name and nothing else on its side — the workspace hint under it for a staged worktree thread, the `Frames` throbber while the backend names it — with the branch chip, surface buttons and session menu at the other end. The model, the thread's age and the run state used to ride an eyebrow above it; the model is a control in the composer's status bar, and the state is said in the composer's header line. **The title carries no fill and is laid over the top of the transcript**, which scrolls beneath it into a top `ScrollFade`; the transcript's top inset is the title block's measured height plus one band, so the first turn at rest starts clear of both. A thread recap pinned under the title keeps the ground as a fill — it is a paragraph, and prose scrolling through prose is unreadable at any blur.
 
 ### 10.13 The operator’s turn
 
@@ -673,6 +694,8 @@ The operator's own message is **right-aligned and shrink-to-fit, capped at 80%**
 Width follows content: a three-word prompt is a three-word bubble. A fixed-width block would leave a short turn floating in the middle of an empty region, which reads as a layout error rather than as a message. The cap is what keeps a long paste from spanning the full measure.
 
 Alignment of the *block* and alignment of the *words* are separate decisions: the block sits right (that is what marks it as the operator's), the text inside is left-aligned, because right-ragged prose with any internal structure reads as broken.
+
+**The transcript's chrome runs at the composer's density; its prose does not.** Every row that isn't reading text — a work log's header and rows, a View chip, a turn's identity row — is 24px, the height of the composer's status cells, and the work log's sockets are 16px so a schematic row is no taller than a plain one. Turns are separated by 12px (the assistant turn's own padding against the operator's fill), the operator's fill pads its one-line prompt by 6px, and the parts inside an assistant turn sit 8px apart. The reading scale is untouched by any of it: density is taken out of the furniture around the words, never out of the words.
 
 **Turns glide in.** Every turn — the operator's on send, the assistant's as it opens — fades up 10px over 200ms in the human register. Fast enough to read as a response rather than a reveal, and it fires once on mount, so a streaming turn never re-animates as deltas land. Opening a thread mounts its turns together, so the transcript settles in as one movement rather than a staggered cascade.
 
@@ -710,7 +733,13 @@ The failure mode is real and worth naming: with few enough capabilities, a grid 
 
 **It is a formatter over a backend timestamp and nothing else.** The frontend is given `created_at`/`started_at` and renders the difference; it does not decide when anything began. A clock is the easiest place in an interface to accidentally invent state, and this one must not.
 
-Two are defined: the **session clock** in the shell header, running from the current conversation's `created_at`, and a **run clock** on any in-flight run, from its `started_at`. Both are diegetic detail under §11 and stay within its budget — one per region, at the region's edge.
+One is in use: the **run clock** on an in-flight run, from its `started_at`, in the composer's header line. The **session clock** that ran from the conversation's `created_at` beside the chat title was removed — how long ago a thread was opened is not a question the operator reads the room to answer. A clock is diegetic detail under §11 and stays within its budget — one per region, at the region's edge.
+
+### 10.17 Scroll fade
+
+Where a scroll region runs **under** something laid over its edge — the chat title above, the docked composer below — it dissolves rather than being cut at a line. `ScrollFade edge="top" | "bottom"` (`.ody-scroll-fade`) fills its positioned parent and reaches one `--scroll-fade-band` (28px) past the side facing the content. Two effects on one falloff, strongest at the edge and nothing at the band's far end: a **progressive backdrop blur** — three layers, each masked to a shorter reach and blurring harder (a quarter, a half, all of `--scroll-fade-blur`), so there is no seam where one stops — and a **tint of the ground** from `--scroll-fade-tint` (70%) to clear, which keeps a title legible over text passing under it. Either alone fails: a gradient alone is a smear of crisp grey text; a blur alone leaves the title's contrast to whatever scrolls by.
+
+The scroll region keeps an inset of exactly one band at that edge (plus the overlay's own height at the top), so what rests there at the end of the scroll clears the fade — never more, or the band becomes dead page. The overlay's content must be positioned to paint above it, and the backdrop-root trap applies in full: nothing between the scroller and the fade may set `opacity`, `filter`, `mask`, `isolation` or a `will-change` of them, and the overlay takes its paint order from the DOM rather than a `z-index`. Pointer-transparent and hidden from assistive tech.
 
 ### States — all components
 

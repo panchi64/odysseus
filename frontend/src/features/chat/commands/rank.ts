@@ -96,3 +96,30 @@ export function groupCommands(
 export function invocationName(command: Command): string {
   return command.shadowedBy ? command.qualifiedName : command.name;
 }
+
+/** The command a message **typed** from scratch names, with the name it was typed as —
+ *  or null when it names none.
+ *
+ *  Picking a row is not the only way to write `/reviewer the auth`; an operator who
+ *  knows the name types it and presses send, and until this existed that went to the
+ *  model as a literal token with nothing saying what it was. Only an **exact** name at
+ *  the very head of the message counts, so the rule stays as narrow as the pick's: a
+ *  prefix (`/rev`) is still being typed, a slash mid-sentence is prose, and an unknown
+ *  `/foo` is sent as the operator wrote it.
+ *
+ *  Either name resolves: the one a pick would write (`invocationName`), and the
+ *  qualified one, which the operator may type to reach a shadowed row on purpose. A bare
+ *  name belongs to the row that won it, never to the one it shadows. */
+export function resolveTyped(
+  text: string,
+  commands: Command[],
+): { command: Command; name: string } | null {
+  const typed = text.trimStart();
+  if (!typed.startsWith("/")) return null;
+  const token = typed.slice(1).split(/\s/, 1)[0]!;
+  if (!token) return null;
+  const command = commands.find(
+    (c) => invocationName(c) === token || c.qualifiedName === token,
+  );
+  return command ? { command, name: token } : null;
+}

@@ -34,3 +34,26 @@ export function sendBlocker(
     "Advanced."
   );
 }
+
+/** Where a message's attachments stand at the moment SEND is pressed.
+ *
+ *  - `ready` — nothing is in flight or failed; the message can go now.
+ *  - `pending` — at least one file is still uploading or extracting, and none has
+ *    failed. The composer holds the message and sends it the moment they settle,
+ *    rather than sending without them (which silently dropped the file) or refusing
+ *    (which makes the operator watch a chip and press SEND again).
+ *  - `failed` — at least one file failed. Failure outranks pending: holding for the
+ *    rest would only end at the same broken attachment, so the operator is told now.
+ *
+ *  Structural, so the design system's `ComposerAttachment` fits without this module
+ *  depending on `~/ui`. */
+export type AttachmentGate = "ready" | "pending" | "failed";
+
+export function attachmentGate(
+  items: readonly { status: string }[],
+): AttachmentGate {
+  if (items.some((a) => a.status === "error")) return "failed";
+  if (items.some((a) => a.status === "uploading" || a.status === "extracting"))
+    return "pending";
+  return "ready";
+}

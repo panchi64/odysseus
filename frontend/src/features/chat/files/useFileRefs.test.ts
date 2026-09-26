@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { namesPath } from "./useFileRefs";
+import { namesPath, pickedPath } from "./useFileRefs";
 
 /**
  * The rule that decides whether a staged reference still rides the send.
@@ -46,5 +46,20 @@ describe("namesPath", () => {
   test("a message that does not mention it at all", () => {
     expect(namesPath("never mind the file", "src/a.ts")).toBe(false);
     expect(namesPath("src/a.ts without the at-sign", "src/a.ts")).toBe(false);
+  });
+});
+
+describe("pickedPath", () => {
+  const entries = [{ path: "src/a.ts" }, { path: "src/b.ts" }];
+
+  test("a row in the listing resolves to its path", () => {
+    expect(pickedPath(entries, "file-src/b.ts")).toBe("src/b.ts");
+  });
+
+  test("a row the listing no longer holds is undefined, never null", () => {
+    // Null would tell the Composer the row *acted*, and it clears the field on that —
+    // throwing away the draft a stale click was only meant to complete.
+    expect(pickedPath(entries, "file-src/gone.ts")).toBeUndefined();
+    expect(pickedPath([], "file-src/a.ts")).toBeUndefined();
   });
 });

@@ -24,7 +24,7 @@ import type { ChatMessage } from "../model";
  */
 export function SubagentReport(props: { message: ChatMessage }): JSX.Element {
   return (
-    <Stack gap={1} class="border-line my-2 w-full border-l-2 py-1 pl-3">
+    <Stack gap={1} class="border-line my-1 w-full border-l-2 py-1 pl-3">
       <div class="flex items-center gap-1.5">
         <Icon name="users" size={12} class="text-dim shrink-0" />
         <Text variant="micro" tone="dim">

@@ -85,4 +85,4 @@ export {
 
 export { createChatStream, type ChatStreamOptions } from "../stream/chatStream";
 
-export { mainChat, type MainChat } from "../mainChat";
+export { chatDraftKey, mainChat, type MainChat } from "../mainChat";

@@ -22,8 +22,10 @@ import { useProjectFiles } from "./data";
 export interface ComposerFileRefs {
   groups: () => ComposerMenuGroup[];
   onQuery: (token: { trigger: ComposerTrigger; query: string } | null) => void;
-  /** The path to complete the token with, or null when the row is unknown. */
-  onPick: (item: ComposerMenuItem) => string | null;
+  /** The path to complete the token with, or undefined when the row is no longer in the
+   *  listing. Never null: that means "the row acted" to the Composer, which clears the
+   *  field on it, and no file row ever acts. */
+  onPick: (item: ComposerMenuItem) => string | undefined;
   /** The references still named by `text`, for the send. Clears the staging. */
   consume: (text: string) => string[];
   clear: () => void;
@@ -59,6 +61,15 @@ export function namesPath(text: string, path: string): boolean {
     if (run === "" || /^\.+$/.test(run)) return true;
   }
   return false;
+}
+
+/** The path behind a picked row, or undefined when the listing no longer holds it — a
+ *  refetch between the menu drawing and the click. */
+export function pickedPath(
+  entries: readonly { path: string }[],
+  itemId: string,
+): string | undefined {
+  return entries.find((file) => rowId(file.path) === itemId)?.path;
 }
 
 export function createComposerFileRefs(
@@ -108,10 +119,8 @@ export function createComposerFileRefs(
       setQuery(token?.trigger === "@" && rooted() ? token.query : null);
     },
     onPick: (item) => {
-      const path = settled(files)?.entries.find(
-        (file) => rowId(file.path) === item.id,
-      )?.path;
-      if (!path) return null;
+      const path = pickedPath(settled(files)?.entries ?? [], item.id);
+      if (!path) return undefined;
       setStaged((current) =>
         current.includes(path) ? current : [...current, path],
       );

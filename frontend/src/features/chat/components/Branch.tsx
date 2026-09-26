@@ -16,23 +16,24 @@ export interface BranchEdge {
  *  inside a `Collapse`, which clips, so `WorkLog` draws the short length from the
  *  chevron to the header's foot itself.
  *
- *  `nested` hangs a script's calls off the script's own socket — 9px in (half the
- *  18px socket) — and its first branch reaches the 6px up to that socket's foot. */
+ *  `nested` hangs a script's calls off the script's own socket — 8px in (half the
+ *  16px socket) — and its first branch reaches the 4px (the row's `py-1`) up to
+ *  that socket's foot. */
 const GEOMETRY = {
   log: { trunk: "left-3.5", elbow: "w-3.5", body: "pl-7", reach: "" },
-  nested: { trunk: "left-2", elbow: "w-3", body: "pl-5", reach: "-top-1.5" },
+  nested: { trunk: "left-2", elbow: "w-3", body: "pl-5", reach: "-top-1" },
 } as const;
 
 type Geometry = (typeof GEOMETRY)[keyof typeof GEOMETRY];
 
 /** The trunk's vertical extent: from the parent when first (and it reaches), down
- *  past the row when it is not last, else to the elbow — 15px, `3.75` on the
- *  spacing scale, plus the 6px reach when there is one. */
+ *  past the row when it is not last, else to the elbow — 12px, plus the 4px reach
+ *  when there is one. */
 function trunkSpan(g: Geometry, edge: BranchEdge): string {
   const reaches = edge.first && g.reach !== "";
   const top = reaches ? g.reach : "top-0";
   if (!edge.last) return `${top} bottom-0`;
-  return `${top} ${reaches ? "h-5.25" : "h-3.75"}`;
+  return `${top} ${reaches ? "h-4" : "h-3"}`;
 }
 
 /** One row hung off a trunk by an elbow — the work log drawn as a schematic, every
@@ -43,8 +44,8 @@ function trunkSpan(g: Geometry, edge: BranchEdge): string {
  *  grows, and a trunk measured once would stop short of the rows beneath it. The
  *  last branch stops its trunk at its elbow, which is what turns `├` into `└`.
  *
- *  The elbow lands at 15px — the centre of a schematic `ProcessRow` (`py-1.5` plus
- *  half the 18px socket), so it meets the glyph's socket edge-on. A row that is
+ *  The elbow lands at 12px — the centre of a schematic `ProcessRow` (`py-1` plus
+ *  half the 16px socket), so it meets the glyph's socket edge-on. A row that is
  *  not a `ProcessRow` (a host terminal) takes the elbow on its own edge instead.
  *
  *  `lit` is the old rail's LED, kept: the running row's length of trunk is a
@@ -79,7 +80,7 @@ export function Branch(props: {
       <span
         aria-hidden="true"
         class={cx(
-          "pointer-events-none absolute top-3.75 h-0 border-t transition-colors",
+          "pointer-events-none absolute top-3 h-0 border-t transition-colors",
           g().trunk,
           g().elbow,
           props.lit ? "border-info" : "border-line",

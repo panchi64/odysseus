@@ -100,14 +100,14 @@ export function WorkLog(
 
   return (
     <div class={cx("relative", fullWidthTop(props.top))}>
-      {/* The trunk's first length, from the foot of the header's chevron (`py-1.5`
-          + 2px of the 16px line box + the 12px glyph = 20px) to the foot of the
-          header row (28px), where the first branch takes over. Drawn here rather
+      {/* The trunk's first length, from the foot of the header's chevron (`py-1`
+          + 2px of the 16px line box + the 12px glyph = 18px) to the foot of the
+          header row (24px), where the first branch takes over. Drawn here rather
           than by that branch because it may sit inside a `Collapse`, which clips. */}
       <Show when={drawn().length > 0}>
         <span
           aria-hidden="true"
-          class="pointer-events-none absolute top-5 left-3.5 h-2 w-px bg-line"
+          class="pointer-events-none absolute top-4.5 left-3.5 h-1.5 w-px bg-line"
         />
       </Show>
       <WorkLogHeader

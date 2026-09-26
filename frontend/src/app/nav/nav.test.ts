@@ -18,7 +18,7 @@ import {
   flattenNav,
   isConnectedRoute,
   isDeepFieldRoute,
-  isFlushTopRoute,
+  isFlushRoute,
   itemForPath,
   searchNav,
 } from "./index";
@@ -141,23 +141,23 @@ describe("the map and the rail are separate", () => {
   });
 });
 
-describe("isFlushTopRoute", () => {
+describe("isFlushRoute", () => {
   test("the chat room frames itself", () => {
-    expect(isFlushTopRoute("/chat")).toBe(true);
+    expect(isFlushRoute("/chat")).toBe(true);
   });
 
   test("every other surface keeps the inset its registration marks sit against", () => {
-    expect(isFlushTopRoute("/")).toBe(false);
-    expect(isFlushTopRoute("/knowledge")).toBe(false);
+    expect(isFlushRoute("/")).toBe(false);
+    expect(isFlushRoute("/knowledge")).toBe(false);
     // Not a prefix match on the string: a route that merely *starts* with a flush
     // one's path is a different surface and must not inherit its framing.
-    expect(isFlushTopRoute("/chatter")).toBe(false);
+    expect(isFlushRoute("/chatter")).toBe(false);
   });
 
   test("a child route of the chat room stays flush", () => {
     // Whatever hangs off it is still the chat room, so the framing has to follow —
     // which is why this asks `matchesHref` rather than comparing strings.
-    expect(isFlushTopRoute("/chat/anything")).toBe(true);
+    expect(isFlushRoute("/chat/anything")).toBe(true);
   });
 });
 

@@ -19,14 +19,19 @@ import {
  *  owns. Every instance of this component is therefore a view of one value and they
  *  cannot disagree.
  *
- *  It lives **in the composer's action row** rather than the top bar. The model is not
+ *  It lives **in the composer's status bar** rather than the top bar. The model is not
  *  a property of the application, it is a property of the message about to be sent, and
  *  in the top bar it was a persistent global control on every screen — including the
- *  many with nothing to send. Next to SEND it is in the operator's eye-line at the one
+ *  many with nothing to send. Under the input it is in the operator's eye-line at the one
  *  moment the choice matters, and it costs nothing on the screens that don't have one.
  *
- *  `bare` because the action row already sits on the composer's own surface: a filled
- *  control there is the box-in-a-box the system drops (§7).
+ *  A `cell` because that bar is a ruled line of machine values, not a toolbar: a filled
+ *  control there is the heaviest thing on it for a choice made once in a while (§7).
+ *
+ *  **It gives way first on a narrow bar.** A model id can run to forty characters, and
+ *  the bar it shares with the level and the thread's readouts wraps at half width — so
+ *  the picker is capped and truncates rather than pushing its neighbours onto a line of
+ *  their own. The full name is one click away in the list, where it is not truncated.
  *
  *  **The list refreshes itself when it opens**, rather than sitting behind a refresh
  *  button. Opening the menu is already the operator saying "show me what I can pick",
@@ -44,9 +49,14 @@ import {
  *  dropdown in the app that has nothing to refresh. */
 export function ModelPicker(props: { class?: string }): JSX.Element {
   return (
-    <div class={cx("flex min-w-0 items-center gap-1.5", props.class)}>
+    <div
+      class={cx("flex min-w-0 max-w-44 items-center sm:max-w-56", props.class)}
+    >
       <Combobox
-        bare
+        cell
+        // The popover root is `inline-flex`, which will not shrink below its content
+        // unless told it may — without this the cap above would clip, not truncate.
+        class="min-w-0"
         groups={modelPickerGroups()}
         value={effectiveValue()}
         onChange={selectModelByValue}
@@ -65,7 +75,7 @@ export function ModelPicker(props: { class?: string }): JSX.Element {
         aria-label="Active model"
       />
       <Show when={modelsRefreshing()}>
-        <Text variant="micro" tone="dim" class="shrink-0">
+        <Text variant="micro" tone="dim" class="shrink-0 pr-3">
           Checking…
         </Text>
       </Show>

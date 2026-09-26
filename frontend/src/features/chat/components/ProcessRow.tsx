@@ -56,9 +56,14 @@ export function createAdoptedOpen(
  *  the log's own header, the panel surfaces — rows keep the ordinary voice. */
 export const SchematicContext = createContext(false);
 
-/** The socket a schematic glyph sits in: 12px glyph + 2px padding + a hairline,
- *  18px square, hard-cornered because a registration mark's corners are hard. */
-const SOCKET = "box-content border border-line p-0.5";
+/** The socket a schematic glyph sits in: 12px glyph + 1px padding + a hairline,
+ *  16px square, hard-cornered because a registration mark's corners are hard.
+ *
+ *  16 and not the 18 it was, so a schematic row is the same 24px as every other
+ *  row (`py-1` either side of the 16px line box). An 18px socket made the log's
+ *  rows the tallest thing in the column that isn't prose, beside a composer whose
+ *  cells are 24. */
+const SOCKET = "box-content border border-line p-px";
 
 /** The `·` between segments of one row. Quiet enough to read as punctuation
  *  rather than as another value. */
@@ -166,7 +171,10 @@ export function ProcessRow(props: {
               }
         }
         class={cx(
-          "flex min-w-0 flex-1 items-center gap-2 py-1.5 text-left",
+          /* `py-1`: a 24px row, the composer's status-cell height. The geometry
+             that meets this row — `Branch`'s elbow, `WorkLog`'s trunk stub — is
+             derived from it and moves with it. */
+          "flex min-w-0 flex-1 items-center gap-2 py-1 text-left",
           /* Flush left in a schematic, so the branch's elbow lands on the socket. */
           schematic ? "pr-2" : "px-2",
         )}

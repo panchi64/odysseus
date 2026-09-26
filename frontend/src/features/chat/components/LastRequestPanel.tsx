@@ -12,7 +12,7 @@ interface Figure {
 
 /** The last model request on its own, under the window breakdown it belongs to.
  *
- *  **Why it sits here and not on the composer's readout line.** Everything on that line
+ *  **Why it sits here and not in the stats panel.** Everything in that panel
  *  is cumulative over the thread, which is the right frame for "what has this cost" and
  *  the wrong one for the two questions this answers. Which endpoint served the last
  *  request is invisible in a sum — a fallback chain's second model disappears into the

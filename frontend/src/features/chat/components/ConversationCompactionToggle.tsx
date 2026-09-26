@@ -1,23 +1,35 @@
-import { createResource, For, Show, type JSX } from "solid-js";
-import { MetaAction, Popover, Text, Tooltip, toast } from "~/ui";
+import { createResource, Show, type JSX } from "solid-js";
+import { Segmented, toast } from "~/ui";
 import { fetchAutoCompactOverride, setAutoCompactOverride } from "../data";
 import { settled } from "~/lib/resource";
-import { MetaSep } from "./MetaSep";
+import { StatRow } from "./StatRow";
 
-const TOOLTIP =
+const HINT =
   "When this conversation nears the model's context limit, fold its earlier turns into a summary and keep going. The full transcript stays here — only what the model re-reads is condensed.";
 
-/** The per-conversation auto-compaction control, as one segment of the composer's
- *  readout line: `Fold on` / `Fold off`, opening a menu that pins the behaviour for
- *  *this* conversation or clears the pin so it inherits the global default. The
- *  backend owns the resolution; this only reflects and relays it. Renders nothing
- *  until a thread exists.
+/** The three choices, keyed by a string because a radiogroup's value is one. `default`
+ *  is the absence of a pin — the thread inherits the global setting. */
+type Choice = "on" | "off" | "default";
+const TO_OVERRIDE: Record<Choice, boolean | null> = {
+  on: true,
+  off: false,
+  default: null,
+};
+const toChoice = (override: boolean | null): Choice =>
+  override === null ? "default" : override ? "on" : "off";
+
+/** The per-conversation auto-compaction control, as one row of the conversation's
+ *  stats panel: the effective state as the row's value, and three choices that pin the
+ *  behaviour for *this* conversation or clear the pin so it inherits the global
+ *  default. The backend owns the resolution; this only reflects and relays it. Renders
+ *  nothing until a thread exists.
  *
- *  It was a `Toggle` plus a reset `Button` while it lived in the status band above the
- *  transcript. A switch is chrome, and the line it sits in now is a readout — so the
- *  state became a word and the two actions became a menu. That also fixes something the
- *  switch could not say: the *reset* was a second control the operator had to notice,
- *  where "use the default" is simply the third option beside the other two. */
+ *  It has been a `Toggle` plus a reset `Button` (in the band above the transcript), then
+ *  a `Fold on` word opening a menu (in the readout line under the composer). In the panel
+ *  the three choices can simply be shown: the panel is already the thing the operator
+ *  opened, and a menu inside it would be a click to reach a click. "Use the default" as
+ *  the third segment keeps what the menu fixed about the switch — the reset is not a
+ *  second control to notice, it is one of the options. */
 export function ConversationCompactionToggle(props: {
   conversationId: () => string | null;
 }): JSX.Element {
@@ -25,11 +37,11 @@ export function ConversationCompactionToggle(props: {
   // thread's value (or write against the wrong conversation) before the refetch lands.
   //
   // The fetcher swallows its own failure rather than rejecting, for the same reason
-  // `ConversationGrants` does: this control is a secondary read in the composer's
-  // readout line, which sits *outside* the transcript's ErrorBoundary. A rejected
-  // resource re-throws on read (Solid's `.latest` calls `read()` while unresolved) and
-  // would blank the whole chat screen over an unreachable toggle endpoint. Losing the
-  // segment until the next thread switch is the right cost.
+  // `ConversationGrants` does: this row is a secondary read in a portalled panel, which
+  // sits *outside* the transcript's ErrorBoundary. A rejected resource re-throws on read
+  // (Solid's `.latest` calls `read()` while unresolved) and would blank the whole chat
+  // screen over an unreachable toggle endpoint. Losing the row until the next thread
+  // switch is the right cost.
   const [state, { mutate }] = createResource(
     () => props.conversationId(),
     async (id) => {
@@ -56,69 +68,31 @@ export function ConversationCompactionToggle(props: {
     }
   }
 
-  /* `Popover` rather than `Menu`, for one structural reason: `Menu` wraps whatever
-     it is given in a `<button>` of its own, and the trigger here is already a
-     button — nesting the two is invalid markup and leaves the inner control
-     unreachable by keyboard. Driving the shared shell directly costs three lines
-     and matches the grants segment beside it. */
-  const OPTIONS: { label: string; value: boolean | null }[] = [
-    { label: "On for this chat", value: true },
-    { label: "Off for this chat", value: false },
-    { label: "Use the default", value: null },
-  ];
-
   return (
     <Show when={current()}>
       {(s) => (
-        <>
-          <MetaSep />
-          <Popover
-            align="right"
-            panelClass="min-w-44 p-2"
-            trigger={({ open, setOpen }) => (
-              <Tooltip label={TOOLTIP} side="top">
-                {/* Bright while this thread pins its own value, dim while it
-                  inherits — brightness separates pinned from inherited, which is
-                  exactly what the old label's tone swap said. */}
-                <MetaAction
-                  active={s().override !== null || open()}
-                  aria-expanded={open()}
-                  aria-label="Auto-compaction for this conversation"
-                  onClick={() => setOpen(!open())}
-                >
-                  Fold {s().effective ? "on" : "off"}
-                </MetaAction>
-              </Tooltip>
-            )}
-            panel={({ close }) => (
-              <div role="menu" class="flex flex-col">
-                <For each={OPTIONS}>
-                  {(option) => (
-                    <button
-                      type="button"
-                      role="menuitemradio"
-                      aria-checked={s().override === option.value}
-                      onClick={() => {
-                        close();
-                        void apply(option.value);
-                      }}
-                      class="flex items-center justify-between gap-3 rounded-ctl px-2 py-1.5 text-left hover:bg-raised"
-                    >
-                      <Text
-                        variant="label"
-                        tone={
-                          s().override === option.value ? "bright" : "default"
-                        }
-                      >
-                        {option.label}
-                      </Text>
-                    </button>
-                  )}
-                </For>
-              </div>
-            )}
+        <StatRow
+          label="Auto-compaction"
+          // The value says whether a pin is doing it, because "on" means two different
+          // things: this thread asked for it, or it is simply what every thread does.
+          value={`${s().effective ? "On" : "Off"}${s().override === null ? " (default)" : ""}`}
+          hint={HINT}
+        >
+          <Segmented
+            aria-label="Auto-compaction for this conversation"
+            value={toChoice(s().override)}
+            onChange={(choice) => void apply(TO_OVERRIDE[choice])}
+            options={[
+              { value: "on", label: "On" },
+              { value: "off", label: "Off" },
+              {
+                value: "default",
+                label: "Default",
+                description: "Inherit the global setting from Settings → Chat.",
+              },
+            ]}
           />
-        </>
+        </StatRow>
       )}
     </Show>
   );

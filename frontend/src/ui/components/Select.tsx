@@ -1,8 +1,18 @@
-import { For, Show, createMemo, type JSX } from "solid-js";
+import {
+  For,
+  Show,
+  createEffect,
+  createMemo,
+  createSignal,
+  createUniqueId,
+  type JSX,
+} from "solid-js";
 import { cx } from "../cx";
 import { Text } from "../primitives/Text";
 import { Icon } from "../primitives/Icon";
+import { cursorStep } from "./listCursor";
 import { Popover } from "./Popover";
+import { STATUS_CELL_ACTION_CLASS, STATUS_CELL_CLASS } from "./StatusBar";
 
 export interface SelectOption {
   value: string;
@@ -32,6 +42,14 @@ export interface SelectProps {
   disabled?: boolean;
   /** Trigger text when no option matches the current value. */
   placeholder?: string;
+  /** `sm` is the inline-strip trigger — 24px and label-sized, for a row of settings
+   *  under something that matters more (the composer's controls). Default `md`. */
+  size?: "sm" | "md";
+  /** Render the trigger as a `StatusBar` cell — no fill, no radius, the bar's mono
+   *  lowercase at the cell's height — so a picker in the composer's status bar is one
+   *  more cell of it rather than a control parked in the middle of one. Overrides
+   *  `size`; the menu is unchanged. */
+  cell?: boolean;
   /** Layout glue (width/height/margins) merged onto the field wrapper. */
   class?: string;
   "aria-label"?: string;
@@ -45,6 +63,63 @@ export function Select(props: SelectProps): JSX.Element {
     props.options.find((o) => o.value === props.value),
   );
   const selectedLabel = () => selected()?.label;
+  /** What the trigger reads — one expression for both of its variants. */
+  const triggerLabel = () => selectedLabel() ?? props.placeholder ?? "Select…";
+
+  /* The keyboard cursor. Focus stays on the trigger the whole time — the panel is
+     portalled to the body, so nothing in it could receive a key — and the trigger
+     points at the active row through `aria-activedescendant`, the same arrangement
+     the composer's menu uses. */
+  const baseId = createUniqueId();
+  const optionId = (i: number) => `${baseId}-opt-${i}`;
+  const [active, setActive] = createSignal(-1);
+  const selectedIndex = () =>
+    props.options.findIndex((o) => o.value === props.value);
+
+  // Keep the active row in view as the arrows walk a list longer than the panel.
+  createEffect(() => {
+    const i = active();
+    if (i >= 0)
+      document
+        .getElementById(optionId(i))
+        ?.scrollIntoView({ block: "nearest" });
+  });
+
+  const onTriggerKey = (
+    e: KeyboardEvent,
+    open: boolean,
+    setOpen: (open: boolean) => void,
+  ) => {
+    const openKey =
+      e.key === "Enter" ||
+      e.key === " " ||
+      e.key === "ArrowDown" ||
+      e.key === "ArrowUp";
+    if (!open) {
+      if (!openKey) return;
+      // Prevented so the button's own Enter/Space click doesn't toggle it straight
+      // back shut.
+      e.preventDefault();
+      setActive(selectedIndex() >= 0 ? selectedIndex() : 0);
+      setOpen(true);
+      return;
+    }
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      const opt = props.options[active()];
+      if (opt) props.onChange?.(opt.value);
+      setOpen(false);
+      return;
+    }
+    if (e.key === "Tab") {
+      setOpen(false);
+      return;
+    }
+    const next = cursorStep(e.key, active(), props.options.length);
+    if (next === null) return;
+    e.preventDefault();
+    setActive(next);
+  };
 
   return (
     <div class={cx("flex flex-col gap-1", props.class)}>
@@ -72,26 +147,60 @@ export function Select(props: SelectProps): JSX.Element {
             aria-haspopup="listbox"
             aria-expanded={open()}
             aria-invalid={props.invalid || undefined}
-            onClick={() => setOpen(!open())}
-            class={cx(
-              // Matches Input/Combobox: a filled control, no bright edge on
-              // focus or open. Only `invalid` draws a border, because that is
-              // the one state that has to interrupt.
-              "flex h-8 w-full items-center gap-2 rounded-ctl border bg-raised px-3 text-left outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-40",
-              props.invalid ? "border-alert" : "border-transparent",
-            )}
+            aria-activedescendant={
+              open() && active() >= 0 ? optionId(active()) : undefined
+            }
+            onClick={() => {
+              if (!open()) setActive(selectedIndex());
+              setOpen(!open());
+            }}
+            onKeyDown={(e) => onTriggerKey(e, open(), setOpen)}
+            // Space activates a button on key*up*, after the keydown above has already
+            // picked or opened; letting it through would toggle the panel again.
+            onKeyUp={(e) => {
+              if (e.key === " ") e.preventDefault();
+            }}
+            class={
+              props.cell
+                ? cx(
+                    STATUS_CELL_CLASS,
+                    STATUS_CELL_ACTION_CLASS,
+                    "w-full text-left text-text outline-none",
+                  )
+                : cx(
+                    // Matches Input/Combobox: a filled control, no bright edge on
+                    // focus or open. Only `invalid` draws a border, because that is
+                    // the one state that has to interrupt.
+                    "flex w-full items-center rounded-ctl border bg-raised text-left outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+                    props.size === "sm" ? "h-6 gap-1.5 px-2" : "h-8 gap-2 px-3",
+                    props.invalid ? "border-alert" : "border-transparent",
+                  )
+            }
           >
             <Show when={selected()?.swatch}>
               {(swatch) => <Swatch class={swatch()} />}
             </Show>
-            <Text
-              variant="body"
-              tone={selectedLabel() ? "bright" : "dim"}
-              class="min-w-0 flex-1 truncate"
+            {/* A cell carries the bar's own type, not a `Text` variant: the label is
+                one more value in a line of telemetry there, not a field's content. */}
+            <Show
+              when={!props.cell}
+              fallback={
+                <span class="min-w-0 flex-1 truncate">{triggerLabel()}</span>
+              }
             >
-              {selectedLabel() ?? props.placeholder ?? "Select…"}
-            </Text>
-            <Icon name="chevron-down" size={12} class="shrink-0 text-dim" />
+              <Text
+                variant={props.size === "sm" ? "label" : "body"}
+                tone={selectedLabel() ? "bright" : "dim"}
+                class="min-w-0 flex-1 truncate"
+              >
+                {triggerLabel()}
+              </Text>
+            </Show>
+            <Icon
+              name="chevron-down"
+              size={props.cell ? 10 : 12}
+              class={cx("shrink-0", !props.cell && "text-dim")}
+            />
           </button>
         )}
         panel={({ close }) => {
@@ -102,15 +211,21 @@ export function Select(props: SelectProps): JSX.Element {
           return (
             <div role="listbox">
               <For each={props.options}>
-                {(opt) => (
+                {(opt, i) => (
                   <button
                     type="button"
+                    id={optionId(i())}
                     role="option"
+                    // Not focusable: the trigger keeps focus and names this row
+                    // through `aria-activedescendant`.
+                    tabIndex={-1}
                     aria-selected={opt.value === props.value}
                     onClick={() => pick(opt.value)}
+                    onMouseEnter={() => setActive(i())}
                     class={cx(
                       "flex w-full flex-col gap-0.5 px-2 py-1.5 text-left transition-colors hover:bg-raised",
-                      opt.value === props.value && "bg-raised",
+                      (opt.value === props.value || i() === active()) &&
+                        "bg-raised",
                     )}
                   >
                     <span class="flex items-center gap-2">

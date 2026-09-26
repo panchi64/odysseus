@@ -68,7 +68,7 @@ export function QuestionAnswerCard(props: {
       <div class="divide-y divide-line">
         <For each={props.answers}>
           {(answer, index) => (
-            <div class="flex gap-3 px-2 py-2.5">
+            <div class="flex gap-3 px-2 py-1.5">
               <Text
                 variant="micro"
                 tone="dim"

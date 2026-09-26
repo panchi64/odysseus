@@ -269,7 +269,7 @@ export function ParkDock(props: {
 
           {/* Asking for changes is the one answer that needs words, so it borrows the
               operator's own input rather than growing a second one inside the card. The
-              real `Composer`: Enter sends, the field autosizes, and SEND says what this
+              real `Composer`: ⌘/Ctrl+Enter sends, the field autosizes, and SEND says what this
               particular send does. `bare` because it is sitting inside the dock's own
               surface, and no `storageKey` because a note about this plan is not a draft
               of the next message.

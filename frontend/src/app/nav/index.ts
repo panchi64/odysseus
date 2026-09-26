@@ -123,7 +123,8 @@ export function isConnectedRoute(
 }
 
 /**
- * Routes handed the content region flush at the top, rather than inset like a page.
+ * Routes handed the content region flush at the top and bottom, rather than inset like
+ * a page.
  *
  * Nearly every surface here is a **document**: it scrolls inside the shell's `main`,
  * wants an even margin around it, and its `PageHeader` registration marks frame the
@@ -131,17 +132,19 @@ export function isConnectedRoute(
  * application surface — its own header, its own scroll container, a composer docked to
  * the bottom — so it already spaces itself, and the shell's top inset lands as empty
  * ground above a header that needed none, pushing the transcript down by a row of text
- * on every screen size. The sides and the bottom still hold the column off the rail and
- * off the status bar, so only the top gives way.
+ * on every screen size. The bottom inset went the same way: under a docked composer it
+ * was a band of dead page between the input and the window's edge, and the room keeps
+ * the few pixels its composer's corner ticks need itself. The sides still hold the
+ * column off the rail.
  *
  * A list rather than a flag on `NavItem`: this is the shell deciding how to hand over
  * its region, which is not something a nav entry knows or should carry.
  */
-const FLUSH_TOP_ROUTES = ["/chat"];
+const FLUSH_ROUTES = ["/chat"];
 
-/** Whether this route frames itself and should not be inset at the top. */
-export function isFlushTopRoute(pathname: string): boolean {
-  return FLUSH_TOP_ROUTES.some((href) => matchesHref(pathname, href));
+/** Whether this route frames itself and should not be inset at the top or bottom. */
+export function isFlushRoute(pathname: string): boolean {
+  return FLUSH_ROUTES.some((href) => matchesHref(pathname, href));
 }
 
 /**

@@ -98,7 +98,7 @@ export function ChatSection(): JSX.Element {
   // How long a thread must sit untouched before the backend writes its recap.
   const [workSummaryMins, setWorkSummaryMins] = createSignal("");
   const [savingWorkSummary, setSavingWorkSummary] = createSignal(false);
-  // Where the composer's context ring stops being grey. Two fractions, edited as
+  // Where the composer's context figure stops being plain text. Two fractions, edited as
   // percentages and saved together, because the pair is only valid in order.
   const [warnPct, setWarnPct] = createSignal("");
   const [alertPct, setAlertPct] = createSignal("");

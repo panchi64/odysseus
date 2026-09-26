@@ -3,10 +3,10 @@
  * surface that asks.
  *
  * **Why this is a module and not a table inside `SessionRow`.** Three surfaces report
- * the same fact: the rail's row lights its edge, the room's header flies a flag, and a
- * cold thread's recap prints it in a cell. A table per surface is three tables that
+ * the same fact: the rail's row lights its edge, the composer's header line names it, and
+ * a cold thread's recap prints it in a cell. A table per surface is three tables that
  * agree until the day one of them gains a state, and the failure is silent — the rail
- * calls a run `BLOCKED` in amber while the header three inches away still calls it
+ * calls a run `BLOCKED` in amber while the room three inches away still calls it
  * finished. So the mapping is derived once and passed down, per the repo's own rule.
  *
  * **The frontend decides nothing here.** Both inputs are backend-derived — `activity`

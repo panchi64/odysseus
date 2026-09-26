@@ -69,9 +69,22 @@ export type TopSpacing = "none" | "gap";
  *  row above it and none below. */
 const LONE: BranchEdge = { first: true, last: true };
 
+/** The one vertical rhythm inside an assistant turn, in grid steps: between its
+ *  blocks (an answer passage, a work log, a View chip) and between the turn's own
+ *  parts around them (the progress line, sources, a stop footer). Both used to say
+ *  12px separately; they are one spacing, so a density change moves both.
+ *
+ *  8px rather than 12: the rows between these gaps are 24px now, and a gap half a
+ *  row tall read as a paragraph break between things that are one turn. */
+export const TURN_GAP = 2;
+
+/** `TURN_GAP` as a margin. Tailwind needs the literal class, and keying the map by
+ *  the constant's type makes changing one without the other a type error. */
+const TURN_GAP_MARGIN: Record<typeof TURN_GAP, string> = { 2: "mt-2" };
+
 /** Margin for a full-width row, or a work log — spacing always lives outside. */
 export function fullWidthTop(top?: TopSpacing): string | undefined {
-  return top && top !== "none" ? "mt-3" : undefined;
+  return top && top !== "none" ? TURN_GAP_MARGIN[TURN_GAP] : undefined;
 }
 
 /** A chip's kindWord/meta/isNew, derived from its matching `ViewItem` (when the

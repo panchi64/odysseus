@@ -34,7 +34,7 @@ export function CompactionTurn(props: { message: ChatMessage }): JSX.Element {
   const m = () => props.message;
   const live = () => m().compaction;
   return (
-    <div class="my-3 w-full">
+    <div class="my-2 w-full">
       <Show when={live()} fallback={<Settled message={props.message} />}>
         {(c) => (
           <ConsoleGroup

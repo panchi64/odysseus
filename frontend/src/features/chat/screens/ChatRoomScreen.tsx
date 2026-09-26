@@ -3,13 +3,24 @@ import {
   createEffect,
   createMemo,
   createSignal,
+  on,
+  onCleanup,
   onMount,
   untrack,
   type JSX,
 } from "solid-js";
-import { Composer, cx, toast, type ComposerMenuItem } from "~/ui";
+import {
+  Composer,
+  ScrollFade,
+  StatusBar,
+  StatusCell,
+  cx,
+  toast,
+  type ComposerMenuItem,
+} from "~/ui";
 import {
   conversationGrantsRevision,
+  chatDraftKey,
   consumePendingDraft,
   consumeRequestedSession,
   entrySessionId,
@@ -30,15 +41,14 @@ import { useProjects } from "~/lib/stores/projects";
 import { directoryLabel, focusAddDirectory } from "../addDirectory";
 import { ChatRoomHeader } from "../components/ChatRoomHeader";
 import { ChatViewportMounts } from "../components/ChatViewportMounts";
-import { ContextRing } from "../components/ContextRing";
-import { ConversationStatusStrip } from "../components/ConversationStatusStrip";
+import { ComposerHeaderStatus } from "../components/ComposerHeaderStatus";
+import { createConversationStatus } from "../components/ConversationStatus";
 import { ParkDock } from "../components/ParkDock";
 import { PermissionControl } from "../components/PermissionControl";
 import { ThreadRecap } from "../components/ThreadRecap";
 import { TranscriptView } from "../components/TranscriptView";
 import { ModelPicker } from "~/app/ModelPicker";
 import { createConversationActions } from "../conversationActions";
-import { conversationModel } from "../conversationModel";
 import { registerChatRoomKeymap } from "../chatRoomKeymap";
 import { useChatViewport } from "../useChatViewport";
 import { createBranchState } from "../branchState";
@@ -47,7 +57,8 @@ import { createTranscriptFollow } from "../transcriptScroll";
 import { createRenameConversation } from "../components/RenameConversationModal";
 import { createComposerCommands } from "../commands/useComposerCommands";
 import { createComposerFileRefs } from "../files/useFileRefs";
-import { isPermissionLevel } from "../model";
+import { createComposerRecall, isOperatorQueued } from "../composerRecall";
+import { nextPermissionLevel, parsePermissionLevel } from "../model";
 
 /** The conversation's reading measure. A line of text on a 27" display is
  *  unreadable at full width long before it is uncomfortable, and the composer
@@ -260,7 +271,9 @@ export function ChatRoomScreen(): JSX.Element {
     toast.success("Run cancelled — sending your correction");
     // No attachment ids: attaching is unavailable while a run streams, so there can be
     // nothing ready to carry.
-    sendTurn(correction, []);
+    // The composer cleared the correction when STOP took it, so a refusal here would
+    // otherwise lose it: it goes back through the prefill the composer already reads.
+    if (!(await sendTurn(correction, []))) stream.stashDraft(correction);
   };
 
   onMount(() => {
@@ -301,17 +314,29 @@ export function ChatRoomScreen(): JSX.Element {
     startNew,
   });
 
-  // Per-conversation draft key, so an unsent message is restored on return.
-  const composerKey = () => `chat:${currentId() ?? "new"}`;
+  // Per-conversation draft key, so an unsent message is restored on return. The
+  // controller moves a new thread's draft across when it adopts its id, keyed by the
+  // same derivation.
+  const composerKey = () => chatDraftKey(currentId());
 
   // File attachments for the next turn. Transient (not persisted like the draft):
   // switching threads discards any still-attached files so they don't ride along
   // to a different conversation.
+  //
+  // **Except when the switch is not a switch.** A new thread's seat moves from null to
+  // its backend id when its first run ends, and that id is the one the stream has been
+  // bound to all along — the same thread, now named. Clearing there would drop whatever
+  // the operator attached while the first turn ran, on a thread they never left. Read
+  // off the stream's own binding rather than tracked as a flag, because it is exactly
+  // the fact in question: the thread on screen before the flip is the one after it.
   const attachments = createComposerAttachments();
-  createEffect(() => {
-    currentId();
-    untrack(() => attachments.clear());
-  });
+  createEffect(
+    on(currentId, (id, prev) => {
+      if (prev === null && id !== null && id === stream.conversationId())
+        return;
+      attachments.clear();
+    }),
+  );
 
   const rename = createRenameConversation({
     conversationId: currentId,
@@ -359,7 +384,8 @@ export function ChatRoomScreen(): JSX.Element {
     retitle: () => void actions.retitle(),
     newThread: clearThread,
     setPermissionLevel: (level) => {
-      if (isPermissionLevel(level)) setPermission(level);
+      const parsed = parsePermissionLevel(level);
+      if (parsed) setPermission(parsed);
       else toast.error(`"${level}" isn't a permission level.`);
     },
   });
@@ -396,15 +422,85 @@ export function ChatRoomScreen(): JSX.Element {
   /** Send, once both staged sets have been read against what was actually typed.
    *
    *  An action resolves to nothing sent: the relay has already run (or just ran, for the
-   *  one that carries an argument), and there is no message for the model. */
-  const sendTurn = (text: string, attachmentIds: string[]): void => {
+   *  one that carries an argument), and there is no message for the model. A command
+   *  the operator typed in full rather than picked counts the same — `consume` falls
+   *  back to reading it off the text.
+   *
+   *  Returns the stream's verdict to the Composer: `false` means the backend did not
+   *  take the turn, and the Composer puts the text and attachments back. An action is
+   *  `true` — it did what it was sent to do. */
+  const sendTurn = (
+    text: string,
+    attachmentIds: string[],
+  ): Promise<boolean> => {
     const intent = commands.consume(text);
     const refs = fileRefs.consume(text);
-    if (intent.kind === "acted") return;
-    void stream.send(text, attachmentIds, {
+    if (intent.kind === "acted") return Promise.resolve(true);
+    return stream.send(text, attachmentIds, {
       command: intent.command,
       fileRefs: refs,
     });
+  };
+
+  // ArrowUp in the empty composer edits the newest queued message in place — the third
+  // surface that edits one, following the same hold-and-draft protocol as the bubble and
+  // the dock's list (see `composerRecall.ts`).
+  const recall = createComposerRecall({
+    messages: stream.messages,
+    editQueued: (id, text) => void stream.editQueued(id, text),
+    holdQueued: (id, held) => void stream.holdQueued(id, held),
+    stash: stream.stashDraft,
+  });
+  // A recall belongs to the thread it was opened in. Leaving it releases the hold, or the
+  // run behind the thread just left would stall on a message nobody is editing any more.
+  createEffect(on(currentId, () => recall.cancel(), { defer: true }));
+  // So does a park: the dock takes the composer's slot, which is the surface being
+  // unmounted under the edit — and the dock lists the same message with its own editor,
+  // where a second, invisible hold would stall it with nothing on screen to say why.
+  createEffect(
+    on(
+      () => Boolean(stream.park()),
+      (parked) => parked && recall.cancel(),
+    ),
+  );
+
+  /** The operator's own messages queued into the live run. Read once for both places
+   *  that show them — the composer's header counts them, the park dock lists them — so
+   *  the two can never disagree about how many are waiting, and the recall walks the
+   *  same set through the same predicate. */
+  const queuedOperator = createMemo(() =>
+    stream.messages.filter(isOperatorQueued),
+  );
+
+  // The composer's status bar: its trailing cells, and the task rows they disclose.
+  const status = createConversationStatus({
+    conversationId: currentId,
+    stats: stream.stats,
+    usage: stream.usage,
+    tasks: stream.tasks,
+    grantsRevalidate: conversationGrantsRevision,
+  });
+
+  /** Shift+Tab's next level — a no-op while the control is pending, for the same reason
+   *  the control itself is disabled then: the level in hand is a placeholder, and
+   *  stepping from it would write a level chosen relative to nothing. */
+  const cyclePermission = () => {
+    if (permissionPending()) return;
+    setPermission(nextPermissionLevel(permission()));
+  };
+
+  /** How tall the title block laid over the transcript stands, so the transcript can
+   *  start its first turn beneath it. Measured rather than assumed: the block grows a
+   *  line for a staged thread's workspace hint and a whole panel for the recap, and a
+   *  fixed spacer would either hide the first turn under one of them or leave a gap
+   *  where neither is showing. */
+  const [overlayHeight, setOverlayHeight] = createSignal(0);
+  const measureOverlay = (el: HTMLElement) => {
+    const observer = new ResizeObserver(() =>
+      setOverlayHeight(el.offsetHeight),
+    );
+    observer.observe(el);
+    onCleanup(() => observer.disconnect());
   };
 
   return (
@@ -412,60 +508,78 @@ export function ChatRoomScreen(): JSX.Element {
       {/* Conversation — the thread list now lives in the app rail's RECENTS, so
           the body is free for the conversation plus the viewport pane. */}
       <section class="flex min-h-full min-w-0 flex-1 flex-col">
-        <ChatRoomHeader
-          title={headerTitle}
-          reveal={headerReveal}
-          workspaceHint={workspaceHint}
-          working={titleWorking}
-          model={() => conversationModel(stream.messages)}
-          createdAt={() => currentSummary()?.createdAt}
-          conversationId={currentId}
-          streaming={stream.sending}
-          activity={() => currentSummary()?.activity}
-          lastOutcome={() => currentSummary()?.lastOutcome}
-          messageCount={() => stream.messages.length}
-          compacting={stream.compacting}
-          viewport={viewport}
-          branch={branch.latest}
-          actions={{
-            rename: rename.open,
-            retitle: () => void actions.retitle(),
-            compact: () => void stream.compactNow(),
-            openBrowser: () => void actions.openBrowser(),
-            copy: actions.copyTranscript,
-            remove: () => void actions.removeConversation(),
-          }}
-        />
+        {/* The transcript runs the full height of this box, and the title block is
+            laid over its top rather than stacked above it: the conversation scrolls
+            out of sight *under* the title, through a `ScrollFade`, instead of being
+            cut at the header's bottom edge by a band that spent its own height.
 
-        {/* Pinned above the transcript, not folded into it: a recap inside the scroll
-            is a message that is not one, sitting at the top of a thread the operator
-            has just been dropped at the bottom of. */}
-        <ThreadRecap
-          summary={recapSummary}
-          streaming={stream.sending}
-          onDismiss={() => setRecapDismissed(openId())}
-        />
+            Nothing in here — this wrapper, the overlay, the transcript's own wrapper —
+            may carry `opacity`, `filter`, `mask`, `isolation` or a `will-change` of
+            them: any one makes a backdrop root, and the fade's blur would sample
+            nothing (the trap noted on `.ody-glass`). */}
+        <div class="relative flex min-h-0 flex-1 flex-col">
+          <TranscriptView
+            stream={stream}
+            viewport={viewport}
+            actions={actions}
+            scroll={transcript}
+            conversationId={currentId}
+            measure={MEASURE}
+            insetTop={overlayHeight}
+          />
+          {/* AFTER the transcript in the DOM and with no `z-*`: both are positioned,
+              so paint order is DOM order and this stays on top without a stacking
+              context — which some engines treat as a backdrop root, the one thing the
+              fade inside it cannot survive. The session menu's popover portals to
+              the body, so tab order is the only thing the position costs. */}
+          <div ref={measureOverlay} class="absolute inset-x-0 top-0">
+            <ScrollFade edge="top" />
+            <div class="relative">
+              <ChatRoomHeader
+                title={headerTitle}
+                reveal={headerReveal}
+                workspaceHint={workspaceHint}
+                working={titleWorking}
+                conversationId={currentId}
+                messageCount={() => stream.messages.length}
+                compacting={stream.compacting}
+                viewport={viewport}
+                branch={branch.latest}
+                actions={{
+                  rename: rename.open,
+                  retitle: () => void actions.retitle(),
+                  compact: () => void stream.compactNow(),
+                  openBrowser: () => void actions.openBrowser(),
+                  copy: actions.copyTranscript,
+                  remove: () => void actions.removeConversation(),
+                }}
+              />
+              {/* Pinned under the title, not folded into the transcript: a recap
+                  inside the scroll is a message that is not one, sitting at the top of
+                  a thread the operator has just been dropped at the bottom of. It
+                  carries the ground as a fill because it is a paragraph — the fade is
+                  for a line of title, and prose scrolling through prose is unreadable
+                  at any blur. `flow-root` keeps the panel's bottom margin inside it. */}
+              <div class="flow-root bg-bg">
+                <ThreadRecap
+                  summary={recapSummary}
+                  streaming={stream.sending}
+                  onDismiss={() => setRecapDismissed(openId())}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
 
-        <TranscriptView
-          stream={stream}
-          viewport={viewport}
-          actions={actions}
-          scroll={transcript}
-          conversationId={currentId}
-          measure={MEASURE}
-        />
-
-        {/* The composer docks on the page background, so the transcript scrolls
-            out of sight behind it instead of showing through the gap around the
-            card. No rule and no gradient — just the ground, and the LED strip on
-            the composer's own top edge doing the separating with light.
-            **No top padding**: the strip has to BE the cutoff. Any gap above it
-            is a band of bare page between the last line of the transcript and
-            the light — the transcript ends, then nothing, then the composer —
-            and the strip stops reading as the edge the conversation runs into.
-            The glow costs no layout (it is a shadow, and nothing between here
-            and the viewport clips it), so it still spills up over the transcript
-            without a pad to spill into. */}
+        {/* The composer docks on the page background, and the transcript dissolves
+            into it through the same `ScrollFade` the title uses at the top — one
+            edge treatment for both ends of the conversation, the LED strip on the
+            composer's own top edge still doing the separating with light.
+            **No top padding**: the fade reaches up over the transcript's last band
+            on its own, and the transcript keeps exactly that band as its bottom
+            inset, so the last turn at rest clears it. A pad here would add a strip
+            of bare page between the fade and the light. The glow costs no layout
+            (it is a shadow, and nothing between here and the viewport clips it). */}
         {/* The dock's own background spans the full width — it is what the
             transcript scrolls out of sight behind — while its contents take the
             same measure as the transcript above. */}
@@ -474,8 +588,14 @@ export function ChatRoomScreen(): JSX.Element {
             it would read as a flat tinted card rather than as the transcript seen
             through it (see `ParkDock`). It stays full-width for the composer, which
             needs the transcript to disappear behind it rather than beside it. */}
-        <div class={cx("sticky bottom-0 px-4 pb-1", !stream.park() && "bg-bg")}>
-          <div class={MEASURE}>
+        {/* `pb-4` is the whole bottom margin: the shell gives this route its bottom
+            edge flush (`isFlushRoute`). It has to clear the composer's registration
+            ticks, which sit 6px outside its frame (the shell's scroll root would clip
+            a pair left hanging past it), and then leave a little air — at `pb-2` the
+            ticks cleared but the unit read as resting on the window's edge. */}
+        <div class={cx("sticky bottom-0 px-4 pb-4", !stream.park() && "bg-bg")}>
+          <ScrollFade edge="bottom" />
+          <div class={cx("relative", MEASURE)}>
             {/* A parked run takes the composer's place. It is the same slot, so
                 nothing below the transcript moves — but the only thing offered is
                 the thing the run is waiting for. */}
@@ -496,13 +616,7 @@ export function ChatRoomScreen(): JSX.Element {
                   // A park and a queued message can be outstanding together, and both
                   // reach the model on the same resume — so the dock that has taken the
                   // composer's slot also has to be where the queue is answerable.
-                  // Operator messages only. A sub-agent's report queues on the same
-                  // road and can be pending at the same moment, and it is neither theirs
-                  // to rewrite nor theirs to take back — the same rule
-                  // `restoreUndelivered` keeps.
-                  queued={stream.messages.filter(
-                    (m) => m.queuedPending && m.role === "user",
-                  )}
+                  queued={queuedOperator()}
                   onEditQueued={(id, text) => void stream.editQueued(id, text)}
                   onWithdrawQueued={(id) => void stream.withdrawQueued(id)}
                   onHoldQueued={(id, held) => void stream.holdQueued(id, held)}
@@ -517,6 +631,7 @@ export function ChatRoomScreen(): JSX.Element {
                 onStop={(correction) => void stopRun(correction)}
                 onSend={sendTurn}
                 menu={composerMenu}
+                recall={recall}
                 // The backend refuses a turn it can't keep inside a context window; this
                 // is the same stop, arriving before the message is committed to it.
                 sendBlocked={sendBlocked()}
@@ -524,6 +639,32 @@ export function ChatRoomScreen(): JSX.Element {
                 storageKey={composerKey()}
                 prefill={stream.undeliveredDraft()}
                 onPrefillConsumed={stream.clearUndeliveredDraft}
+                onShiftTab={cyclePermission}
+                headerStart={
+                  // What the input — and the thread behind it — is doing: the live
+                  // run and its clock, a lost stream, or a run that ended in a way
+                  // worth saying. `Input` when none of those holds.
+                  <ComposerHeaderStatus
+                    streaming={stream.sending}
+                    compacting={stream.compacting}
+                    detached={stream.detached}
+                    runClock={stream.runClock}
+                    activity={() => currentSummary()?.activity}
+                    lastOutcome={() => currentSummary()?.lastOutcome}
+                  />
+                }
+                headerEnd={
+                  // Operator messages waiting on the run, and the key that edits them —
+                  // amber because they are waiting on the operator's say-so as much as
+                  // on the run.
+                  <Show when={queuedOperator().length}>
+                    {(count) => (
+                      <span class="text-warn">
+                        Queued {count()} · ↑ to edit
+                      </span>
+                    )}
+                  </Show>
+                }
                 controls={
                   // Ungated, unlike the mode picker that used to sit here. A mode is
                   // set once at creation — a code thread owns a branch, and
@@ -532,58 +673,49 @@ export function ChatRoomScreen(): JSX.Element {
                   // the thread list. A level is the opposite: it is the operator's
                   // live control over a thread already in flight, so it is offered at
                   // every moment of one, and it rides the next send.
-                  <PermissionControl
-                    level={permission()}
-                    onLevelChange={setPermission}
-                    // While an opened thread's own level is still in flight the seat holds
-                    // the strictest one as a placeholder; the control reports that rather
-                    // than naming a level the thread may not be at.
-                    pending={permissionPending()}
-                  />
-                }
-                trailing={
                   <>
-                    {/* Where the message is going, then how full the thread it's
-                      going into is — both read on the way to SEND. */}
+                    <PermissionControl
+                      level={permission()}
+                      onLevelChange={setPermission}
+                      // While an opened thread's own level is still in flight the seat
+                      // holds the strictest one as a placeholder; the control reports
+                      // that rather than naming a level the thread may not be at.
+                      pending={permissionPending()}
+                    />
+                    {/* Both facts about the message itself — how far it may go, and
+                        which model takes it — read together at the row's head. */}
                     <ModelPicker />
-                    {/* Only once a run has reported. The ring used to be
-                      unconditional and paint an alert-toned "context window
-                      unknown" whenever it had nothing — which on a brand-new
-                      thread is simply *before the first turn*, so a fresh chat
-                      opened on a red gauge announcing a fault that had not been
-                      established. A gauge with nothing to measure has nothing to
-                      say. The genuinely-unknown case is not lost: it is the send
-                      gate's, which blocks SEND and explains why. */}
-                    <Show when={stream.usage()}>
-                      {(usage) => (
-                        <ContextRing
-                          usage={usage()}
-                          lastRequest={stream.stats()?.lastRequest}
-                        />
-                      )}
-                    </Show>
                   </>
                 }
+                // What the thread is doing: the task count, the stats behind their
+                // trigger, and how full the context window is.
+                trailing={status.items()}
               />
             </Show>
-            {/* The conversation's readouts sit UNDER the input, not above the
-              transcript where they used to. Two reasons, and the second is the
-              one that matters: after typing, this is where the operator's eye
-              already is — and docked here the line stays put while the
-              conversation scrolls behind it, so nothing it says ever belongs to
-              the turn that happens to be passing behind it. */}
-            {/* Its own fill, because the wrapper's is gone while a park is up and
-                the strip is not part of the glass — without this it would sit on the
-                transcript scrolling behind it. */}
+            {/* While a run is parked the Composer — and the status bar joined to it —
+                gives its slot to the dock, but a disconnected stream and the task count
+                are no less true for it; the bar's trailing cells stand on their own
+                until the dock is gone, as the same bar boxed on all four sides. The
+                composer's header line is gone with it, so `Disconnected` — said there
+                the rest of the time — takes the bar's leading cell for the length of
+                the park: one place at a time, never both.
+                Its own fill, shared with the task rows: the wrapper's is gone while a
+                park is up, and neither is part of the glass — without it they would
+                sit on the transcript scrolling behind them. */}
             <div class="bg-bg">
-              <ConversationStatusStrip
-                conversationId={currentId}
-                streaming={stream.sending}
-                detached={stream.detached}
-                stats={stream.stats}
-                tasks={stream.tasks}
-                grantsRevalidate={conversationGrantsRevision}
-              />
+              <Show when={stream.park()}>
+                <StatusBar
+                  edge="box"
+                  start={
+                    <Show when={stream.detached()}>
+                      <StatusCell class="text-alert">Disconnected</StatusCell>
+                    </Show>
+                  }
+                  end={status.items()}
+                  class="mt-1.5"
+                />
+              </Show>
+              {status.taskRows()}
             </div>
           </div>
         </div>

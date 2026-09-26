@@ -42,6 +42,18 @@
      place, not split between a height and an animation that has to match it. */
   --reasoning-h: 9rem;
 
+  /* ---- scroll fade (`ScrollFade`) ----
+     The band a scroll region dissolves into past an overlaid edge — the chat's
+     title above, its composer below. One token for the band because it is also
+     the inset the scroll region keeps at that edge: the last line of a thread at
+     rest has to clear the fade exactly, not by a second number that drifts. The
+     blur is the strongest layer's; the lighter layers are fractions of it. The
+     tint is how much of the ground colour the fade starts from — enough to keep
+     the title legible over text scrolling under it, never an opaque bar. */
+  --scroll-fade-band: 28px;
+  --scroll-fade-blur: 8px;
+  --scroll-fade-tint: 70%;
+
   /* ---- the two voices (§2) ----
      Sans is the interface speaking to the operator; mono is the machine showing
      its work. Helvetica Neue is not licensable for self-hosting and is present

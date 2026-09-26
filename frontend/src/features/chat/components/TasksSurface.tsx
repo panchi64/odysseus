@@ -10,7 +10,7 @@ import { TaskRows } from "./TaskRows";
 /**
  * The agent's task list, as a surface — **and its sub-agents' lists under it**.
  *
- * It has lived under the composer, folded into the status strip, where it was a
+ * It has lived under the composer, folded into a status line, where it was a
  * five-row window on a list in a band sized for one-line readouts — a thing you
  * expand, read, and collapse again because it is in the way of the thing it is
  * about. Beside the transcript it is just there, next to the work it describes.
@@ -20,7 +20,7 @@ import { TaskRows } from "./TaskRows";
  * giving it a full-height pane would hand most of the panel to whitespace and push
  * whatever the operator is actually reading out of view. A plan is read end to end
  * before answering, so that one is a panel. `TaskRows` is reused exactly as the
- * status strip uses it — the rows are the same rows, and a second renderer for them
+ * composer's `Tasks` disclosure uses it — the rows are the same rows, and a second renderer for them
  * would be a second thing to keep in step.
  *
  * **Alone in the panel, it fills it** (`usePaneFill`): with no panel below to make

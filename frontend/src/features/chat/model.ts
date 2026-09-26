@@ -26,7 +26,7 @@ export type { SessionMode };
  *  UI renders it, it does not compute it. */
 export type ContextUsage = ContextWindow;
 
-/** What the thread has cost so far — the readout line under the composer.
+/** What the thread has cost so far — the stats panel behind the composer's `Stats`.
  *
  *  **Cumulative over the conversation, not the last run**, and every figure is the
  *  backend's: it counts the active path and measures its own wall-clock, and this is
@@ -781,7 +781,10 @@ export type PermissionLevel = "plan" | "manual" | "edit" | "auto" | "yolo";
 
 export interface PermissionLevelSpec {
   id: PermissionLevel;
-  /** Sentence case — the interface naming the thing to the operator. */
+  /** Sentence case — the interface naming the thing to the operator. Says what the
+   *  level *does* in plain words ("Ask first"), where the id is the backend's
+   *  vocabulary: an operator choosing how much rope to give should not have to know
+   *  that `manual` means the model asks and `edit` means it stays in its workspace. */
   label: string;
   /** What the model may do, said as the operator would say it. */
   description: string;
@@ -792,22 +795,22 @@ export interface PermissionLevelSpec {
 export const PERMISSION_LEVELS: readonly PermissionLevelSpec[] = [
   {
     id: "plan",
-    label: "Plan",
+    label: "Plan only",
     description: "Read only. Ends in a plan for you to approve.",
   },
   {
     id: "manual",
-    label: "Manual",
+    label: "Ask first",
     description: "Asks before anything that isn't reading.",
   },
   {
     id: "edit",
-    label: "Edit",
+    label: "Workspace",
     description: "Works in its own workspace; asks to reach past it.",
   },
   {
     id: "auto",
-    label: "Auto",
+    label: "Auto-review",
     description:
       "Acts on its own inside the worktree, reviewed beyond it, asks only on doubt.",
   },
@@ -818,20 +821,45 @@ export const PERMISSION_LEVELS: readonly PermissionLevelSpec[] = [
   // because it is the last thing an operator reads before choosing it.
   {
     id: "yolo",
-    label: "Yolo",
+    label: "No limits",
     description:
       "Free rein. Nothing stops for you — not commands, mail, credentials or anything it can't undo.",
   },
 ];
 
-/** Whether a free-typed string names a level.
+/** The level a free-typed word names — its id **or** its label, in any case — or null.
  *
  *  For the one path where it is not already narrowed: `/level auto` in the composer,
  *  where the operator types the word themselves. Derived from the list above rather than
- *  re-listing them, so a further level is offered here the moment it is declared —
- *  presentation only, and the backend re-validates whatever this lets through. */
-export function isPermissionLevel(value: string): value is PermissionLevel {
-  return PERMISSION_LEVELS.some((spec) => spec.id === value);
+ *  re-listing them, so a further level is offered here the moment it is declared.
+ *
+ *  `/level ask first` has to work as well as `/level manual`: the control shows the
+ *  label, so the label is the word the operator has in front of them, and refusing it
+ *  in favour of an id they have never been shown would make the command a lookup
+ *  exercise. Presentation only — what comes out is an id, and the backend re-validates
+ *  it like any other. */
+export function parsePermissionLevel(value: string): PermissionLevel | null {
+  const word = value.trim().toLowerCase();
+  return (
+    PERMISSION_LEVELS.find(
+      (spec) => spec.id === word || spec.label.toLowerCase() === word,
+    )?.id ?? null
+  );
+}
+
+/** The level after `level` in the list's order, for the composer's Shift+Tab cycle.
+ *
+ *  **It never lands on `yolo`.** That is the one level that asks nothing at all, and it
+ *  is reachable only by naming it — a keystroke pressed a few times too often must not
+ *  be how a thread ends up there. From `yolo` itself the cycle wraps to the strictest
+ *  level rather than stepping back down one: leaving the widest level by a reflex should
+ *  land where a reflex is safe. */
+export function nextPermissionLevel(level: PermissionLevel): PermissionLevel {
+  const cycle = PERMISSION_LEVELS.filter((spec) => spec.id !== "yolo");
+  const at = cycle.findIndex((spec) => spec.id === level);
+  // `-1` is `yolo` (or anything the list no longer holds), and `(-1 + 1) % n` is the
+  // head of the list — the wrap described above falls out of the arithmetic.
+  return cycle[(at + 1) % cycle.length]!.id;
 }
 
 /** The level a thread runs at when nothing says otherwise — the backend's

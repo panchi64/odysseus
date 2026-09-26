@@ -60,7 +60,9 @@ export interface SteeringOps {
   stash: (text: string) => void;
   /** Drop any still-pending steering bubbles and stash their text. */
   restoreUndelivered: () => void;
-  sendWhileStreaming: (text: string) => Promise<void>;
+  /** Resolves false when the backend did not take the message, so the composer can put
+   *  it back — the same rule as a fresh turn's send. */
+  sendWhileStreaming: (text: string) => Promise<boolean>;
   withdrawQueued: (queuedMessageId: string) => Promise<void>;
   editQueued: (queuedMessageId: string, text: string) => Promise<void>;
   /** Ask the run to hold a queued message back, or to stop holding it. Taken while the
@@ -119,14 +121,16 @@ export function createSteeringOps(deps: SteeringDeps): SteeringOps {
    *  starts a fresh turn; the response tells us which, so this client never
    *  picks. The optimistic bubble renders QUEUED until `message.injected`
    *  promotes it (or a withdraw/terminal removes it). */
-  async function sendWhileStreaming(text: string): Promise<void> {
+  async function sendWhileStreaming(text: string): Promise<boolean> {
     const conversationId = deps.conversationId();
     if (conversationId === null) {
       // The first turn's POST hasn't resolved yet, so there's no conversation to
       // queue against. The composer already cleared itself — hand the text back
       // rather than dropping it.
       stash(text);
-      return;
+      // Handed back already, through the prefill — so this counts as taken: a false
+      // here would have the composer restore the same text a second time.
+      return true;
     }
     const userMsg: ChatMessage = {
       id: nextId("u"),
@@ -154,7 +158,7 @@ export function createSteeringOps(deps: SteeringDeps): SteeringOps {
           : ((err as { detail?: string })?.detail ??
               "Unable to reach the assistant."),
       );
-      return;
+      return false;
     }
     if (created.queued_message_id) {
       // Queued into the live run. The `message.queued` fold may have already
@@ -162,7 +166,7 @@ export function createSteeringOps(deps: SteeringDeps): SteeringOps {
       deps.patchById(userMsg.id, (m) => {
         if (!m.queuedMessageId) m.queuedMessageId = created.queued_message_id!;
       });
-      return;
+      return true;
     }
     // The run went terminal just before the POST landed: the backend started a
     // fresh run for this message instead. Promote the bubble to a normal turn
@@ -186,6 +190,7 @@ export function createSteeringOps(deps: SteeringDeps): SteeringOps {
     deps.setSending(true);
     deps.adoptConversationId(created.conversation_id);
     await deps.driveRun(created.run_id, assistantId);
+    return true;
   }
 
   /** Withdraw a steering message that's still queued on the live run. No

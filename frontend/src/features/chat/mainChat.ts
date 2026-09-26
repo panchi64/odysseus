@@ -38,6 +38,7 @@ import {
   setRunErrored,
 } from "~/lib/stores/chatActivity";
 import { markConversationRead } from "~/lib/stores/notifications";
+import { moveDraft } from "~/ui";
 import {
   activeSessionMode,
   codeProjectId,
@@ -83,6 +84,12 @@ export interface MainChat {
   permissionPending: Accessor<boolean>;
 }
 
+/** The key the room's composer keeps a thread's unsent draft under — `null` is the
+ *  staged, not-yet-created thread. One derivation for the room that reads it and the
+ *  adoption below that moves it, so the two can't key the same thread differently. */
+export const chatDraftKey = (id: string | null): string =>
+  `chat:${id ?? "new"}`;
+
 let _mainChat: MainChat | undefined;
 
 /** The app-wide chat room controller — created once, then reused across mounts. */
@@ -120,6 +127,14 @@ export function mainChat(): MainChat {
           // thread whose level is unknown and drop the control to the default,
           // mid-turn, on the very thread that was created with it.
           permissionOwner = id;
+          // So does whatever the operator typed while the first turn ran. The
+          // composer's draft is keyed by thread, and the seat below re-keys it: left
+          // under the staged key, that text would vanish from the field the moment the
+          // run ended and resurface on the *next* new thread. Moved first, so the key
+          // the composer flips to already holds it — and here rather than in the room,
+          // because this is the one place that knows the flip is an adoption and not a
+          // navigation, and it still happens with the room unmounted.
+          moveDraft(chatDraftKey(null), chatDraftKey(id));
           setCurrentId(id);
         },
         onTurnComplete: () => refreshSessions(),

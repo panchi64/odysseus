@@ -135,6 +135,11 @@ export {
   type LedSide,
   type LedSpill,
 } from "./components/LedEdge";
+export {
+  ScrollFade,
+  type ScrollFadeProps,
+  type ScrollFadeEdge,
+} from "./components/ScrollFade";
 export { ListRow, type ListRowProps } from "./components/ListRow";
 export {
   ListGroupHeader,
@@ -166,7 +171,9 @@ export {
   type ComposerProps,
   type ComposerAttachmentsApi,
   type ComposerMenuApi,
+  type ComposerRecallApi,
 } from "./components/Composer";
+export { moveDraft } from "./components/composerDraft";
 export {
   ComposerMenu,
   type ComposerMenuProps,
@@ -251,10 +258,20 @@ export {
 } from "./components/ContextMenu";
 export { MetaAction, type MetaActionProps } from "./components/MetaAction";
 export {
+  StatusBar,
+  StatusCell,
+  type StatusBarProps,
+  type StatusCellProps,
+} from "./components/StatusBar";
+export {
   Popover,
   type PopoverProps,
   type PopoverApi,
 } from "./components/Popover";
+export {
+  RevealPopover,
+  type RevealPopoverProps,
+} from "./components/RevealPopover";
 export { ThemeToggle } from "./components/ThemeToggle";
 
 // state / utility

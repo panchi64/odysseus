@@ -3,6 +3,7 @@ import { cx } from "../cx";
 import { Icon } from "../primitives/Icon";
 import { Text, type TextTone } from "../primitives/Text";
 import { CHIP_BASE } from "./Chip";
+import { Tooltip } from "./Tooltip";
 
 /** Lifecycle of one attached file as the composer sees it. `uploading` and
  *  `extracting` are in-flight; `ready` can be sent; `error` failed to ingest. */
@@ -16,6 +17,8 @@ export interface ComposerAttachment {
   status: AttachmentStatus;
   /** Excluded from the knowledge base / retrieval corpus when true. */
   kbExcluded: boolean;
+  /** Why an `error` chip failed, in the backend's words, when it gave any. */
+  error?: string;
 }
 
 export interface AttachmentChipProps {
@@ -31,6 +34,12 @@ export interface AttachmentChipProps {
   onToggleKbExcluded?: () => void;
   /** Editable use: remove this attachment before sending. */
   onRemove?: () => void;
+  /** Why the file failed, shown on hover over an `error` chip's status. Falls back
+   *  to "Upload failed" — a bare "Failed" with nothing behind it tells the operator
+   *  that something is wrong and nothing about whether retrying could help. */
+  error?: string;
+  /** Editable use: re-run a failed upload. Rendered only on an `error` chip. */
+  onRetry?: () => void;
   class?: string;
 }
 
@@ -59,18 +68,25 @@ const STATUS_TONE: Record<AttachmentStatus, TextTone> = {
  * micro-pill base as `Chip`, with the richer internal structure those uses need.
  */
 export function AttachmentChip(props: AttachmentChipProps): JSX.Element {
+  const failed = () => props.status === "error";
+  const hint = () => (
+    <Text variant="micro" tone={STATUS_TONE[props.status!]} class="shrink-0">
+      {STATUS_HINT[props.status!]}
+    </Text>
+  );
   const body = (
     <>
       <Icon name="file" size={12} class="shrink-0" />
       <span class="truncate max-w-40">{props.name}</span>
       <Show when={props.status && STATUS_HINT[props.status]}>
-        <Text
-          variant="micro"
-          tone={STATUS_TONE[props.status!]}
-          class="shrink-0"
-        >
-          {STATUS_HINT[props.status!]}
-        </Text>
+        {/* The reason rides on the status word rather than on the whole chip, so
+            hovering the name or the controls beside it doesn't throw a tip over
+            them. */}
+        <Show when={failed()} fallback={hint()}>
+          <Tooltip label={props.error ?? "Upload failed"} side="top">
+            {hint()}
+          </Tooltip>
+        </Show>
       </Show>
     </>
   );
@@ -132,6 +148,18 @@ export function AttachmentChip(props: AttachmentChipProps): JSX.Element {
             <Icon name="database" size={12} />
           </button>
         </Show>
+      </Show>
+
+      <Show when={failed() && props.onRetry}>
+        <button
+          type="button"
+          onClick={() => props.onRetry!()}
+          class="shrink-0 text-dim transition-colors hover:text-bright"
+          aria-label={`Retry ${props.name}`}
+          title="Retry"
+        >
+          <Icon name="refresh" size={12} />
+        </button>
       </Show>
 
       <Show when={props.onRemove}>

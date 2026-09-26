@@ -18,7 +18,7 @@ import {
 } from "~/lib/stores/notifications";
 import { NotificationBell } from "./NotificationBell";
 import { Sidebar, useSidebarWidth } from "./sidebar";
-import { isConnectedRoute, isDeepFieldRoute, isFlushTopRoute } from "./nav";
+import { isConnectedRoute, isDeepFieldRoute, isFlushRoute } from "./nav";
 import { SettingsDialog } from "./settings-dialog";
 
 /** The authenticated app chrome: sidebar rail + top status bar + the routed
@@ -118,11 +118,11 @@ export function AppShell(props: { children: JSX.Element }): JSX.Element {
               away from a broken screen clears the error. */}
           <main
             class={cx(
-              "h-full overflow-y-auto px-6 pb-6",
-              // The top inset is the one a self-framing screen takes back — see
-              // `isFlushTopRoute`. Everything else keeps the even margin its
+              "h-full overflow-y-auto px-6",
+              // The top and bottom insets are the ones a self-framing screen takes
+              // back — see `isFlushRoute`. Everything else keeps the even margin its
               // registration marks are drawn against.
-              isFlushTopRoute(location.pathname) ? "pt-0" : "pt-6",
+              isFlushRoute(location.pathname) ? "py-0" : "py-6",
             )}
           >
             <ErrorBoundary resetKey={() => location.pathname}>

@@ -5,6 +5,7 @@ export interface FileDropApi {
   isDragging: Accessor<boolean>;
   /** Spread onto the drop target element to wire drag-over/leave/drop. */
   dropHandlers: {
+    onDragEnter: (e: DragEvent) => void;
     onDragOver: (e: DragEvent) => void;
     onDragLeave: (e: DragEvent) => void;
     onDrop: (e: DragEvent) => void;
@@ -26,10 +27,23 @@ export interface FileDropApi {
  * dropped, picked, and pasted files through one `onFiles` callback — the consumer
  * decides what to do with them (upload, validate, etc.). No styling: it's a
  * behavior hook, so each surface renders its own chrome.
+ *
+ * `accepting` gates dropped and pasted files (the picker is the caller's to
+ * disable). While it is false nothing is emitted and `isDragging` stays false, but
+ * the drop is still *prevented* — an unhandled drop makes the browser navigate to
+ * the file, which would take the whole app down with the draft in it.
  */
-export function useFileDrop(onFiles: (files: File[]) => void): FileDropApi {
+export function useFileDrop(
+  onFiles: (files: File[]) => void,
+  accepting: () => boolean = () => true,
+): FileDropApi {
   const [isDragging, setIsDragging] = createSignal(false);
   let input: HTMLInputElement | undefined;
+  // `dragenter`/`dragleave` fire for every child the pointer crosses, and a leave
+  // from the target into its own child arrives *after* the child's enter. A plain
+  // boolean therefore flickers off over the textarea and the chips; counting the
+  // enters against the leaves only reaches zero when the pointer has really left.
+  let depth = 0;
 
   const emit = (files: File[]) => {
     if (files.length) onFiles(files);
@@ -38,21 +52,31 @@ export function useFileDrop(onFiles: (files: File[]) => void): FileDropApi {
   return {
     isDragging,
     dropHandlers: {
+      onDragEnter: (e: DragEvent) => {
+        e.preventDefault();
+        depth++;
+        setIsDragging(accepting());
+      },
       onDragOver: (e: DragEvent) => {
         e.preventDefault();
-        setIsDragging(true);
+        if (e.dataTransfer && !accepting()) e.dataTransfer.dropEffect = "none";
       },
-      onDragLeave: () => setIsDragging(false),
+      onDragLeave: () => {
+        depth = Math.max(0, depth - 1);
+        if (depth === 0) setIsDragging(false);
+      },
       onDrop: (e: DragEvent) => {
         e.preventDefault();
+        depth = 0;
         setIsDragging(false);
-        emit(Array.from(e.dataTransfer?.files ?? []));
+        if (accepting()) emit(Array.from(e.dataTransfer?.files ?? []));
       },
     },
     pasteHandlers: {
       onPaste: (e: ClipboardEvent) => {
         const files = Array.from(e.clipboardData?.files ?? []);
-        if (!files.length) return; // plain-text paste: leave it to the field
+        // Plain-text paste, or files while not accepting: leave it to the field.
+        if (!files.length || !accepting()) return;
         e.preventDefault();
         emit(files);
       },

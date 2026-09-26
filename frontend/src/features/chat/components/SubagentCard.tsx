@@ -73,10 +73,9 @@ function took(subagent: Subagent): string | null {
  * differ in tone and in which line they show, and nothing else. Three components that
  * looked alike on the day they were written would not still look alike a month later.
  *
- * The context ring is the same `ProgressRing` as the composer's own gauge, and it is
- * here for the same reason it is there: a sub-agent nobody is watching can fill its
- * window and stop, and a number in a row of numbers is something you read, where an arc
- * closing on itself is something you notice.
+ * The context ring is here for the same reason the composer carries its context bar: a
+ * sub-agent nobody is watching can fill its window and stop, and a number in a row of
+ * numbers is something you read, where an arc closing on itself is something you notice.
  */
 export function SubagentCard(props: {
   subagent: Subagent;

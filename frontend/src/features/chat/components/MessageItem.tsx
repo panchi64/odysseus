@@ -15,6 +15,7 @@ import type { ApprovalDecision, ChatMessage, Citation } from "../model";
 import { hasLayers as turnHasLayers } from "../blocks";
 import { createQueuedEdit } from "../queuedEdit";
 import type { ViewItem } from "../viewport/viewItems";
+import { TURN_GAP } from "./BlockRow";
 import { CompactionTurn } from "./CompactionTurn";
 import { SubagentReport } from "./SubagentReport";
 import { MessageActions, TURN_REVEAL_CLASS } from "./MessageActions";
@@ -409,7 +410,11 @@ function UserTurn(props: {
     // as the page — so on light the two voices were indistinguishable while on
     // dark they read fine. `sunken` is the token that carries a *transcript
     // fill* in both modes rather than a panel's.
-    <div class="group flex flex-col items-end gap-1 bg-sunken px-4 py-3">
+    //
+    // `py-1.5` / `gap-0.5`: the identity row is already 24px (its actions are),
+    // with its 12px label sitting in the middle of it, so the row brings its own
+    // air — padding on top of that made a one-line prompt a 76px block.
+    <div class="group flex flex-col items-end gap-0.5 bg-sunken px-4 py-1.5">
       <div class="flex w-full items-center justify-between gap-2">
         {/* Left: actions reveal on hover. Right: identity + metadata. */}
         <div class="flex items-center gap-2">
@@ -629,8 +634,12 @@ function AssistantTurn(props: {
   const toggleAll = () => setForceOpen((v) => !v);
 
   return (
-    <div class="group px-4 py-4">
-      <div class="mb-2 flex items-center gap-2">
+    // `py-3` is the gap between turns — no list gap sits between them, so this
+    // padding and the operator fill's edge are the whole of it. `mb-1` keeps the
+    // timestamp with the answer it stamps: its 24px row (the actions' height)
+    // already centres a 10px stamp in 7px of air either side.
+    <div class="group px-4 py-3">
+      <div class="mb-1 flex items-center gap-2">
         {/* WHEN, permanently — it took over from the model name, which is now
             named once for the whole thread in the room header rather than
             restamped above every turn. Something has to hold this row at rest:
@@ -671,7 +680,7 @@ function AssistantTurn(props: {
         </span>
       </div>
 
-      <Stack gap={3}>
+      <Stack gap={TURN_GAP}>
         {/* What's happening now. What it took, once settled, is the work log's
             own header — see `WorkLogHeader`. */}
         <TurnProgressRail

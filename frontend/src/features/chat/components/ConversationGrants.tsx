@@ -1,22 +1,22 @@
 import { createResource, For, Show, type JSX } from "solid-js";
-import { Chip, confirm, Icon, MetaAction, Popover, Text, toast } from "~/ui";
+import { Chip, confirm, Icon, toast } from "~/ui";
 import { fetchGrants, revokeGrant } from "../data";
 import { settled } from "~/lib/resource";
-import { MetaSep } from "./MetaSep";
+import { StatRow } from "./StatRow";
 import type { ApprovalGrant } from "../model";
 
 /** The conversation's active auto-approval grants — what the operator allowed to
  *  skip the per-call approval prompt for the rest of this thread, each named by the act it
  *  covers (a command where the tool runs one, else the tool). Renders nothing when
- *  there are none, and carries no band of its own: it is one segment of the composer's
- *  readout line, which owns the layout.
+ *  there are none, and carries no band of its own: it is one row of the conversation's
+ *  stats panel, which owns the layout.
  *
- *  In the line it is a **count**; the revocable chips live one click away in a popover.
- *  They used to sit inline, and a run of chips is the single widest thing the old status
- *  band carried — in a line of telemetry under the composer it would push everything
- *  after it onto a second row as soon as the agent earned a second grant. The count is
- *  the part that belongs in a readout ("am I still auto-approving anything?"); the list
- *  is what you open when the answer matters.
+ *  **It lives behind Stats, not on the row under the composer.** It was a count on that
+ *  line with the chips one popover further away, and before that a run of chips inline —
+ *  the widest thing the old status band carried. Either way it was a per-thread setting
+ *  parked among the glance items, and the line it sat in is now kept for what changes
+ *  turn to turn. In the panel the operator has already opened, the chips can sit in the
+ *  open: that *is* the place you go when "am I still auto-approving anything?" matters.
  *
  *  Refetches when the thread changes or the `revalidate` accessor ticks (e.g. a grant
  *  was just recorded). */
@@ -26,15 +26,15 @@ export function ConversationGrants(props: {
 }): JSX.Element {
   // Tag the fetched grants with the conversation they belong to. On a thread switch the
   // resource keeps the *previous* thread's value until the refetch resolves; without the
-  // tag the strip would show stale chips and a click would revoke against the now-current
+  // tag the panel would show stale chips and a click would revoke against the now-current
   // (wrong) conversation. The tag lets us ignore the value until it matches what's on
   // screen, and revoke against the conversation the chips actually belong to.
   //
-  // The fetcher swallows its own failure rather than rejecting. This strip is a
-  // secondary read living inside the transcript: a rejected resource re-throws
-  // on read and would take the whole conversation down with it. An unreachable
-  // grants endpoint should cost the operator the strip, nothing more — the next
-  // decision re-ticks `revalidate` and it comes back.
+  // The fetcher swallows its own failure rather than rejecting. This row is a
+  // secondary read in a portalled panel, outside the transcript's ErrorBoundary: a
+  // rejected resource re-throws on read and would take the whole chat screen down
+  // with it. An unreachable grants endpoint should cost the operator the row, nothing
+  // more — the next decision re-ticks `revalidate` and it comes back.
   const [grants, { mutate, refetch }] = createResource(
     () => ({ id: props.conversationId(), tick: props.revalidate?.() }),
     async (src) => ({
@@ -115,40 +115,24 @@ export function ConversationGrants(props: {
 
   return (
     <Show when={items().length > 0}>
-      <MetaSep />
-      <Popover
-        align="left"
-        panelClass="max-w-64 p-2"
-        trigger={({ open, setOpen }) => (
-          <MetaAction
-            active={open()}
-            aria-expanded={open()}
-            aria-label="Show the tools this conversation auto-approves"
-            onClick={() => setOpen(!open())}
-          >
-            {items().length} auto-approved
-          </MetaAction>
-        )}
-        panel={() => (
-          <div class="flex flex-col gap-2">
-            <Text variant="meta" tone="dim">
-              Auto-approved
-            </Text>
-            <div class="flex flex-wrap gap-2">
-              <For each={items()}>
-                {(g) => (
-                  <Chip leading="check" onClick={() => revoke(g)}>
-                    <span class="inline-flex items-center gap-1">
-                      {label(g)}
-                      <Icon name="close" size={12} />
-                    </span>
-                  </Chip>
-                )}
-              </For>
-            </div>
-          </div>
-        )}
-      />
+      <StatRow
+        label="Auto-approved"
+        value={items().length}
+        hint="Tools and commands you allowed to run without asking again in this conversation. Click one to stop auto-approving it."
+      >
+        <div class="flex flex-wrap gap-2">
+          <For each={items()}>
+            {(g) => (
+              <Chip leading="check" onClick={() => revoke(g)}>
+                <span class="inline-flex items-center gap-1">
+                  {label(g)}
+                  <Icon name="close" size={12} />
+                </span>
+              </Chip>
+            )}
+          </For>
+        </div>
+      </StatRow>
     </Show>
   );
 }

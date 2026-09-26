@@ -40,6 +40,9 @@ export interface ComposerMenuProps {
   onActivate?: (item: ComposerMenuItem) => void;
   /** Shown when the trigger matched nothing. */
   emptyHint?: string;
+  /** The rows are still being fetched: the empty arm reads "Loading…" instead of the
+   *  hint, so a first `/` never claims "No matches" for a list that hasn't arrived. */
+  loading?: boolean;
 }
 
 /**
@@ -94,7 +97,9 @@ export function ComposerMenu(props: ComposerMenuProps): JSX.Element {
             fallback={
               <div class="px-3 py-2">
                 <Text variant="micro" tone="dim">
-                  {props.emptyHint ?? "No matches"}
+                  {props.loading
+                    ? "Loading…"
+                    : (props.emptyHint ?? "No matches")}
                 </Text>
               </div>
             }

@@ -81,13 +81,16 @@ export function ViewChip(props: {
         // the transcript beside `ToolCallCard` at 6px, which is a real
         // difference to settle in the design system rather than here.
         "group/chip flex w-full items-center gap-2 rounded-ctl bg-surface shadow-1",
-        "px-3 py-2 text-left transition-colors hover:bg-raised",
+        // `py-1` + 12px glyphs: a 24px row, the height of the process rows it
+        // sits among. At `py-2` with 14px glyphs it was the tallest row in a
+        // turn that wasn't prose, for a handle whose job is to be clicked.
+        "px-2 py-1 text-left transition-colors hover:bg-raised",
         props.isNew && "opacity-80",
       )}
     >
       <Icon
         name={props.icon}
-        size={14}
+        size={12}
         class="shrink-0 text-dim transition-colors group-hover/chip:text-text"
       />
       <Text variant="label" tone="default">
@@ -113,7 +116,7 @@ export function ViewChip(props: {
       </Show>
       <Icon
         name="chevron-right"
-        size={14}
+        size={12}
         class="shrink-0 text-dim transition-colors group-hover/chip:text-bright"
       />
     </button>

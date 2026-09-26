@@ -38,7 +38,10 @@ import {
 import { ModelPicker } from "~/app/ModelPicker";
 import { createComposerAttachments } from "~/features/uploads/data";
 import { createComposerCommands } from "~/features/chat/commands/useComposerCommands";
-import { isPermissionLevel, type PermissionLevel } from "~/features/chat/model";
+import {
+  parsePermissionLevel,
+  type PermissionLevel,
+} from "~/features/chat/model";
 import { activeSessionMode, codeProjectId } from "~/lib/stores/sessionMode";
 import { toast } from "~/ui";
 import { settled } from "~/lib/resource";
@@ -164,7 +167,8 @@ export function DashboardScreen(): JSX.Element {
       // Already here: an empty composer on the launchpad is a new thread.
       newThread: () => {},
       setPermissionLevel: (level) => {
-        if (isPermissionLevel(level)) setPendingLevel(level);
+        const parsed = parsePermissionLevel(level);
+        if (parsed) setPendingLevel(parsed);
         else toast.error(`"${level}" isn't a permission level.`);
       },
     },
