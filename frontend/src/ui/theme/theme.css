@@ -1219,6 +1219,43 @@ body {
 }
 
 /* ==========================================================================
+   COMPOSER TOKENS. A `/command`, `@file` or skill in the field reads as a
+   contained cell — a square, hairline-ruled box on a faint accent fill, the
+   same register as the status bar's cells — rather than as coloured words.
+
+   **Nothing here may change a glyph's position.** The token is painted on the
+   layer *behind* a transparent textarea, and any padding, border or margin
+   would push the colours off the words the caret is moving through. So the box
+   is a pseudo-element laid *around* the text box (absolute, so it takes no
+   layout), reaching further along the sides than up and down for a little
+   air either side of the word. That reach eats into the space beside the
+   token, so the field and its layer both carry `.ody-composer-field`'s
+   extra word spacing: a space at the reading size is ~4px, and without the
+   extra, the next word would sit right against the box's edge.
+
+   It sits behind the text at `z-index: -1`, which needs a stacking context to
+   stay inside — the layer carrying these tokens is `isolate` for that, or the
+   box would drop behind the card's own fill.
+   ========================================================================== */
+.ody-composer-token {
+  position: relative;
+  color: var(--accent);
+}
+.ody-composer-token::before {
+  content: "";
+  position: absolute;
+  inset: -1px -2px;
+  z-index: -1;
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in oklab, var(--accent) 45%, transparent);
+}
+/* On the field AND the layer behind it — any metric set on one and not the
+   other walks the colours off the words. */
+.ody-composer-field {
+  word-spacing: 0.15em;
+}
+
+/* ==========================================================================
    THE REASONING STREAM (§10.9). While the model reasons, its trace streams as
    mono text CLIPPED INTO THE BACKGROUND of the response area — the machine
    working behind the message, not a message itself. It is barely tinted, sits

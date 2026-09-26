@@ -648,9 +648,12 @@ export function Composer(props: ComposerProps): JSX.Element {
       /* No `min-h-*`: the field rests at one row (`rows={1}`) at both sizes and
          grows from there, so an empty composer is one line of text and the button. */
       "block w-full resize-none border-0 bg-transparent px-1 py-1 text-prose font-sans text-bright placeholder:text-dim outline-none disabled:opacity-40",
+      /* Wider spaces, so a boxed token's edge clears the word beside it — on both
+         the field and the accent layer, which share this class list. */
+      props.menu && "ody-composer-field",
     );
 
-  /** The field's text split into plain runs and accent-coloured tokens.
+  /** The field's text split into plain runs and boxed tokens (`.ody-composer-token`).
    *
    *  A textarea cannot colour part of its own value, so the standard arrangement is used:
    *  this layer sits directly behind a text-transparent field, painting the same string
@@ -690,14 +693,15 @@ export function Composer(props: ComposerProps): JSX.Element {
         class={cx(
           fieldClass(),
           // Behind the field, exactly on top of it, and inert: the real control takes
-          // every click, caret move and selection.
-          "pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words text-bright",
+          // every click, caret move and selection. `isolate` keeps each token's box
+          // (painted at `z-index: -1`) behind its text but above the card's fill.
+          "pointer-events-none absolute inset-0 isolate overflow-hidden whitespace-pre-wrap break-words text-bright",
         )}
       >
         <For each={highlighted()}>
           {(run) => (
             <Show when={run.token} fallback={run.text}>
-              <span class="text-accent">{run.text}</span>
+              <span class="ody-composer-token">{run.text}</span>
             </Show>
           )}
         </For>
